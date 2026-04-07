@@ -1,0 +1,132 @@
+/* ─── Chorus Dark Theme ──────────────────────────────── */
+
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  /* Backgrounds */
+  --bg-terminal: #0a0a14;
+  --bg-panel: #10101e;
+  --bg-surface: #14142a;
+  --bg-elevated: #1a1a32;
+  --bg-status-bar: #16162e;
+  --bg-hover: #1e1e3a;
+  --bg-active: #22224a;
+
+  /* Text */
+  --text-primary: #d8d8e8;
+  --text-secondary: #8888aa;
+  --text-dimmed: #5c5c7a;
+  --text-accent: #4a9eff;
+
+  /* Accents */
+  --accent-blue: #4a9eff;
+  --accent-orange: #ff6b35;
+  --accent-green: #4ade80;
+  --accent-yellow: #facc15;
+  --accent-red: #f87171;
+
+  /* Borders */
+  --border-subtle: #1e1e38;
+  --border-default: #2a2a4a;
+  --border-active: #4a9eff;
+
+  /* Status */
+  --status-idle: #4ade80;
+  --status-thinking: #facc15;
+  --status-generating: #60a5fa;
+  --status-creating: #a78bfa;
+  --status-error: #f87171;
+  --status-ended: #6b7280;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+
+  /* Sizing */
+  --status-bar-height: 36px;
+  --shell-collapsed-height: 28px;
+  --divider-size: 1px;
+  --divider-hit-area: 6px;
+
+  /* Typography */
+  --font-mono: 'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace;
+  --font-ui: 'IBM Plex Mono', 'SF Mono', monospace;
+
+  /* Transitions */
+  --transition-fast: 120ms ease;
+  --transition-normal: 200ms ease;
+  --transition-slow: 300ms ease-out;
+
+  /* Radius */
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 8px;
+}
+
+/* ─── Scrollbar ──────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dimmed);
+}
+
+/* ─── Selection ──────────────────────────────────────── */
+
+::selection {
+  background: rgba(74, 158, 255, 0.3);
+  color: var(--text-primary);
+}
+
+/* ─── Global Reset Additions ─────────────────────────── */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-terminal);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  outline: none;
+}
+
+input, textarea {
+  font-family: inherit;
+  font-size: inherit;
+  border: none;
+  background: none;
+  color: inherit;
+  outline: none;
+}
