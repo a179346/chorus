@@ -1,0 +1,45 @@
+{
+  "name": "chorus",
+  "productName": "Chorus",
+  "version": "0.1.0",
+  "description": "Multi-session Claude Code terminal manager",
+  "main": ".vite/build/index.js",
+  "scripts": {
+    "prestart": "bash scripts/patch-electron-name.sh",
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "build": "tsc --noEmit",
+    "test": "vitest run",
+    "postinstall": "patch-package && node scripts/patch-electron-name.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-web-links": "^0.11.0",
+    "@xterm/xterm": "^5.5.0",
+    "lucide-react": "^1.7.0",
+    "node-pty": "^1.1.0-beta22",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.11.1",
+    "@electron-forge/maker-dmg": "^7.11.1",
+    "@electron-forge/maker-zip": "^7.11.1",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.11.1",
+    "@electron-forge/plugin-vite": "^7.11.1",
+    "@electron/notarize": "^2.5.0",
+    "@types/node": "^25.5.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.7.0",
+    "electron": "^36.5.0",
+    "patch-package": "^8.0.1",
+    "typescript": "^6.0.2",
+    "vite": "^6.4.1",
+    "vitest": "^3.2.4"
+  }
+}
