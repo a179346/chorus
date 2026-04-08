@@ -138,6 +138,10 @@ export interface ToolkitListPayload {
   sessionId?: string;
 }
 
+export interface SessionReorderPayload {
+  sessionIds: string[];
+}
+
 export interface ToolkitSavePayload {
   commands: ToolkitCommand[];
 }

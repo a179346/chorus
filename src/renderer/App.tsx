@@ -208,6 +208,14 @@ export function App(): React.ReactElement {
     []
   );
 
+  const handleReorderSessions = useCallback(
+    (reorderedSessions: Session[]) => {
+      setSessions(reorderedSessions);
+      window.electronAPI.sessionReorder(reorderedSessions.map((s) => s.id));
+    },
+    []
+  );
+
   const handleRenameSession = useCallback(
     (id: string, newName: string) => {
       window.electronAPI.sessionRename(id, newName).then((updated) => {
@@ -363,6 +371,7 @@ export function App(): React.ReactElement {
             onRenameSession={handleRenameSession}
             onEndSession={requestEndSession}
             onToggleNotify={handleToggleNotify}
+            onReorderSessions={handleReorderSessions}
           />
 
           {/* Toolkit */}

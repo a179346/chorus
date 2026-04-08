@@ -1,5 +1,19 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { GitBranch, Bell, BellOff } from 'lucide-react';
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+  useSortable,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import type { Session } from '../../shared/types';
 
 interface SessionListProps {
@@ -10,6 +24,7 @@ interface SessionListProps {
   onRenameSession: (id: string, newName: string) => void;
   onEndSession: (id: string) => void;
   onToggleNotify: (id: string) => void;
+  onReorderSessions: (sessions: Session[]) => void;
 }
 
 const statusColors: Record<string, string> = {
@@ -39,10 +54,32 @@ export function SessionList({
   onRenameSession,
   onEndSession,
   onToggleNotify,
+  onReorderSessions,
 }: SessionListProps): React.ReactElement {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+  );
+
+  const sessionIds = useMemo(() => sessions.map((s) => s.id), [sessions]);
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const oldIndex = sessions.findIndex((s) => s.id === active.id);
+      const newIndex = sessions.findIndex((s) => s.id === over.id);
+      if (oldIndex === -1 || newIndex === -1) return;
+      const reordered = [...sessions];
+      const [moved] = reordered.splice(oldIndex, 1);
+      reordered.splice(newIndex, 0, moved);
+      onReorderSessions(reordered);
+    },
+    [sessions, onReorderSessions],
+  );
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent, sessionId: string | null) => {
@@ -179,19 +216,23 @@ export function SessionList({
             </span>
           </div>
         ) : (
-          sessions.map((session) => (
-            <SessionCard
-              key={session.id}
-              session={session}
-              isActive={session.id === activeSessionId}
-              isEditing={session.id === editingSessionId}
-              onClick={() => onSelectSession(session.id)}
-              onContextMenu={(e) => handleContextMenu(e, session.id)}
-              onRenameCommit={(newName) => handleRenameCommit(session.id, newName)}
-              onRenameCancel={handleRenameCancel}
-              onToggleNotify={() => onToggleNotify(session.id)}
-            />
-          ))
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+            <SortableContext items={sessionIds} strategy={verticalListSortingStrategy}>
+              {sessions.map((session) => (
+                <SortableSessionCard
+                  key={session.id}
+                  session={session}
+                  isActive={session.id === activeSessionId}
+                  isEditing={session.id === editingSessionId}
+                  onClick={() => onSelectSession(session.id)}
+                  onContextMenu={(e) => handleContextMenu(e, session.id)}
+                  onRenameCommit={(newName) => handleRenameCommit(session.id, newName)}
+                  onRenameCancel={handleRenameCancel}
+                  onToggleNotify={() => onToggleNotify(session.id)}
+                />
+              ))}
+            </SortableContext>
+          </DndContext>
         )}
       </div>
 
@@ -234,6 +275,31 @@ interface SessionCardProps {
   onRenameCommit: (newName: string) => void;
   onRenameCancel: () => void;
   onToggleNotify: () => void;
+}
+
+function SortableSessionCard(props: SessionCardProps): React.ReactElement {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: props.session.id });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    position: 'relative' as const,
+    zIndex: isDragging ? 1 : 0,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+      <SessionCard {...props} />
+    </div>
+  );
 }
 
 function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onRenameCommit, onRenameCancel, onToggleNotify }: SessionCardProps): React.ReactElement {
