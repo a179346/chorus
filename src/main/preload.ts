@@ -79,4 +79,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('menu:close-session', listener);
     return () => ipcRenderer.removeListener('menu:close-session', listener);
   },
+  onMenuFind: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('menu:find', listener);
+    return () => ipcRenderer.removeListener('menu:find', listener);
+  },
+  onMenuFindNext: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('menu:find-next', listener);
+    return () => ipcRenderer.removeListener('menu:find-next', listener);
+  },
+  onMenuFindPrevious: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('menu:find-previous', listener);
+    return () => ipcRenderer.removeListener('menu:find-previous', listener);
+  },
 });

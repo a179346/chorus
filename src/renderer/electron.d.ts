@@ -47,6 +47,9 @@ interface ElectronAPI {
   onMenuPrevSession: (callback: () => void) => () => void;
   onMenuNextSession: (callback: () => void) => () => void;
   onMenuCloseSession: (callback: () => void) => () => void;
+  onMenuFind: (callback: () => void) => () => void;
+  onMenuFindNext: (callback: () => void) => () => void;
+  onMenuFindPrevious: (callback: () => void) => () => void;
 }
 
 declare global {

@@ -5,7 +5,8 @@ import { StatusBar } from './components/StatusBar';
 import { ShellPanel } from './components/ShellPanel';
 import { SessionList } from './components/SessionList';
 import { ToolkitPanel } from './components/ToolkitPanel';
-import { TerminalView, disposeTerminal, focusTerminal } from './components/TerminalView';
+import { TerminalView, disposeTerminal, focusTerminal, getFocusedTerminalInfo } from './components/TerminalView';
+import { SearchBar } from './components/SearchBar';
 import { NewSessionDialog } from './components/NewSessionDialog';
 
 const DEFAULT_SIDEBAR_WIDTH = 320;
@@ -20,6 +21,8 @@ export function App(): React.ReactElement {
   const [shellCollapsed, setShellCollapsed] = useState(false);
   const [showNewSession, setShowNewSession] = useState(false);
   const [endSessionConfirm, setEndSessionConfirm] = useState<string | null>(null);
+  const [search, setSearch] = useState<{ type: 'pty' | 'shell'; sessionId: string; key: number } | null>(null);
+  const searchKeyRef = useRef(0);
 
   // Panel sizes
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
@@ -113,6 +116,17 @@ export function App(): React.ReactElement {
         const currentId = activeSessionIdRef.current;
         if (currentId) setEndSessionConfirm(currentId);
       }),
+      window.electronAPI.onMenuFind(() => {
+        const currentId = activeSessionIdRef.current;
+        if (!currentId) return;
+        const k = ++searchKeyRef.current;
+        const focused = getFocusedTerminalInfo();
+        if (focused && focused.sessionId === currentId) {
+          setSearch({ type: focused.type, sessionId: focused.sessionId, key: k });
+        } else {
+          setSearch({ type: 'pty', sessionId: currentId, key: k });
+        }
+      }),
     ];
     return () => cleanups.forEach((c) => c());
   }, []);
@@ -139,6 +153,7 @@ export function App(): React.ReactElement {
   const handleSelectSession = useCallback(
     (id: string) => {
       setActiveSessionId(id);
+      setSearch(null);
       window.electronAPI.sessionSwitch(id);
       window.electronAPI.appSaveState({ lastActiveSessionId: id });
     },
@@ -309,6 +324,10 @@ export function App(): React.ReactElement {
           from { opacity: 0; transform: translateY(8px); }
           to { opacity: 1; transform: translateY(0); }
         }
+        @keyframes slideDown {
+          from { opacity: 0; transform: translateY(-8px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
         /* Context menu item hover + focus */
         [role="menuitem"]:hover,
         [role="menuitem"]:focus {
@@ -327,8 +346,17 @@ export function App(): React.ReactElement {
         onResize={handleSidebarResize}
       >
         {/* LEFT PANE: status bar + terminal + shell */}
-        <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', position: 'relative' }}>
           <StatusBar session={activeSession} />
+
+          {search && (
+            <SearchBar
+              key={search.key}
+              type={search.type}
+              sessionId={search.sessionId}
+              onClose={() => setSearch(null)}
+            />
+          )}
 
           <SplitPane
             direction="vertical"
