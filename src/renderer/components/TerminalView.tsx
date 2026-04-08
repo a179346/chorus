@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useCallback } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 
 interface TerminalViewProps {
@@ -13,6 +14,7 @@ interface TerminalViewProps {
 interface TerminalEntry {
   terminal: Terminal;
   fitAddon: FitAddon;
+  searchAddon: SearchAddon;
   mountedIn: HTMLElement | null;
   opened: boolean;
   removeDataListener: (() => void) | null;
@@ -42,6 +44,59 @@ export function disposeTerminal(type: 'pty' | 'shell', sessionId: string): void 
     entry.terminal.dispose();
     terminalCache.delete(key);
   }
+}
+
+// ─── Focus Tracking ─────────────────────────────────────
+let focusedTerminalKey: string | null = null;
+
+export function getFocusedTerminalInfo(): { type: 'pty' | 'shell'; sessionId: string } | null {
+  if (!focusedTerminalKey) return null;
+  const [type, ...rest] = focusedTerminalKey.split(':');
+  const sessionId = rest.join(':');
+  return { type: type as 'pty' | 'shell', sessionId };
+}
+
+// ─── Search Functions ───────────────────────────────────
+
+function getBufferText(terminal: Terminal): string {
+  const buf = terminal.buffer.active;
+  const lines: string[] = [];
+  for (let i = 0; i < buf.length; i++) {
+    const line = buf.getLine(i);
+    if (line) lines.push(line.translateToString(true));
+  }
+  return lines.join('\n');
+}
+
+function countMatches(text: string, term: string): number {
+  if (!term) return 0;
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const matches = text.match(new RegExp(escaped, 'gi'));
+  return matches ? matches.length : 0;
+}
+
+export function terminalFindNext(type: 'pty' | 'shell', sessionId: string, term: string): { found: boolean; resultCount: number } {
+  const key = getTerminalKey(type, sessionId);
+  const entry = terminalCache.get(key);
+  if (!entry) return { found: false, resultCount: 0 };
+  const found = entry.searchAddon.findNext(term);
+  const resultCount = countMatches(getBufferText(entry.terminal), term);
+  return { found, resultCount };
+}
+
+export function terminalFindPrevious(type: 'pty' | 'shell', sessionId: string, term: string): { found: boolean; resultCount: number } {
+  const key = getTerminalKey(type, sessionId);
+  const entry = terminalCache.get(key);
+  if (!entry) return { found: false, resultCount: 0 };
+  const found = entry.searchAddon.findPrevious(term);
+  const resultCount = countMatches(getBufferText(entry.terminal), term);
+  return { found, resultCount };
+}
+
+export function terminalClearSearch(type: 'pty' | 'shell', sessionId: string): void {
+  const key = getTerminalKey(type, sessionId);
+  const entry = terminalCache.get(key);
+  if (entry) entry.searchAddon.clearDecorations();
 }
 
 const XTERM_THEME = {
@@ -114,6 +169,8 @@ export function TerminalView({ sessionId, type, visible = true }: TerminalViewPr
     terminal.loadAddon(new WebLinksAddon((_event, url) => {
       window.electronAPI.openExternal(url);
     }));
+    const searchAddon = new SearchAddon();
+    terminal.loadAddon(searchAddon);
 
     // Register data listener at creation time so background sessions keep receiving output
     const listenerMethod = type === 'pty' ? 'onPtyData' : 'onShellData';
@@ -123,7 +180,7 @@ export function TerminalView({ sessionId, type, visible = true }: TerminalViewPr
       }
     });
 
-    const entry: TerminalEntry = { terminal, fitAddon, mountedIn: null, opened: false, removeDataListener };
+    const entry: TerminalEntry = { terminal, fitAddon, searchAddon, mountedIn: null, opened: false, removeDataListener };
     terminalCache.set(key, entry);
     return entry;
   }, [type]);
@@ -186,11 +243,22 @@ export function TerminalView({ sessionId, type, visible = true }: TerminalViewPr
       }, 10);
     }
 
+    // Track terminal focus for search target resolution
+    const handleFocusIn = (): void => { focusedTerminalKey = key; };
+    const handleFocusOut = (): void => { if (focusedTerminalKey === key) focusedTerminalKey = null; };
+    container.addEventListener('focusin', handleFocusIn);
+    container.addEventListener('focusout', handleFocusOut);
+
     // Shift+Enter should insert a newline, not submit.
     // Claude Code enables kitty keyboard protocol (CSI u), so send the CSI u
     // encoding for Shift+Enter. Return false for ALL event types (keydown,
     // keypress, keyup) to prevent xterm from also sending \r.
+    // Cmd+F is handled by the Electron menu accelerator — return false to
+    // prevent xterm from inserting the character.
     terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+      if (event.metaKey && !event.altKey && (event.key === 'f' || event.key === 'g')) {
+        return false;
+      }
       if (event.key === 'Enter' && event.shiftKey) {
         if (event.type === 'keydown') {
           const sid = sessionIdRef.current;
@@ -229,6 +297,8 @@ export function TerminalView({ sessionId, type, visible = true }: TerminalViewPr
       dataDisposable.dispose();
       cancelAnimationFrame(resizeRafId);
       resizeObserver.disconnect();
+      container.removeEventListener('focusin', handleFocusIn);
+      container.removeEventListener('focusout', handleFocusOut);
       // Detach terminal DOM from container (don't dispose -- keep it alive for reparenting)
       if (terminal.element && terminal.element.parentNode === container) {
         container.removeChild(terminal.element);

@@ -389,6 +389,28 @@ function createMenu(): void {
         { role: "copy" },
         { role: "paste" },
         { role: "selectAll" },
+        { type: "separator" },
+        {
+          label: "Find",
+          accelerator: "CmdOrCtrl+F",
+          click: () => {
+            mainWindow?.webContents.send(IpcChannels.MENU_FIND);
+          },
+        },
+        {
+          label: "Find Next",
+          accelerator: "CmdOrCtrl+G",
+          click: () => {
+            mainWindow?.webContents.send(IpcChannels.MENU_FIND_NEXT);
+          },
+        },
+        {
+          label: "Find Previous",
+          accelerator: "CmdOrCtrl+Shift+G",
+          click: () => {
+            mainWindow?.webContents.send(IpcChannels.MENU_FIND_PREVIOUS);
+          },
+        },
       ],
     },
     {

@@ -52,6 +52,9 @@ export const IpcChannels = {
   MENU_PREV_SESSION: 'menu:prev-session',
   MENU_NEXT_SESSION: 'menu:next-session',
   MENU_CLOSE_SESSION: 'menu:close-session',
+  MENU_FIND: 'menu:find',
+  MENU_FIND_NEXT: 'menu:find-next',
+  MENU_FIND_PREVIOUS: 'menu:find-previous',
 } as const;
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels];
@@ -126,4 +129,7 @@ export interface IpcPushMap {
   [IpcChannels.MENU_PREV_SESSION]: void;
   [IpcChannels.MENU_NEXT_SESSION]: void;
   [IpcChannels.MENU_CLOSE_SESSION]: void;
+  [IpcChannels.MENU_FIND]: void;
+  [IpcChannels.MENU_FIND_NEXT]: void;
+  [IpcChannels.MENU_FIND_PREVIOUS]: void;
 }
