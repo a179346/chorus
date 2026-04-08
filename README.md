@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="assets/icons/icon.png" width="36" align="center" style="vertical-align: middle;" />
+  <img src="assets/icons/icon.png" width="48" align="center" style="vertical-align: middle;" />
   Chorus
 </h1>
 
