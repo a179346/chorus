@@ -1,4 +1,7 @@
-<h1 align="center">Chorus</h1>
+<h1 align="center">
+  <img src="assets/icons/icon.png" width="36" />
+  Chorus
+</h1>
 
 <p align="center">
   Multi-session Claude Code terminal manager
