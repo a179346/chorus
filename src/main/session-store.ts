@@ -115,6 +115,21 @@ export class SessionStore {
     return session;
   }
 
+  /** Reorder sessions to match the given ID order. */
+  reorderSessions(sessionIds: string[]): void {
+    const ordered = new Map<string, Session>();
+    for (const id of sessionIds) {
+      const session = this.sessions.get(id);
+      if (session) ordered.set(id, session);
+    }
+    // Append any sessions not in the list (shouldn't happen, but safe)
+    for (const [id, session] of this.sessions) {
+      if (!ordered.has(id)) ordered.set(id, session);
+    }
+    this.sessions = ordered;
+    this.persistSessionIndex();
+  }
+
   removeSession(id: string): void {
     this.sessions.delete(id);
 

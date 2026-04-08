@@ -9,6 +9,7 @@ import type {
   SessionConfig,
   SessionIdPayload,
   SessionRenamePayload,
+  SessionReorderPayload,
   PtyWritePayload,
   PtyResizePayload,
   ToolkitCommand,
@@ -515,6 +516,13 @@ function registerIpcHandlers(): void {
       });
       sessionStore.persistSessions();
       return sessionStore.getSession(payload.id)!;
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannels.SESSION_REORDER,
+    (_event, payload: SessionReorderPayload): void => {
+      sessionStore.reorderSessions(payload.sessionIds);
     },
   );
 

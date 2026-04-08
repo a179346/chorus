@@ -9,6 +9,7 @@ interface ElectronAPI {
   sessionEnd: (id: string) => Promise<void>;
   sessionSwitch: (id: string) => Promise<Session>;
   sessionToggleNotify: (id: string) => Promise<Session>;
+  sessionReorder: (sessionIds: string[]) => Promise<void>;
 
   // PTY I/O
   ptyWrite: (sessionId: string, data: string) => Promise<void>;

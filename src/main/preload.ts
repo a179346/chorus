@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   sessionEnd: (id: string) => ipcRenderer.invoke('session:end', { id }),
   sessionSwitch: (id: string) => ipcRenderer.invoke('session:switch', { id }),
   sessionToggleNotify: (id: string) => ipcRenderer.invoke('session:toggle-notify', { id }),
+  sessionReorder: (sessionIds: string[]) => ipcRenderer.invoke('session:reorder', { sessionIds }),
 
   // PTY I/O
   ptyWrite: (sessionId: string, data: string) => ipcRenderer.invoke('pty:write', { sessionId, data }),

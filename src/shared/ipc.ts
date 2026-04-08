@@ -13,6 +13,7 @@ export const IpcChannels = {
   SESSION_END: 'session:end',
   SESSION_SWITCH: 'session:switch',
   SESSION_TOGGLE_NOTIFY: 'session:toggle-notify',
+  SESSION_REORDER: 'session:reorder',
   // Session state updates (push: main → renderer)
   SESSION_STATE: 'session:state',
 
@@ -74,6 +75,7 @@ import type {
   SessionConfig,
   SessionIdPayload,
   SessionRenamePayload,
+  SessionReorderPayload,
   SessionStateUpdate,
   PtyDataPayload,
   PtyWritePayload,
@@ -96,6 +98,7 @@ export interface IpcInvokeMap {
   [IpcChannels.SESSION_END]: { payload: SessionIdPayload; response: void };
   [IpcChannels.SESSION_SWITCH]: { payload: SessionIdPayload; response: Session };
   [IpcChannels.SESSION_TOGGLE_NOTIFY]: { payload: SessionIdPayload; response: Session };
+  [IpcChannels.SESSION_REORDER]: { payload: SessionReorderPayload; response: void };
   [IpcChannels.PTY_WRITE]: { payload: PtyWritePayload; response: void };
   [IpcChannels.PTY_RESIZE]: { payload: PtyResizePayload; response: void };
   [IpcChannels.SHELL_WRITE]: { payload: PtyWritePayload; response: void };
