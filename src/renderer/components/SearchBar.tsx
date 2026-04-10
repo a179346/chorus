@@ -14,6 +14,7 @@ interface SearchBarProps {
 export function SearchBar({ type, sessionId, onClose }: SearchBarProps): React.ReactElement {
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
+  const [resultIndex, setResultIndex] = useState(-1);
   const [resultCount, setResultCount] = useState(0);
 
   useEffect(() => {
@@ -23,10 +24,12 @@ export function SearchBar({ type, sessionId, onClose }: SearchBarProps): React.R
 
   useEffect(() => {
     if (query) {
-      const { resultCount: count } = terminalFindNext(type, sessionId, query);
-      setResultCount(count);
+      const result = terminalFindNext(type, sessionId, query);
+      setResultIndex(result.resultIndex);
+      setResultCount(result.resultCount);
     } else {
       terminalClearSearch(type, sessionId);
+      setResultIndex(-1);
       setResultCount(0);
     }
   }, [query, type, sessionId]);
@@ -36,15 +39,17 @@ export function SearchBar({ type, sessionId, onClose }: SearchBarProps): React.R
 
   const handleNext = useCallback(() => {
     if (queryRef.current) {
-      const { resultCount: count } = terminalFindNext(type, sessionId, queryRef.current);
-      setResultCount(count);
+      const result = terminalFindNext(type, sessionId, queryRef.current);
+      setResultIndex(result.resultIndex);
+      setResultCount(result.resultCount);
     }
   }, [type, sessionId]);
 
   const handlePrev = useCallback(() => {
     if (queryRef.current) {
-      const { resultCount: count } = terminalFindPrevious(type, sessionId, queryRef.current);
-      setResultCount(count);
+      const result = terminalFindPrevious(type, sessionId, queryRef.current);
+      setResultIndex(result.resultIndex);
+      setResultCount(result.resultCount);
     }
   }, [type, sessionId]);
 
@@ -76,7 +81,7 @@ export function SearchBar({ type, sessionId, onClose }: SearchBarProps): React.R
 
   const resultText = query
     ? resultCount > 0
-      ? `${resultCount} results`
+      ? `${resultIndex + 1} of ${resultCount}`
       : 'No results'
     : '';
 
