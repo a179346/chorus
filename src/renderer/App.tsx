@@ -5,9 +5,10 @@ import { StatusBar } from './components/StatusBar';
 import { ShellPanel } from './components/ShellPanel';
 import { SessionList } from './components/SessionList';
 import { ToolkitPanel } from './components/ToolkitPanel';
-import { TerminalView, disposeTerminal, focusTerminal, getFocusedTerminalInfo } from './components/TerminalView';
+import { TerminalView, disposeTerminal, focusTerminal, getFocusedTerminalInfo, setAllTerminalsFontFamily } from './components/TerminalView';
 import { SearchBar } from './components/SearchBar';
 import { NewSessionDialog } from './components/NewSessionDialog';
+import { PreferencesDialog } from './components/PreferencesDialog';
 
 const DEFAULT_SIDEBAR_WIDTH = 320;
 const DEFAULT_SHELL_HEIGHT = 200;
@@ -20,6 +21,8 @@ export function App(): React.ReactElement {
   const [toolkitCommands, setToolkitCommands] = useState<ToolkitCommand[]>([]);
   const [shellCollapsed, setShellCollapsed] = useState(false);
   const [showNewSession, setShowNewSession] = useState(false);
+  const [showPreferences, setShowPreferences] = useState(false);
+  const [terminalFontFamily, setTerminalFontFamily] = useState("'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace");
   const [endSessionConfirm, setEndSessionConfirm] = useState<string | null>(null);
   const [search, setSearch] = useState<{ type: 'pty' | 'shell'; sessionId: string; key: number } | null>(null);
   const searchKeyRef = useRef(0);
@@ -45,6 +48,9 @@ export function App(): React.ReactElement {
       }
       if (state.lastActiveSessionId) {
         setActiveSessionId(state.lastActiveSessionId);
+      }
+      if (state.terminalSettings?.fontFamily) {
+        setTerminalFontFamily(state.terminalSettings.fontFamily);
       }
     });
 
@@ -126,6 +132,9 @@ export function App(): React.ReactElement {
         } else {
           setSearch({ type: 'pty', sessionId: currentId, key: k });
         }
+      }),
+      window.electronAPI.onMenuPreferences(() => {
+        setShowPreferences(true);
       }),
     ];
     return () => cleanups.forEach((c) => c());
@@ -275,6 +284,16 @@ export function App(): React.ReactElement {
     []
   );
 
+  const handleSavePreferences = useCallback(
+    (settings: { fontFamily: string }) => {
+      setTerminalFontFamily(settings.fontFamily);
+      setAllTerminalsFontFamily(settings.fontFamily);
+      window.electronAPI.appSaveState({ terminalSettings: { fontFamily: settings.fontFamily } });
+      setShowPreferences(false);
+    },
+    []
+  );
+
   const handleShellToggle = useCallback(() => {
     setShellCollapsed((prev) => {
       const next = !prev;
@@ -371,12 +390,12 @@ export function App(): React.ReactElement {
           >
             {/* Claude Code terminal */}
             <div style={{ width: '100%', height: '100%', background: 'var(--bg-terminal)' }}>
-              <TerminalView sessionId={activeSessionId} type="pty" />
+              <TerminalView sessionId={activeSessionId} type="pty" fontFamily={terminalFontFamily} />
             </div>
 
             {/* Shell terminal (collapsible) */}
             <ShellPanel collapsed={shellCollapsed} onToggle={handleShellToggle}>
-              <TerminalView sessionId={activeSessionId} type="shell" visible={!shellCollapsed} />
+              <TerminalView sessionId={activeSessionId} type="shell" visible={!shellCollapsed} fontFamily={terminalFontFamily} />
             </ShellPanel>
           </SplitPane>
         </div>
@@ -418,6 +437,14 @@ export function App(): React.ReactElement {
         open={showNewSession}
         onClose={() => setShowNewSession(false)}
         onSubmit={handleNewSession}
+      />
+
+      {/* Preferences dialog */}
+      <PreferencesDialog
+        open={showPreferences}
+        fontFamily={terminalFontFamily}
+        onClose={() => setShowPreferences(false)}
+        onSave={handleSavePreferences}
       />
 
       {/* End session confirmation dialog */}

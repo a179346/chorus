@@ -6,6 +6,7 @@ import type {
   PersistedSession,
   AppState,
   NewSessionDefaults,
+  TerminalSettings,
   ToolkitCommand,
   WindowBounds,
   PanelSizes,
@@ -36,11 +37,16 @@ const DEFAULT_NEW_SESSION_DEFAULTS: NewSessionDefaults = {
   notifyOnIdle: false,
 };
 
+const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
+  fontFamily: "'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace",
+};
+
 const DEFAULT_APP_STATE: AppState = {
   windowBounds: DEFAULT_WINDOW_BOUNDS,
   panelSizes: DEFAULT_PANEL_SIZES,
   lastActiveSessionId: null,
   newSessionDefaults: DEFAULT_NEW_SESSION_DEFAULTS,
+  terminalSettings: DEFAULT_TERMINAL_SETTINGS,
 };
 
 function ensureDir(): void {

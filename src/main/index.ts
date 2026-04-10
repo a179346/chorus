@@ -324,6 +324,14 @@ function createMenu(): void {
           },
         },
         { type: "separator" },
+        {
+          label: "Preferences\u2026",
+          accelerator: "CmdOrCtrl+,",
+          click: () => {
+            mainWindow?.webContents.send(IpcChannels.MENU_PREFERENCES);
+          },
+        },
+        { type: "separator" },
         { role: "hide" },
         { role: "hideOthers" },
         { role: "unhide" },

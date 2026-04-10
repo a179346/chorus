@@ -94,4 +94,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('menu:find-previous', listener);
     return () => ipcRenderer.removeListener('menu:find-previous', listener);
   },
+  onMenuPreferences: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('menu:preferences', listener);
+    return () => ipcRenderer.removeListener('menu:preferences', listener);
+  },
 });

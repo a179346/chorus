@@ -69,6 +69,12 @@ export interface ToolkitCommand {
   icon?: string;
 }
 
+// ─── Terminal Settings ───────────────────────────────────
+
+export interface TerminalSettings {
+  fontFamily: string;
+}
+
 // ─── App State ───────────────────────────────────────────
 
 export interface AppState {
@@ -76,6 +82,7 @@ export interface AppState {
   panelSizes: PanelSizes;
   lastActiveSessionId: string | null;
   newSessionDefaults: NewSessionDefaults;
+  terminalSettings: TerminalSettings;
 }
 
 export interface WindowBounds {
