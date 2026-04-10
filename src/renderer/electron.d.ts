@@ -50,6 +50,7 @@ interface ElectronAPI {
   onMenuFind: (callback: () => void) => () => void;
   onMenuFindNext: (callback: () => void) => () => void;
   onMenuFindPrevious: (callback: () => void) => () => void;
+  onMenuPreferences: (callback: () => void) => () => void;
 }
 
 declare global {

@@ -5,10 +5,13 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 
+const DEFAULT_FONT_FAMILY = "'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace";
+
 interface TerminalViewProps {
   sessionId: string | null;
   type: 'pty' | 'shell';
   visible?: boolean;
+  fontFamily?: string;
 }
 
 interface TerminalEntry {
@@ -99,6 +102,14 @@ export function terminalClearSearch(type: 'pty' | 'shell', sessionId: string): v
   if (entry) entry.searchAddon.clearDecorations();
 }
 
+/** Update font family on all cached terminal instances. */
+export function setAllTerminalsFontFamily(fontFamily: string): void {
+  for (const entry of terminalCache.values()) {
+    entry.terminal.options.fontFamily = fontFamily;
+    try { entry.fitAddon.fit(); } catch { /* not mounted */ }
+  }
+}
+
 const XTERM_THEME = {
   background: '#0a0a14',
   foreground: '#d8d8e8',
@@ -141,13 +152,14 @@ function safeFitAndResize(
   }
 }
 
-export function TerminalView({ sessionId, type, visible = true }: TerminalViewProps): React.ReactElement {
+export function TerminalView({ sessionId, type, visible = true, fontFamily }: TerminalViewProps): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null);
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
 
   const resizeMethod = type === 'pty' ? 'ptyResize' : 'shellResize' as const;
   const writeMethod = type === 'pty' ? 'ptyWrite' : 'shellWrite' as const;
+  const resolvedFont = fontFamily || DEFAULT_FONT_FAMILY;
 
   const getOrCreateTerminal = useCallback((key: string, sid: string): TerminalEntry => {
     const existing = terminalCache.get(key);
@@ -156,7 +168,7 @@ export function TerminalView({ sessionId, type, visible = true }: TerminalViewPr
     const terminal = new Terminal({
       cursorBlink: true,
       cursorStyle: 'bar',
-      fontFamily: "'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace",
+      fontFamily: resolvedFont,
       fontSize: 13,
       lineHeight: 1,
       theme: XTERM_THEME,
@@ -183,7 +195,7 @@ export function TerminalView({ sessionId, type, visible = true }: TerminalViewPr
     const entry: TerminalEntry = { terminal, fitAddon, searchAddon, mountedIn: null, opened: false, removeDataListener };
     terminalCache.set(key, entry);
     return entry;
-  }, [type]);
+  }, [type, resolvedFont]);
 
   // Attach terminal to DOM and handle I/O
   useEffect(() => {
