@@ -3,7 +3,10 @@ import {
   terminalFindNext,
   terminalFindPrevious,
   terminalClearSearch,
+  getFocusedTerminalInfo,
 } from './TerminalView';
+
+let activeSearchType: 'pty' | 'shell' | null = null;
 
 interface SearchBarProps {
   type: 'pty' | 'shell';
@@ -18,9 +21,11 @@ export function SearchBar({ type, sessionId, onClose }: SearchBarProps): React.R
   const [resultCount, setResultCount] = useState(0);
 
   useEffect(() => {
+    activeSearchType = type;
     inputRef.current?.focus();
     inputRef.current?.select();
-  }, []);
+    return () => { if (activeSearchType === type) activeSearchType = null; };
+  }, [type]);
 
   useEffect(() => {
     if (query) {
@@ -54,12 +59,18 @@ export function SearchBar({ type, sessionId, onClose }: SearchBarProps): React.R
   }, [type, sessionId]);
 
   useEffect(() => {
+    const isOwner = () => {
+      const focused = getFocusedTerminalInfo();
+      return focused ? focused.type === type : activeSearchType === type;
+    };
+    const guardedNext = () => { if (isOwner()) handleNext(); };
+    const guardedPrev = () => { if (isOwner()) handlePrev(); };
     const cleanups = [
-      window.electronAPI.onMenuFindNext(handleNext),
-      window.electronAPI.onMenuFindPrevious(handlePrev),
+      window.electronAPI.onMenuFindNext(guardedNext),
+      window.electronAPI.onMenuFindPrevious(guardedPrev),
     ];
     return () => cleanups.forEach((c) => c());
-  }, [handleNext, handlePrev]);
+  }, [handleNext, handlePrev, type]);
 
   const handleClose = useCallback(() => {
     terminalClearSearch(type, sessionId);
@@ -93,6 +104,7 @@ export function SearchBar({ type, sessionId, onClose }: SearchBarProps): React.R
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => { activeSearchType = type; }}
           onKeyDown={handleKeyDown}
           placeholder="Search..."
           style={inputStyle}
@@ -122,7 +134,7 @@ export function SearchBar({ type, sessionId, onClose }: SearchBarProps): React.R
 
 const containerStyle: React.CSSProperties = {
   position: 'absolute',
-  top: 'calc(var(--status-bar-height) + 8px)',
+  top: 8,
   right: 16,
   zIndex: 100,
   animation: 'slideDown 120ms ease',
