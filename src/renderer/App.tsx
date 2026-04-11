@@ -9,6 +9,8 @@ import { TerminalView, disposeTerminal, focusTerminal, getFocusedTerminalInfo, s
 import { SearchBar } from './components/SearchBar';
 import { NewSessionDialog } from './components/NewSessionDialog';
 import { PreferencesDialog } from './components/PreferencesDialog';
+import { applyThemeCss, getTheme, DEFAULT_THEME_ID } from './themes';
+import { setTerminalTheme } from './components/TerminalView';
 
 const DEFAULT_SIDEBAR_WIDTH = 320;
 const DEFAULT_SHELL_HEIGHT = 200;
@@ -24,6 +26,7 @@ export function App(): React.ReactElement {
   const [showPreferences, setShowPreferences] = useState(false);
   const [terminalFontFamily, setTerminalFontFamily] = useState("'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace");
   const [endSessionConfirm, setEndSessionConfirm] = useState<string | null>(null);
+  const [currentTheme, setCurrentTheme] = useState(DEFAULT_THEME_ID);
   const [ptySearch, setPtySearch] = useState<{ sessionId: string; key: number } | null>(null);
   const [shellSearch, setShellSearch] = useState<{ sessionId: string; key: number } | null>(null);
   const searchKeyRef = useRef(0);
@@ -52,6 +55,13 @@ export function App(): React.ReactElement {
       }
       if (state.terminalSettings?.fontFamily) {
         setTerminalFontFamily(state.terminalSettings.fontFamily);
+      }
+      if (state.terminalSettings?.theme) {
+        const tid = state.terminalSettings.theme;
+        setCurrentTheme(tid);
+        applyThemeCss(tid);
+        const t = getTheme(tid);
+        setTerminalTheme(t.xtermTheme, t.searchDecorations);
       }
     });
 
@@ -286,14 +296,22 @@ export function App(): React.ReactElement {
     []
   );
 
+  const handlePreviewTheme = useCallback((themeId: string) => {
+    applyThemeCss(themeId);
+    const t = getTheme(themeId);
+    setTerminalTheme(t.xtermTheme, t.searchDecorations);
+  }, []);
+
   const handleSavePreferences = useCallback(
-    (settings: { fontFamily: string }) => {
+    (settings: { fontFamily: string; theme: string }) => {
       setTerminalFontFamily(settings.fontFamily);
       setAllTerminalsFontFamily(settings.fontFamily);
-      window.electronAPI.appSaveState({ terminalSettings: { fontFamily: settings.fontFamily } });
+      setCurrentTheme(settings.theme);
+      handlePreviewTheme(settings.theme);
+      window.electronAPI.appSaveState({ terminalSettings: { fontFamily: settings.fontFamily, theme: settings.theme } });
       setShowPreferences(false);
     },
-    []
+    [handlePreviewTheme]
   );
 
   const handleShellToggle = useCallback(() => {
@@ -335,7 +353,7 @@ export function App(): React.ReactElement {
       <style>{`
         @keyframes statusPulse {
           0%, 100% { opacity: 1; }
-          50% { opacity: 0.4; }
+          50% { opacity: 0.35; }
         }
         @keyframes fadeIn {
           from { opacity: 0; }
@@ -454,8 +472,10 @@ export function App(): React.ReactElement {
       <PreferencesDialog
         open={showPreferences}
         fontFamily={terminalFontFamily}
+        theme={currentTheme}
         onClose={() => setShowPreferences(false)}
         onSave={handleSavePreferences}
+        onPreviewTheme={handlePreviewTheme}
       />
 
       {/* End session confirmation dialog */}
@@ -517,7 +537,7 @@ function EndSessionConfirmDialog({
 const confirmOverlayStyle: React.CSSProperties = {
   position: 'fixed',
   inset: 0,
-  background: 'rgba(0, 0, 0, 0.6)',
+  background: 'rgba(var(--shade-rgb), 0.6)',
   backdropFilter: 'blur(4px)',
   display: 'flex',
   alignItems: 'center',

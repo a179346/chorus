@@ -22,7 +22,7 @@ export function ShellPanel({ collapsed, onToggle, children }: ShellPanelProps): 
         >
           ▼
         </span>
-        <span style={{ color: 'var(--text-secondary)', fontWeight: 500, fontSize: 10, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+        <span style={{ color: 'var(--text-dimmed)', fontWeight: 600, fontSize: 11, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
           Shell
         </span>
       </div>
@@ -39,9 +39,9 @@ const headerStyle: React.CSSProperties = {
   height: 'var(--shell-collapsed-height)',
   display: 'flex',
   alignItems: 'center',
-  padding: '0 10px',
+  padding: '0 12px',
   background: 'var(--bg-surface)',
-  borderTop: '1px solid var(--border-subtle)',
+  borderTop: '1px solid rgba(var(--tint-rgb), 0.08)',
   cursor: 'pointer',
   flexShrink: 0,
   userSelect: 'none',

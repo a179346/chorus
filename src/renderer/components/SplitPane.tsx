@@ -97,7 +97,7 @@ export function SplitPane({
     ...(isHorizontal
       ? { width: 'var(--divider-size)', cursor: collapsed ? 'default' : 'col-resize' }
       : { height: 'var(--divider-size)', cursor: collapsed ? 'default' : 'row-resize' }),
-    background: 'var(--border-subtle)',
+    background: 'rgba(var(--tint-rgb), 0.08)',
     zIndex: 2,
   };
 

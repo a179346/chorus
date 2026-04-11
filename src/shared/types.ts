@@ -73,6 +73,7 @@ export interface ToolkitCommand {
 
 export interface TerminalSettings {
   fontFamily: string;
+  theme: string;
 }
 
 // ─── App State ───────────────────────────────────────────
