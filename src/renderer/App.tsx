@@ -24,7 +24,8 @@ export function App(): React.ReactElement {
   const [showPreferences, setShowPreferences] = useState(false);
   const [terminalFontFamily, setTerminalFontFamily] = useState("'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace");
   const [endSessionConfirm, setEndSessionConfirm] = useState<string | null>(null);
-  const [search, setSearch] = useState<{ type: 'pty' | 'shell'; sessionId: string; key: number } | null>(null);
+  const [ptySearch, setPtySearch] = useState<{ sessionId: string; key: number } | null>(null);
+  const [shellSearch, setShellSearch] = useState<{ sessionId: string; key: number } | null>(null);
   const searchKeyRef = useRef(0);
 
   // Panel sizes
@@ -127,10 +128,10 @@ export function App(): React.ReactElement {
         if (!currentId) return;
         const k = ++searchKeyRef.current;
         const focused = getFocusedTerminalInfo();
-        if (focused && focused.sessionId === currentId) {
-          setSearch({ type: focused.type, sessionId: focused.sessionId, key: k });
+        if (focused && focused.sessionId === currentId && focused.type === 'shell') {
+          setShellSearch({ sessionId: focused.sessionId, key: k });
         } else {
-          setSearch({ type: 'pty', sessionId: currentId, key: k });
+          setPtySearch({ sessionId: currentId, key: k });
         }
       }),
       window.electronAPI.onMenuPreferences(() => {
@@ -162,7 +163,8 @@ export function App(): React.ReactElement {
   const handleSelectSession = useCallback(
     (id: string) => {
       setActiveSessionId(id);
-      setSearch(null);
+      setPtySearch(null);
+      setShellSearch(null);
       window.electronAPI.sessionSwitch(id);
       window.electronAPI.appSaveState({ lastActiveSessionId: id });
     },
@@ -368,15 +370,6 @@ export function App(): React.ReactElement {
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', position: 'relative' }}>
           <StatusBar session={activeSession} />
 
-          {search && (
-            <SearchBar
-              key={search.key}
-              type={search.type}
-              sessionId={search.sessionId}
-              onClose={() => setSearch(null)}
-            />
-          )}
-
           <SplitPane
             direction="vertical"
             initialSize={shellCollapsed ? 28 : shellHeight}
@@ -389,13 +382,31 @@ export function App(): React.ReactElement {
             collapsedSize={28}
           >
             {/* Claude Code terminal */}
-            <div style={{ width: '100%', height: '100%', background: 'var(--bg-terminal)' }}>
+            <div style={{ width: '100%', height: '100%', background: 'var(--bg-terminal)', position: 'relative' }}>
+              {ptySearch && (
+                <SearchBar
+                  key={ptySearch.key}
+                  type="pty"
+                  sessionId={ptySearch.sessionId}
+                  onClose={() => setPtySearch(null)}
+                />
+              )}
               <TerminalView sessionId={activeSessionId} type="pty" fontFamily={terminalFontFamily} />
             </div>
 
             {/* Shell terminal (collapsible) */}
             <ShellPanel collapsed={shellCollapsed} onToggle={handleShellToggle}>
-              <TerminalView sessionId={activeSessionId} type="shell" visible={!shellCollapsed} fontFamily={terminalFontFamily} />
+              <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+                {shellSearch && (
+                  <SearchBar
+                    key={shellSearch.key}
+                    type="shell"
+                    sessionId={shellSearch.sessionId}
+                    onClose={() => setShellSearch(null)}
+                  />
+                )}
+                <TerminalView sessionId={activeSessionId} type="shell" visible={!shellCollapsed} fontFamily={terminalFontFamily} />
+              </div>
             </ShellPanel>
           </SplitPane>
         </div>

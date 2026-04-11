@@ -14,10 +14,16 @@ interface TerminalViewProps {
   fontFamily?: string;
 }
 
+interface SearchResult {
+  resultIndex: number;
+  resultCount: number;
+}
+
 interface TerminalEntry {
   terminal: Terminal;
   fitAddon: FitAddon;
   searchAddon: SearchAddon;
+  searchResult: SearchResult;
   mountedIn: HTMLElement | null;
   opened: boolean;
   removeDataListener: (() => void) | null;
@@ -61,39 +67,29 @@ export function getFocusedTerminalInfo(): { type: 'pty' | 'shell'; sessionId: st
 
 // ─── Search Functions ───────────────────────────────────
 
-function getBufferText(terminal: Terminal): string {
-  const buf = terminal.buffer.active;
-  const lines: string[] = [];
-  for (let i = 0; i < buf.length; i++) {
-    const line = buf.getLine(i);
-    if (line) lines.push(line.translateToString(true));
-  }
-  return lines.join('\n');
-}
+const SEARCH_DECORATIONS = {
+  matchBackground: '#3c4d6e',
+  matchBorder: 'transparent',
+  matchOverviewRuler: '#5a7fbf',
+  activeMatchBackground: '#5a9bcf',
+  activeMatchBorder: '#7ec4ef',
+  activeMatchColorOverviewRuler: '#7ec4ef',
+};
 
-function countMatches(text: string, term: string): number {
-  if (!term) return 0;
-  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const matches = text.match(new RegExp(escaped, 'gi'));
-  return matches ? matches.length : 0;
-}
-
-export function terminalFindNext(type: 'pty' | 'shell', sessionId: string, term: string): { found: boolean; resultCount: number } {
+export function terminalFindNext(type: 'pty' | 'shell', sessionId: string, term: string): SearchResult {
   const key = getTerminalKey(type, sessionId);
   const entry = terminalCache.get(key);
-  if (!entry) return { found: false, resultCount: 0 };
-  const found = entry.searchAddon.findNext(term);
-  const resultCount = countMatches(getBufferText(entry.terminal), term);
-  return { found, resultCount };
+  if (!entry) return { resultIndex: -1, resultCount: 0 };
+  entry.searchAddon.findNext(term, { decorations: SEARCH_DECORATIONS });
+  return { ...entry.searchResult };
 }
 
-export function terminalFindPrevious(type: 'pty' | 'shell', sessionId: string, term: string): { found: boolean; resultCount: number } {
+export function terminalFindPrevious(type: 'pty' | 'shell', sessionId: string, term: string): SearchResult {
   const key = getTerminalKey(type, sessionId);
   const entry = terminalCache.get(key);
-  if (!entry) return { found: false, resultCount: 0 };
-  const found = entry.searchAddon.findPrevious(term);
-  const resultCount = countMatches(getBufferText(entry.terminal), term);
-  return { found, resultCount };
+  if (!entry) return { resultIndex: -1, resultCount: 0 };
+  entry.searchAddon.findPrevious(term, { decorations: SEARCH_DECORATIONS });
+  return { ...entry.searchResult };
 }
 
 export function terminalClearSearch(type: 'pty' | 'shell', sessionId: string): void {
@@ -166,6 +162,7 @@ export function TerminalView({ sessionId, type, visible = true, fontFamily }: Te
     if (existing) return existing;
 
     const terminal = new Terminal({
+      allowProposedApi: true,
       cursorBlink: true,
       cursorStyle: 'bar',
       fontFamily: resolvedFont,
@@ -184,6 +181,12 @@ export function TerminalView({ sessionId, type, visible = true, fontFamily }: Te
     const searchAddon = new SearchAddon();
     terminal.loadAddon(searchAddon);
 
+    const searchResult: SearchResult = { resultIndex: -1, resultCount: 0 };
+    searchAddon.onDidChangeResults((e) => {
+      searchResult.resultIndex = e.resultIndex;
+      searchResult.resultCount = e.resultCount;
+    });
+
     // Register data listener at creation time so background sessions keep receiving output
     const listenerMethod = type === 'pty' ? 'onPtyData' : 'onShellData';
     const removeDataListener = window.electronAPI[listenerMethod]((payload) => {
@@ -192,7 +195,7 @@ export function TerminalView({ sessionId, type, visible = true, fontFamily }: Te
       }
     });
 
-    const entry: TerminalEntry = { terminal, fitAddon, searchAddon, mountedIn: null, opened: false, removeDataListener };
+    const entry: TerminalEntry = { terminal, fitAddon, searchAddon, searchResult, mountedIn: null, opened: false, removeDataListener };
     terminalCache.set(key, entry);
     return entry;
   }, [type, resolvedFont]);
