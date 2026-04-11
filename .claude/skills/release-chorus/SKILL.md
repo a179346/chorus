@@ -20,8 +20,8 @@ The version bump is determined automatically by scanning merged PR labels since 
 1. Read `package.json` to get the current version. The previous release tag is `v<current-version>` (e.g. if version is `0.1.0`, the previous tag is `v0.1.0`).
 2. Check if that tag exists: `git rev-parse v<current-version> 2>/dev/null`. If it doesn't exist, this is the first release — use all merged PRs.
 3. Find the commit date of the previous tag to scope the PR query: `git log -1 --format=%aI v<current-version>`
-4. List merged PRs since the previous release using `gh pr list --state merged --search "merged:>YYYY-MM-DD" --json number,labels --limit 100`. If first release, omit the date filter and fetch all merged PRs.
-4. Scan the labels on each PR and determine the bump level using **highest wins**:
+4. List merged PRs since the previous release using `gh pr list --state merged --search "merged:>YYYY-MM-DD" --json number,title,labels --limit 100`. If first release, omit the date filter and fetch all merged PRs. **Save this PR list — it will be reused in Step 4 for release notes.**
+5. Scan the labels on each PR and determine the bump level using **highest wins**:
 
    | PR Label   | Bump Level |
    |------------|------------|
@@ -36,8 +36,8 @@ The version bump is determined automatically by scanning merged PR labels since 
 
    Precedence: major > minor > patch. If any PR has `major`, it's a major bump. Otherwise if any has `minor` or `feature`, it's minor. Everything else is patch.
 
-5. If no merged PRs are found (or none have labels), default to **patch**.
-6. Show the user the detected bump level and the PRs that determined it, then proceed.
+6. If no merged PRs are found (or none have labels), default to **patch**.
+7. Show the user the detected bump level and the PRs that determined it, then proceed.
 
 ## Step 2: Bump Version
 
@@ -61,10 +61,8 @@ The version bump is determined automatically by scanning merged PR labels since 
 
 ## Step 4: Generate Release Notes
 
-1. The previous release tag is `v<old-version>` (the version from `package.json` before bumping in Step 2).
-2. **If the tag exists** (subsequent release): find its date with `git log -1 --format=%aI v<old-version>`, then list merged PRs since then: `gh pr list --state merged --search "merged:>YYYY-MM-DD" --json number,title,labels --limit 100`
-3. **If no tag exists** (first release): skip PR lookup. Instead, read the source code under `src/` to understand what the app does, then write a high-level summary of the initial feature set as the release notes. Focus on user-facing capabilities, not implementation details.
-4. For subsequent releases, write release notes in Markdown, grouping PRs by label into the following sections (omit empty sections):
+1. **If first release** (no previous tag existed in Step 1): skip PR lookup. Instead, read the source code under `src/` to understand what the app does, then write a high-level summary of the initial feature set as the release notes. Focus on user-facing capabilities, not implementation details.
+2. **For subsequent releases**: reuse the PR list already fetched in Step 1. Write release notes in Markdown, grouping PRs by label into the following sections (omit empty sections):
 
 ```markdown
 ## Feature
