@@ -48,7 +48,6 @@ The version bump is determined automatically by scanning merged PR labels since 
    - `major`: 0.1.0 → 1.0.0
 3. Update the `version` field in `package.json`.
 4. Commit with message: `chore: bump version to <new-version>`
-5. Push the commit: `git push`
 
 ## Step 3: Build Artifacts
 
@@ -58,6 +57,7 @@ The version bump is determined automatically by scanning merged PR labels since 
    - DMG: `out/make/*.dmg`
    - ZIP: `out/make/zip/darwin/arm64/*.zip` (or similar arch path)
 4. Verify both files exist. If either is missing, report the error and stop.
+5. Push the version bump commit: `git push`. This ensures we only push after a successful build.
 
 ## Step 4: Generate Release Notes
 
@@ -101,4 +101,4 @@ Use a heredoc for `--notes` if the notes are multiline. After creation, report t
 
 - If `npm run make` fails, show the error output and stop. Do not create a GitHub release with missing artifacts.
 - If `gh release create` fails (e.g., not authenticated), tell the user to run `gh auth login` first.
-- If the git push fails (e.g., no remote, auth issue), stop and report — don't continue to build.
+- If the git push fails (e.g., no remote, auth issue), stop and report — don't create a GitHub release without the commit pushed.
