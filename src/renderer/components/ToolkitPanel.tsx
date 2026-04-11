@@ -122,7 +122,7 @@ export function ToolkitPanel({ commands, onExecute, onAdd, onUpdate, onDelete }:
     <div style={containerStyle}>
       {/* Header */}
       <div style={headerStyle}>
-        <span style={{ fontWeight: 600, fontSize: 10, letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>
+        <span style={{ fontWeight: 600, fontSize: 11, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-dimmed)' }}>
           Toolkit
         </span>
         <button
@@ -357,7 +357,7 @@ function CommandFormDialog({ initial, onSubmit, onClose }: CommandFormDialogProp
                     height: 30,
                     borderRadius: 'var(--radius-sm)',
                     border: `1px solid ${icon === opt.value ? 'var(--accent-blue)' : 'var(--border-default)'}`,
-                    background: icon === opt.value ? 'rgba(74, 158, 255, 0.1)' : 'var(--bg-surface)',
+                    background: icon === opt.value ? 'rgba(var(--accent-rgb), 0.12)' : 'var(--bg-surface)',
                     color: icon === opt.value ? 'var(--accent-blue)' : 'var(--text-secondary)',
                     display: 'flex',
                     alignItems: 'center',
@@ -445,21 +445,20 @@ const containerStyle: React.CSSProperties = {
 const headerStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
-  padding: '8px 12px',
-  borderBottom: '1px solid var(--border-subtle)',
+  padding: '8px 14px',
   borderTop: '1px solid var(--border-subtle)',
   flexShrink: 0,
 };
 
 const addButtonStyle: React.CSSProperties = {
   marginLeft: 'auto',
-  width: 20,
-  height: 20,
+  width: 22,
+  height: 22,
   borderRadius: 'var(--radius-sm)',
-  border: '1px solid var(--border-default)',
-  background: 'var(--bg-surface)',
+  border: 'none',
+  background: 'var(--bg-hover)',
   color: 'var(--text-secondary)',
-  fontSize: 14,
+  fontSize: 15,
   lineHeight: 1,
   display: 'flex',
   alignItems: 'center',
@@ -482,10 +481,10 @@ const buttonStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  padding: '6px 8px',
+  padding: '7px 10px',
   borderRadius: 'var(--radius-md)',
   border: '1px solid var(--border-subtle)',
-  fontSize: 10,
+  fontSize: 11,
   fontWeight: 500,
   fontFamily: 'var(--font-ui)',
   color: 'var(--text-secondary)',
@@ -541,7 +540,7 @@ const ctxMenuDividerStyle: React.CSSProperties = {
 const overlayStyle: React.CSSProperties = {
   position: 'fixed',
   inset: 0,
-  background: 'rgba(0, 0, 0, 0.6)',
+  background: 'rgba(var(--shade-rgb), 0.6)',
   backdropFilter: 'blur(4px)',
   display: 'flex',
   alignItems: 'center',
@@ -611,8 +610,8 @@ const submitBtnStyle: React.CSSProperties = {
   borderRadius: 'var(--radius-md)',
   fontSize: 11,
   fontWeight: 600,
-  color: '#fff',
-  background: 'var(--accent-blue)',
+  color: 'var(--btn-primary-text)',
+  background: 'var(--accent-primary)',
   border: 'none',
   cursor: 'pointer',
   fontFamily: 'var(--font-ui)',

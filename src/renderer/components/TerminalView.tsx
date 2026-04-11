@@ -4,6 +4,8 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
+import { getTheme, DEFAULT_THEME_ID } from '../themes';
+import type { XtermColors, SearchDecorations } from '../themes';
 
 const DEFAULT_FONT_FAMILY = "'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace";
 
@@ -35,6 +37,22 @@ function getTerminalKey(type: string, sessionId: string): string {
   return `${type}:${sessionId}`;
 }
 
+// ─── Dynamic Theme State ───────────────────────────────────
+
+let currentXtermTheme: XtermColors = getTheme(DEFAULT_THEME_ID).xtermTheme;
+let currentSearchDecorations: SearchDecorations = getTheme(DEFAULT_THEME_ID).searchDecorations;
+
+/** Update the xterm theme on all cached terminal instances. */
+export function setTerminalTheme(xtermTheme: XtermColors, searchDecorations: SearchDecorations): void {
+  currentXtermTheme = xtermTheme;
+  currentSearchDecorations = searchDecorations;
+  for (const entry of terminalCache.values()) {
+    entry.terminal.options.theme = xtermTheme;
+  }
+}
+
+// ─── Public API ────────────────────────────────────────────
+
 /** Focus a cached terminal instance. */
 export function focusTerminal(type: 'pty' | 'shell', sessionId: string): void {
   const key = getTerminalKey(type, sessionId);
@@ -56,6 +74,7 @@ export function disposeTerminal(type: 'pty' | 'shell', sessionId: string): void 
 }
 
 // ─── Focus Tracking ─────────────────────────────────────
+
 let focusedTerminalKey: string | null = null;
 
 export function getFocusedTerminalInfo(): { type: 'pty' | 'shell'; sessionId: string } | null {
@@ -67,20 +86,11 @@ export function getFocusedTerminalInfo(): { type: 'pty' | 'shell'; sessionId: st
 
 // ─── Search Functions ───────────────────────────────────
 
-const SEARCH_DECORATIONS = {
-  matchBackground: '#3c4d6e',
-  matchBorder: 'transparent',
-  matchOverviewRuler: '#5a7fbf',
-  activeMatchBackground: '#5a9bcf',
-  activeMatchBorder: '#7ec4ef',
-  activeMatchColorOverviewRuler: '#7ec4ef',
-};
-
 export function terminalFindNext(type: 'pty' | 'shell', sessionId: string, term: string): SearchResult {
   const key = getTerminalKey(type, sessionId);
   const entry = terminalCache.get(key);
   if (!entry) return { resultIndex: -1, resultCount: 0 };
-  entry.searchAddon.findNext(term, { decorations: SEARCH_DECORATIONS });
+  entry.searchAddon.findNext(term, { decorations: currentSearchDecorations });
   return { ...entry.searchResult };
 }
 
@@ -88,7 +98,7 @@ export function terminalFindPrevious(type: 'pty' | 'shell', sessionId: string, t
   const key = getTerminalKey(type, sessionId);
   const entry = terminalCache.get(key);
   if (!entry) return { resultIndex: -1, resultCount: 0 };
-  entry.searchAddon.findPrevious(term, { decorations: SEARCH_DECORATIONS });
+  entry.searchAddon.findPrevious(term, { decorations: currentSearchDecorations });
   return { ...entry.searchResult };
 }
 
@@ -105,31 +115,6 @@ export function setAllTerminalsFontFamily(fontFamily: string): void {
     try { entry.fitAddon.fit(); } catch { /* not mounted */ }
   }
 }
-
-const XTERM_THEME = {
-  background: '#0a0a14',
-  foreground: '#d8d8e8',
-  cursor: '#4a9eff',
-  cursorAccent: '#0a0a14',
-  selectionBackground: 'rgba(74, 158, 255, 0.3)',
-  selectionForeground: '#ffffff',
-  black: '#1a1a2e',
-  red: '#f87171',
-  green: '#4ade80',
-  yellow: '#facc15',
-  blue: '#60a5fa',
-  magenta: '#c084fc',
-  cyan: '#22d3ee',
-  white: '#e0e0e0',
-  brightBlack: '#4a4a6a',
-  brightRed: '#fca5a5',
-  brightGreen: '#86efac',
-  brightYellow: '#fde68a',
-  brightBlue: '#93c5fd',
-  brightMagenta: '#d8b4fe',
-  brightCyan: '#67e8f9',
-  brightWhite: '#ffffff',
-} as const;
 
 function safeFitAndResize(
   fitAddon: FitAddon,
@@ -168,7 +153,7 @@ export function TerminalView({ sessionId, type, visible = true, fontFamily }: Te
       fontFamily: resolvedFont,
       fontSize: 13,
       lineHeight: 1,
-      theme: XTERM_THEME,
+      theme: currentXtermTheme,
       allowTransparency: false,
       scrollback: 10000,
     });
@@ -328,7 +313,7 @@ export function TerminalView({ sessionId, type, visible = true, fontFamily }: Te
       style={{
         width: '100%',
         height: '100%',
-        background: '#0a0a14',
+        background: 'var(--bg-terminal)',
         display: visible ? 'block' : 'none',
       }}
     />

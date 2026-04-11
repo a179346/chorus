@@ -66,7 +66,7 @@ export function StatusBar({ session }: StatusBarProps): React.ReactElement {
 
       {/* Center — Name + CWD + tags */}
       <div style={centerStyle}>
-        <span style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>
+        <span style={{ fontWeight: 600, fontSize: 12, color: 'var(--text-primary)', whiteSpace: 'nowrap' }}>
           {session.name}
         </span>
         <span style={{ color: 'var(--text-dimmed)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -106,7 +106,7 @@ export function StatusBar({ session }: StatusBarProps): React.ReactElement {
                       ? 'var(--accent-red)'
                       : session.contextUsage > 50
                         ? 'var(--accent-yellow)'
-                        : 'var(--accent-blue)',
+                        : 'var(--accent-primary)',
                 }}
               />
             </div>
@@ -123,15 +123,18 @@ export function StatusBar({ session }: StatusBarProps): React.ReactElement {
 const barStyle: React.CSSProperties = {
   height: 'var(--status-bar-height)',
   background: 'var(--bg-status-bar)',
-  borderBottom: '1px solid var(--border-subtle)',
+  borderBottom: '1px solid rgba(var(--tint-rgb), 0.08)',
+  boxShadow: '0 1px 8px rgba(var(--shade-rgb), 0.2)',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
-  padding: '0 12px 0 78px',
+  padding: '0 14px 0 78px',
   gap: 16,
   fontFamily: 'var(--font-ui)',
   fontSize: 11,
   flexShrink: 0,
+  zIndex: 1,
+  position: 'relative',
   // @ts-expect-error Electron-specific
   WebkitAppRegion: 'drag',
 };
@@ -156,10 +159,10 @@ const centerStyle: React.CSSProperties = {
 const tagStyle: React.CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
-  background: 'var(--bg-active)',
+  background: 'rgba(var(--tint-rgb), 0.07)',
   borderRadius: 'var(--radius-sm)',
-  padding: '1px 6px',
-  fontSize: 10,
+  padding: '2px 7px',
+  fontSize: 11,
   color: 'var(--text-secondary)',
   whiteSpace: 'nowrap',
   // @ts-expect-error Electron-specific
@@ -169,7 +172,7 @@ const tagStyle: React.CSSProperties = {
 const contextBarTrackStyle: React.CSSProperties = {
   width: 48,
   height: 4,
-  background: 'var(--bg-active)',
+  background: 'rgba(var(--tint-rgb), 0.08)',
   borderRadius: 2,
   overflow: 'hidden',
 };

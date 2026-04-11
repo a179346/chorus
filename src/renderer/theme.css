@@ -1,57 +1,59 @@
-/* ─── Chorus Dark Theme ──────────────────────────────── */
+/* ─── Chorus — Obsidian Theme ────────────────────────── */
 
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 :root {
-  /* Backgrounds */
-  --bg-terminal: #0a0a14;
-  --bg-panel: #10101e;
-  --bg-surface: #14142a;
-  --bg-elevated: #1a1a32;
-  --bg-status-bar: #16162e;
-  --bg-hover: #1e1e3a;
-  --bg-active: #22224a;
+  /* Backgrounds — espresso */
+  --bg-terminal: #15120a;
+  --bg-panel: #1f1910;
+  --bg-surface: #282014;
+  --bg-elevated: #302618;
+  --bg-status-bar: #1f1910;
+  --bg-hover: #2d2314;
+  --bg-active: #382c1c;
 
-  /* Text */
-  --text-primary: #d8d8e8;
-  --text-secondary: #8888aa;
-  --text-dimmed: #5c5c7a;
-  --text-accent: #4a9eff;
+  /* Text — parchment */
+  --text-primary: #efe8d8;
+  --text-secondary: #a69880;
+  --text-dimmed: #706048;
+  --text-accent: #D4A06A;
 
   /* Accents */
-  --accent-blue: #4a9eff;
-  --accent-orange: #ff6b35;
-  --accent-green: #4ade80;
-  --accent-yellow: #facc15;
-  --accent-red: #f87171;
+  --accent-primary: #D4A06A;
+  --accent-blue: #D4A06A;
+  --accent-info: #7da8d8;
+  --accent-orange: #D4A06A;
+  --accent-green: #5ec9a0;
+  --accent-yellow: #fbbf24;
+  --accent-red: #ef4444;
 
-  /* Borders */
-  --border-subtle: #1e1e38;
-  --border-default: #2a2a4a;
-  --border-active: #4a9eff;
+  /* Borders — warm, nearly invisible */
+  --border-subtle: rgba(212, 190, 160, 0.06);
+  --border-default: rgba(212, 190, 160, 0.10);
+  --border-active: #D4A06A;
 
   /* Status */
-  --status-idle: #4ade80;
-  --status-thinking: #facc15;
-  --status-generating: #60a5fa;
+  --status-idle: #5ec9a0;
+  --status-thinking: #fbbf24;
+  --status-generating: #7da8d8;
   --status-creating: #a78bfa;
-  --status-error: #f87171;
-  --status-ended: #6b7280;
+  --status-error: #ef4444;
+  --status-ended: #706048;
 
-  /* Shadows */
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+  /* Shadows — warm-tinted */
+  --shadow-sm: 0 1px 2px rgba(10, 6, 0, 0.3);
+  --shadow-md: 0 4px 16px rgba(10, 6, 0, 0.4);
+  --shadow-lg: 0 12px 40px rgba(10, 6, 0, 0.55);
 
   /* Sizing */
-  --status-bar-height: 36px;
-  --shell-collapsed-height: 28px;
+  --status-bar-height: 38px;
+  --shell-collapsed-height: 30px;
   --divider-size: 1px;
   --divider-hit-area: 6px;
 
   /* Typography */
-  --font-mono: 'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace;
-  --font-ui: 'IBM Plex Mono', 'SF Mono', monospace;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  --font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
 
   /* Transitions */
   --transition-fast: 120ms ease;
@@ -59,9 +61,15 @@
   --transition-slow: 300ms ease-out;
 
   /* Radius */
-  --radius-sm: 3px;
-  --radius-md: 5px;
-  --radius-lg: 8px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  /* Theme composition — used by components for rgba() tinting */
+  --tint-rgb: 212, 190, 160;
+  --shade-rgb: 10, 6, 0;
+  --accent-rgb: 212, 160, 106;
+  --btn-primary-text: #1a1408;
 }
 
 /* ─── Scrollbar ──────────────────────────────────────── */
@@ -76,18 +84,18 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border-default);
+  background: rgba(var(--tint-rgb), 0.10);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-dimmed);
+  background: rgba(var(--tint-rgb), 0.18);
 }
 
 /* ─── Selection ──────────────────────────────────────── */
 
 ::selection {
-  background: rgba(74, 158, 255, 0.3);
+  background: rgba(var(--accent-rgb), 0.2);
   color: var(--text-primary);
 }
 

@@ -335,7 +335,8 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
       style={{
         ...cardStyle,
         background: isActive ? 'var(--bg-active)' : hovered ? 'var(--bg-hover)' : 'transparent',
-        borderLeft: isActive ? '2px solid var(--accent-blue)' : '2px solid transparent',
+        borderLeft: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent',
+        boxShadow: isActive ? 'inset 0 0 0 1px rgba(var(--accent-rgb), 0.08)' : undefined,
       }}
       onClick={isEditing ? undefined : onClick}
       onContextMenu={(e) => {
@@ -391,9 +392,9 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
               />
             ) : null}
             <span style={{
-              fontWeight: session.unread ? 700 : 500,
-              fontSize: 11,
-              color: session.unread ? 'var(--text-primary)' : 'var(--text-secondary)',
+              fontWeight: session.unread ? 600 : 500,
+              fontSize: 12,
+              color: session.unread ? 'var(--text-primary)' : 'var(--text-primary)',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
@@ -468,7 +469,7 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
         )}
         {session.contextUsage != null && (
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 3 }}>
-            <div style={{ width: 32, height: 3, background: 'var(--bg-terminal)', borderRadius: 2, overflow: 'hidden' }}>
+            <div style={{ width: 36, height: 3, background: 'rgba(var(--tint-rgb), 0.08)', borderRadius: 2, overflow: 'hidden' }}>
               <div
                 style={{
                   width: `${Math.min(100, session.contextUsage)}%`,
@@ -479,7 +480,7 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
                       ? 'var(--accent-red)'
                       : session.contextUsage > 50
                         ? 'var(--accent-yellow)'
-                        : 'var(--accent-blue)',
+                        : 'var(--accent-primary)',
                   transition: 'width var(--transition-normal)',
                 }}
               />
@@ -559,20 +560,20 @@ const headerBarStyle: React.CSSProperties = {
   alignItems: 'center',
   justifyContent: 'space-between',
   height: 'var(--status-bar-height)',
-  padding: '0 10px 0 14px',
+  padding: '0 12px 0 16px',
   borderBottom: '1px solid var(--border-subtle)',
   flexShrink: 0,
 };
 
 const newSessionButtonStyle: React.CSSProperties = {
   marginLeft: 'auto',
-  width: 20,
-  height: 20,
+  width: 22,
+  height: 22,
   borderRadius: 'var(--radius-sm)',
-  border: '1px solid var(--border-default)',
-  background: 'var(--bg-surface)',
+  border: 'none',
+  background: 'var(--bg-hover)',
   color: 'var(--text-secondary)',
-  fontSize: 14,
+  fontSize: 15,
   lineHeight: 1,
   display: 'flex',
   alignItems: 'center',
@@ -582,10 +583,10 @@ const newSessionButtonStyle: React.CSSProperties = {
 };
 
 const headerTitleStyle: React.CSSProperties = {
-  fontSize: 10,
+  fontSize: 11,
   fontWeight: 600,
-  color: 'var(--text-secondary)',
-  letterSpacing: '0.05em',
+  color: 'var(--text-dimmed)',
+  letterSpacing: '0.06em',
   textTransform: 'uppercase',
 };
 
@@ -594,7 +595,8 @@ const listStyle: React.CSSProperties = {
   flexDirection: 'column',
   flex: 1,
   overflowY: 'auto',
-  padding: 0,
+  padding: '4px 0',
+  gap: 1,
 };
 
 const emptyStyle: React.CSSProperties = {
@@ -612,9 +614,9 @@ const kbdStyle: React.CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
   justifyContent: 'center',
-  minWidth: 20,
-  height: 20,
-  padding: '0 5px',
+  minWidth: 18,
+  height: 18,
+  padding: '0 4px',
   fontSize: 10,
   fontFamily: 'var(--font-ui)',
   color: 'var(--text-secondary)',
@@ -626,11 +628,11 @@ const kbdStyle: React.CSSProperties = {
 const shortcutsStyle: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  gap: 4,
-  padding: '8px 14px',
+  gap: 3,
+  padding: '8px 16px',
   borderTop: '1px solid var(--border-subtle)',
-  background: 'var(--bg-surface)',
   flexShrink: 0,
+  opacity: 0.6,
 };
 
 const shortcutRowStyle: React.CSSProperties = {
@@ -653,18 +655,19 @@ const shortcutKeysStyle: React.CSSProperties = {
 };
 
 const cardStyle: React.CSSProperties = {
-  padding: '8px 10px',
+  padding: '10px 12px',
   cursor: 'pointer',
   transition: 'background var(--transition-fast), border-color var(--transition-fast)',
-  borderBottom: '1px solid var(--border-subtle)',
+  margin: '0 6px',
+  borderRadius: 'var(--radius-md)',
 };
 
 const cardTagStyle: React.CSSProperties = {
-  fontSize: 9,
-  color: 'var(--text-secondary)',
-  background: 'var(--bg-elevated)',
+  fontSize: 10,
+  color: 'var(--text-dimmed)',
+  background: 'rgba(var(--tint-rgb), 0.06)',
   borderRadius: 'var(--radius-sm)',
-  padding: '0 4px',
+  padding: '1px 5px',
   lineHeight: '16px',
   whiteSpace: 'nowrap',
 };

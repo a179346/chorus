@@ -206,7 +206,7 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
 const overlayStyle: React.CSSProperties = {
   position: 'fixed',
   inset: 0,
-  background: 'rgba(0, 0, 0, 0.6)',
+  background: 'rgba(var(--shade-rgb), 0.6)',
   backdropFilter: 'blur(4px)',
   display: 'flex',
   alignItems: 'center',
@@ -282,7 +282,7 @@ const checkboxStyle: React.CSSProperties = {
   justifyContent: 'center',
   cursor: 'pointer',
   transition: 'all var(--transition-fast)',
-  color: '#fff',
+  color: 'var(--btn-primary-text)',
   flexShrink: 0,
 };
 
@@ -303,8 +303,8 @@ const submitButtonStyle: React.CSSProperties = {
   borderRadius: 'var(--radius-md)',
   fontSize: 11,
   fontWeight: 600,
-  color: '#fff',
-  background: 'var(--accent-blue)',
+  color: 'var(--btn-primary-text)',
+  background: 'var(--accent-primary)',
   border: 'none',
   cursor: 'pointer',
   fontFamily: 'var(--font-ui)',

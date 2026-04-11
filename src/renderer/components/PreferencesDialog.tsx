@@ -1,28 +1,33 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { THEMES } from '../themes';
 
 interface PreferencesDialogProps {
   open: boolean;
   fontFamily: string;
+  theme: string;
   onClose: () => void;
-  onSave: (settings: { fontFamily: string }) => void;
+  onSave: (settings: { fontFamily: string; theme: string }) => void;
+  onPreviewTheme: (themeId: string) => void;
 }
 
-export function PreferencesDialog({ open, fontFamily, onClose, onSave }: PreferencesDialogProps): React.ReactElement | null {
+export function PreferencesDialog({ open, fontFamily, theme, onClose, onSave, onPreviewTheme }: PreferencesDialogProps): React.ReactElement | null {
   const [font, setFont] = useState(fontFamily);
+  const [selectedTheme, setSelectedTheme] = useState(theme);
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
     setFont(fontFamily);
+    setSelectedTheme(theme);
     setTimeout(() => inputRef.current?.focus(), 50);
-  }, [open, fontFamily]);
+  }, [open, fontFamily, theme]);
 
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose();
+        handleClose();
         return;
       }
       if (e.key === 'Tab' && dialogRef.current) {
@@ -43,21 +48,97 @@ export function PreferencesDialog({ open, fontFamily, onClose, onSave }: Prefere
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [open, onClose]);
+  }, [open, onClose, theme]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleClose = () => {
+    onPreviewTheme(theme); // restore original theme
+    onClose();
+  };
+
+  const handleThemeSelect = (id: string) => {
+    setSelectedTheme(id);
+    onPreviewTheme(id);
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!font.trim()) return;
-    onSave({ fontFamily: font.trim() });
+    onSave({ fontFamily: font.trim(), theme: selectedTheme });
   };
 
   if (!open) return null;
 
   return (
-    <div style={overlayStyle} onClick={onClose}>
+    <div style={overlayStyle} onClick={handleClose}>
       <div ref={dialogRef} style={dialogStyle} onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Preferences">
         <div style={titleStyle}>Preferences</div>
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* Theme picker */}
+          <div style={fieldStyle}>
+            <label style={labelStyle}>Theme</label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {THEMES.map((t) => {
+                const isActive = selectedTheme === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => handleThemeSelect(t.id)}
+                    style={{
+                      width: 'calc(25% - 5px)',
+                      padding: 0,
+                      borderRadius: 'var(--radius-md)',
+                      border: `2px solid ${isActive ? t.preview.accent : 'transparent'}`,
+                      cursor: 'pointer',
+                      overflow: 'hidden',
+                      background: 'none',
+                      transition: 'border-color var(--transition-fast)',
+                    }}
+                  >
+                    <div style={{
+                      height: 28,
+                      background: t.preview.bg,
+                      position: 'relative',
+                    }}>
+                      <div style={{
+                        position: 'absolute',
+                        bottom: 5,
+                        left: 7,
+                        width: 10,
+                        height: 3,
+                        borderRadius: 1,
+                        background: t.preview.accent,
+                        opacity: 0.9,
+                      }} />
+                      <div style={{
+                        position: 'absolute',
+                        bottom: 5,
+                        left: 20,
+                        width: 18,
+                        height: 2,
+                        borderRadius: 1,
+                        background: t.preview.accent,
+                        opacity: 0.25,
+                      }} />
+                    </div>
+                    <div style={{
+                      padding: '4px 0',
+                      fontSize: 9,
+                      fontWeight: 600,
+                      background: t.preview.panel,
+                      color: isActive ? t.preview.accent : '#888',
+                      textAlign: 'center',
+                      letterSpacing: '0.02em',
+                    }}>
+                      {t.name}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Font family */}
           <div style={fieldStyle}>
             <label style={labelStyle}>Terminal Font Family</label>
             <input
@@ -81,7 +162,7 @@ export function PreferencesDialog({ open, fontFamily, onClose, onSave }: Prefere
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
-            <button type="button" style={cancelButtonStyle} onClick={onClose}>
+            <button type="button" style={cancelButtonStyle} onClick={handleClose}>
               Cancel
             </button>
             <button
@@ -104,7 +185,7 @@ export function PreferencesDialog({ open, fontFamily, onClose, onSave }: Prefere
 const overlayStyle: React.CSSProperties = {
   position: 'fixed',
   inset: 0,
-  background: 'rgba(0, 0, 0, 0.6)',
+  background: 'rgba(var(--shade-rgb), 0.6)',
   backdropFilter: 'blur(4px)',
   display: 'flex',
   alignItems: 'center',
@@ -205,8 +286,8 @@ const submitButtonStyle: React.CSSProperties = {
   borderRadius: 'var(--radius-md)',
   fontSize: 11,
   fontWeight: 600,
-  color: '#fff',
-  background: 'var(--accent-blue)',
+  color: 'var(--btn-primary-text)',
+  background: 'var(--accent-primary)',
   border: 'none',
   cursor: 'pointer',
   fontFamily: 'var(--font-ui)',
