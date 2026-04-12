@@ -52,7 +52,7 @@
   --divider-hit-area: 6px;
 
   /* Typography */
-  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  --font-mono: 'MesloLGS NF', 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
   --font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
 
   /* Transitions */

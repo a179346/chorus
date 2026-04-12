@@ -24,7 +24,7 @@ export function App(): React.ReactElement {
   const [shellCollapsed, setShellCollapsed] = useState(false);
   const [showNewSession, setShowNewSession] = useState(false);
   const [showPreferences, setShowPreferences] = useState(false);
-  const [terminalFontFamily, setTerminalFontFamily] = useState("'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace");
+  const [terminalFontFamily, setTerminalFontFamily] = useState("'MesloLGS NF', 'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace");
   const [endSessionConfirm, setEndSessionConfirm] = useState<string | null>(null);
   const [currentTheme, setCurrentTheme] = useState(DEFAULT_THEME_ID);
   const [ptySearch, setPtySearch] = useState<{ sessionId: string; key: number } | null>(null);
