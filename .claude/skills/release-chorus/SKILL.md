@@ -20,8 +20,8 @@ The version bump is determined automatically by scanning merged PR labels since 
 
 1. Read `package.json` to get the current version. The previous release tag is `v<current-version>` (e.g. if version is `0.1.0`, the previous tag is `v0.1.0`).
 2. Check if that tag exists: `git rev-parse v<current-version> 2>/dev/null`. If it doesn't exist, this is the first release — use all merged PRs.
-3. Find the commit date of the previous tag to scope the PR query: `git log -1 --format=%aI v<current-version>`
-4. List merged PRs since the previous release using `gh pr list --state merged --search "merged:>YYYY-MM-DD" --json number,title,labels --limit 100`. If first release, omit the date filter and fetch all merged PRs. **Save this PR list — it will be reused in Step 4 for release notes.**
+3. Extract PR numbers from commits since the previous tag using git log: `git log v<current-version>..HEAD --oneline | grep -oP '#\d+' | tr -d '#' | sort -u`. This uses the actual commit history rather than date-based filtering, which avoids both missing same-day PRs and including PRs already in the previous release.
+4. For each PR number found, fetch its details: `gh pr view <number> --json number,title,labels`. Collect all results into a PR list. If first release (no tag exists), use `gh pr list --state merged --json number,title,labels --limit 100` to fetch all merged PRs instead. **Save this PR list — it will be reused in Step 4 for release notes.**
 5. Scan the labels on each PR and determine the bump level using **highest wins**:
 
    | PR Label  | Bump Level |
