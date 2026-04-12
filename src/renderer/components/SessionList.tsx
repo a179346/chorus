@@ -29,6 +29,7 @@ interface SessionListProps {
 
 const statusColors: Record<string, string> = {
   idle: 'var(--status-idle)',
+  waiting: 'var(--status-idle)',
   thinking: 'var(--status-thinking)',
   generating: 'var(--status-generating)',
   creating: 'var(--status-creating)',
@@ -307,6 +308,7 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
   const [editValue, setEditValue] = useState(session.name);
   const inputRef = useRef<HTMLInputElement>(null);
   const statusColor = statusColors[session.status] ?? 'var(--text-dimmed)';
+  const isPulsing = session.status === 'thinking' || session.status === 'generating' || session.status === 'waiting';
 
   // Focus input when entering edit mode
   useEffect(() => {
@@ -336,7 +338,6 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
         ...cardStyle,
         background: isActive ? 'var(--bg-active)' : hovered ? 'var(--bg-hover)' : 'transparent',
         borderLeft: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent',
-        boxShadow: isActive ? 'inset 0 0 0 1px rgba(var(--accent-rgb), 0.08)' : undefined,
       }}
       onClick={isEditing ? undefined : onClick}
       onContextMenu={(e) => {
@@ -346,7 +347,7 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      {/* Top row: name + status */}
+      {/* Row 1: name + bell + status */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
         {isEditing ? (
           <input
@@ -381,7 +382,7 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
               />
             ) : !session.hasUserInput ? (
               <span
-                title="No user input yet"
+                title="No user input yet — session won't be persisted"
                 style={{
                   width: 6,
                   height: 6,
@@ -394,11 +395,11 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
             <span style={{
               fontWeight: session.unread ? 600 : 500,
               fontSize: 12,
-              color: session.unread ? 'var(--text-primary)' : 'var(--text-primary)',
+              color: session.unread ? 'var(--text-accent)' : 'var(--text-primary)',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
-              transition: 'color var(--transition-fast), font-weight var(--transition-fast)',
+              transition: 'color var(--transition-fast)',
             }}>
               {session.name}
             </span>
@@ -429,14 +430,8 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
               borderRadius: '50%',
               backgroundColor: statusColor,
               display: 'inline-block',
-              animation:
-                session.status === 'thinking' || session.status === 'generating'
-                  ? 'statusPulse 1.5s ease-in-out infinite'
-                  : undefined,
-              boxShadow:
-                session.status === 'thinking' || session.status === 'generating'
-                  ? `0 0 4px ${statusColor}`
-                  : undefined,
+              animation: isPulsing ? 'statusPulse 1.5s ease-in-out infinite' : undefined,
+              boxShadow: isPulsing ? `0 0 4px ${statusColor}` : undefined,
             }}
           />
           <span style={{ fontSize: 10, color: statusColor, textTransform: 'capitalize' }}>
@@ -445,7 +440,7 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
         </div>
       </div>
 
-      {/* Working dir + worktree */}
+      {/* Row 2: cwd + worktree */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
         <div style={{ fontSize: 10, color: 'var(--text-dimmed)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>
           {shortenPath(session.cwd)}
@@ -457,7 +452,7 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
         )}
       </div>
 
-      {/* Bottom row: model, branch, context */}
+      {/* Row 3: model, branch, context */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
         {session.model && (
           <span style={cardTagStyle}>{session.model}</span>
@@ -559,8 +554,7 @@ const headerBarStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
-  height: 'var(--status-bar-height)',
-  padding: '0 12px 0 16px',
+  padding: '8px 14px',
   borderBottom: '1px solid var(--border-subtle)',
   flexShrink: 0,
 };
@@ -571,15 +565,15 @@ const newSessionButtonStyle: React.CSSProperties = {
   height: 22,
   borderRadius: 'var(--radius-sm)',
   border: 'none',
-  background: 'var(--bg-hover)',
-  color: 'var(--text-secondary)',
-  fontSize: 15,
+  background: 'transparent',
+  color: 'var(--text-dimmed)',
+  fontSize: 16,
   lineHeight: 1,
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
   cursor: 'pointer',
-  transition: 'all var(--transition-fast)',
+  transition: 'color var(--transition-fast)',
 };
 
 const headerTitleStyle: React.CSSProperties = {

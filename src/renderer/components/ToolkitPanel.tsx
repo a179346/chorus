@@ -446,7 +446,7 @@ const headerStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   padding: '8px 14px',
-  borderTop: '1px solid var(--border-subtle)',
+  borderBottom: '1px solid var(--border-subtle)',
   flexShrink: 0,
 };
 
@@ -456,15 +456,15 @@ const addButtonStyle: React.CSSProperties = {
   height: 22,
   borderRadius: 'var(--radius-sm)',
   border: 'none',
-  background: 'var(--bg-hover)',
-  color: 'var(--text-secondary)',
-  fontSize: 15,
+  background: 'transparent',
+  color: 'var(--text-dimmed)',
+  fontSize: 16,
   lineHeight: 1,
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
   cursor: 'pointer',
-  transition: 'all var(--transition-fast)',
+  transition: 'color var(--transition-fast)',
 };
 
 const gridStyle: React.CSSProperties = {

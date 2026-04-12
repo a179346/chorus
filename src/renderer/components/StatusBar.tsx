@@ -16,9 +16,11 @@ const statusColors: Record<string, string> = {
   ended: 'var(--status-ended)',
 };
 
+const pulsingStatuses = new Set(['thinking', 'generating', 'waiting']);
+
 function StatusDot({ status }: { status: string }): React.ReactElement {
   const color = statusColors[status] ?? 'var(--text-dimmed)';
-  const isPulsing = status === 'thinking' || status === 'generating';
+  const isPulsing = pulsingStatuses.has(status);
 
   return (
     <span
@@ -28,9 +30,10 @@ function StatusDot({ status }: { status: string }): React.ReactElement {
         height: 7,
         borderRadius: '50%',
         backgroundColor: color,
-        marginRight: 6,
+        marginRight: 7,
         animation: isPulsing ? 'statusPulse 1.5s ease-in-out infinite' : undefined,
         boxShadow: isPulsing ? `0 0 6px ${color}` : undefined,
+        transition: 'background-color var(--transition-fast)',
       }}
     />
   );
@@ -59,10 +62,12 @@ export function StatusBar({ session }: StatusBarProps): React.ReactElement {
       {/* Left — Status */}
       <div style={sectionStyle}>
         <StatusDot status={session.status} />
-        <span style={{ color: statusColors[session.status] ?? 'var(--text-dimmed)', textTransform: 'capitalize' }}>
+        <span style={{ color: statusColors[session.status] ?? 'var(--text-dimmed)', textTransform: 'capitalize', fontWeight: 500 }}>
           {session.status}
         </span>
       </div>
+
+      <span style={separatorDotStyle}>·</span>
 
       {/* Center — Name + CWD + tags */}
       <div style={centerStyle}>
@@ -89,13 +94,13 @@ export function StatusBar({ session }: StatusBarProps): React.ReactElement {
       {/* Right — Model + Context */}
       <div style={sectionStyle}>
         {session.model && (
-          <span style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+          <span style={{ color: 'var(--text-dimmed)', whiteSpace: 'nowrap', fontSize: 10, letterSpacing: '0.02em' }}>
             {shortenModel(session.model)}
           </span>
         )}
 
         {session.contextUsage != null && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
             <div style={contextBarTrackStyle}>
               <div
                 style={{
@@ -169,10 +174,17 @@ const tagStyle: React.CSSProperties = {
   WebkitAppRegion: 'no-drag',
 };
 
+const separatorDotStyle: React.CSSProperties = {
+  color: 'var(--text-dimmed)',
+  opacity: 0.5,
+  fontSize: 11,
+  flexShrink: 0,
+};
+
 const contextBarTrackStyle: React.CSSProperties = {
-  width: 48,
+  width: 52,
   height: 4,
-  background: 'rgba(var(--tint-rgb), 0.08)',
+  background: 'rgba(var(--tint-rgb), 0.10)',
   borderRadius: 2,
   overflow: 'hidden',
 };
