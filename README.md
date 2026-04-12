@@ -8,6 +8,12 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/a179346/chorus/releases"><img src="https://img.shields.io/github/v/release/a179346/chorus" alt="GitHub Release" /></a>
+  <a href="https://github.com/a179346/chorus/blob/main/LICENSE"><img src="https://img.shields.io/github/license/a179346/chorus" alt="License" /></a>
+  <img src="https://img.shields.io/badge/platform-macOS-lightgrey" alt="Platform" />
+</p>
+
+<p align="center">
   <img src="docs/chorus.png" width="800" />
 </p>
 

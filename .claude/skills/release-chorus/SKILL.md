@@ -10,6 +10,7 @@ Automate the full release pipeline for the Chorus Electron app. This skill handl
 ## Prerequisites
 
 Before starting, confirm:
+
 - Working tree is clean (`git status` — no uncommitted changes). If dirty, stop and ask the user to commit or stash first.
 - You are on the `main` branch. If not, warn the user and ask if they want to proceed anyway.
 
@@ -23,16 +24,16 @@ The version bump is determined automatically by scanning merged PR labels since 
 4. List merged PRs since the previous release using `gh pr list --state merged --search "merged:>YYYY-MM-DD" --json number,title,labels --limit 100`. If first release, omit the date filter and fetch all merged PRs. **Save this PR list — it will be reused in Step 4 for release notes.**
 5. Scan the labels on each PR and determine the bump level using **highest wins**:
 
-   | PR Label   | Bump Level |
-   |------------|------------|
-   | `major`    | **major**  |
-   | `minor`    | minor      |
-   | `feature`  | minor      |
-   | `patch`    | patch      |
-   | `fix`      | patch      |
-   | `chore`    | patch      |
-   | `ci`       | patch      |
-   | `docs`     | patch      |
+   | PR Label  | Bump Level |
+   | --------- | ---------- |
+   | `major`   | **major**  |
+   | `minor`   | minor      |
+   | `feature` | minor      |
+   | `patch`   | patch      |
+   | `fix`     | patch      |
+   | `chore`   | patch      |
+   | `ci`      | patch      |
+   | `docs`    | patch      |
 
    Precedence: major > minor > patch. If any PR has `major`, it's a major bump. Otherwise if any has `minor` or `feature`, it's minor. Everything else is patch.
 
@@ -66,22 +67,27 @@ The version bump is determined automatically by scanning merged PR labels since 
 
 ```markdown
 ## Feature
+
 - PR title (#number)
 
 ## Fix
+
 - PR title (#number)
 
 ## Docs
+
 - PR title (#number)
 
 ## CI
+
 - PR title (#number)
 
 ## Chore
+
 - PR title (#number)
 ```
 
-   PRs without a matching label go under **Chore**. Keep descriptions concise — use the PR title as-is or lightly rewrite for clarity.
+PRs without a matching label go under **Chore**. Keep descriptions concise — use the PR title as-is or lightly rewrite for clarity.
 
 ## Step 5: Create GitHub Release
 
@@ -91,7 +97,7 @@ Use the `gh` CLI to create the release:
 gh release create v<new-version> \
   <path-to-dmg> \
   <path-to-zip> \
-  --title "Chorus v<new-version>" \
+  --title "v<new-version>" \
   --notes "<release-notes>"
 ```
 
