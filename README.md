@@ -15,7 +15,11 @@
 
 **Which window was fixing that bug again?** If you run more than one Claude Code session at a time, you know the drill: `Cmd+Tab` between terminal windows, try to remember which one is writing tests vs. refactoring, check if that long-running session is still thinking or waiting for input. It's busywork that pulls you out of flow.
 
-Chorus puts all your sessions in one window — with live status, so you never lose track.
+Chorus puts all your sessions in one window — with live status, unread indicators, and notifications, so you never lose track.
+
+## Download
+
+Grab the latest build from the [GitHub Releases](https://github.com/a179346/chorus/releases) page.
 
 ## Features
 
