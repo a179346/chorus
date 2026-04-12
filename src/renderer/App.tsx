@@ -373,6 +373,10 @@ export function App(): React.ReactElement {
           background: var(--bg-hover);
           outline: none;
         }
+        /* Divider hover highlight */
+        [data-divider] {
+          background: rgba(var(--tint-rgb), 0.14) !important;
+        }
       `}</style>
 
       {/* Main layout: left/right split */}

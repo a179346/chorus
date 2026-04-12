@@ -97,15 +97,16 @@ export function SplitPane({
     ...(isHorizontal
       ? { width: 'var(--divider-size)', cursor: collapsed ? 'default' : 'col-resize' }
       : { height: 'var(--divider-size)', cursor: collapsed ? 'default' : 'row-resize' }),
-    background: 'rgba(var(--tint-rgb), 0.08)',
+    background: 'rgba(var(--tint-rgb), 0.06)',
     zIndex: 2,
+    transition: 'background var(--transition-fast)',
   };
 
   const dividerHitAreaStyle: React.CSSProperties = {
     position: 'absolute',
     ...(isHorizontal
-      ? { top: 0, bottom: 0, left: '-3px', right: '-3px' }
-      : { left: 0, right: 0, top: '-3px', bottom: '-3px' }),
+      ? { top: 0, bottom: 0, left: '-4px', right: '-4px' }
+      : { left: 0, right: 0, top: '-4px', bottom: '-4px' }),
     zIndex: 3,
   };
 
@@ -126,7 +127,7 @@ export function SplitPane({
       }}
     >
       <div style={{ ...firstStyle, overflow: 'hidden' }}>{children[0]}</div>
-      <div style={dividerStyle} onMouseDown={handleMouseDown}>
+      <div data-divider style={dividerStyle} onMouseDown={handleMouseDown}>
         <div style={dividerHitAreaStyle} />
       </div>
       <div style={{ ...secondStyle, overflow: 'hidden' }}>{children[1]}</div>
