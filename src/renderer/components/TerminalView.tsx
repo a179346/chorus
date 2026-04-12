@@ -7,7 +7,7 @@ import '@xterm/xterm/css/xterm.css';
 import { getTheme, DEFAULT_THEME_ID } from '../themes';
 import type { XtermColors, SearchDecorations } from '../themes';
 
-const DEFAULT_FONT_FAMILY = "'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace";
+const DEFAULT_FONT_FAMILY = "'MesloLGS NF', 'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace";
 
 interface TerminalViewProps {
   sessionId: string | null;

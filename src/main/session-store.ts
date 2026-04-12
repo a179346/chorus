@@ -38,7 +38,7 @@ const DEFAULT_NEW_SESSION_DEFAULTS: NewSessionDefaults = {
 };
 
 const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
-  fontFamily: "'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace",
+  fontFamily: "'MesloLGS NF', 'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace",
   theme: 'espresso',
 };
 
