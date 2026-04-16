@@ -68,6 +68,13 @@ describe('PtyManager', () => {
       expect(firstCall[1]).toContain('uuid-abc-123');
     });
 
+    it('should pass --name with its value argument', () => {
+      manager.spawn('session-1', '/tmp/test', ['--name', 'My Session']);
+      const firstCall = nodePty.spawn.mock.calls[0];
+      expect(firstCall[1]).toContain('--name');
+      expect(firstCall[1]).toContain('My Session');
+    });
+
     it('should pass --resume with its value argument', () => {
       manager.spawn('session-1', '/tmp/test', ['--resume', 'uuid-abc-123']);
       const firstCall = nodePty.spawn.mock.calls[0];

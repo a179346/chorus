@@ -198,7 +198,7 @@ async function createSessionFromConfig(
 
   // Use --session-id so Claude Code uses our ID (enables precise resume later)
   // If worktree specified, let Claude Code handle worktree creation via --worktree flag
-  const spawnFlags = [...config.flags, "--session-id", id];
+  const spawnFlags = [...config.flags, "--session-id", id, "--name", config.name];
   if (worktree && !worktreeDirExists) {
     spawnFlags.push("--worktree", worktree);
   }
@@ -486,6 +486,12 @@ function registerIpcHandlers(): void {
           `Session not found: ${payload.id}`,
         );
       sessionStore.persistSessions();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(IpcChannels.SESSION_STATE, {
+          sessionId: payload.id,
+          name: payload.name,
+        });
+      }
       return session;
     },
   );

@@ -180,6 +180,18 @@ export function TerminalView({ sessionId, type, visible = true, fontFamily }: Te
       }
     });
 
+    // Sync terminal title changes (e.g. Claude Code /rename) back to Chorus session name
+    if (type === 'pty') {
+      let lastTitle = '';
+      terminal.onTitleChange((title: string) => {
+        const trimmed = title.trim();
+        if (trimmed && trimmed !== lastTitle) {
+          lastTitle = trimmed;
+          window.electronAPI.sessionRename(sid, trimmed);
+        }
+      });
+    }
+
     const entry: TerminalEntry = { terminal, fitAddon, searchAddon, searchResult, mountedIn: null, opened: false, removeDataListener };
     terminalCache.set(key, entry);
     return entry;

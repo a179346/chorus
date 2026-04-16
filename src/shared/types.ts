@@ -41,6 +41,7 @@ export interface SessionStateUpdate {
   gitBranch?: string | null;
   hasUserInput?: boolean;
   unread?: boolean;
+  name?: string;
 }
 
 // ─── Persistence (subset of Session saved to disk) ──────

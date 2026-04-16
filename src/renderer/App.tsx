@@ -89,6 +89,7 @@ export function App(): React.ReactElement {
                 ...(update.gitBranch !== undefined && { gitBranch: update.gitBranch }),
                 ...(update.hasUserInput !== undefined && { hasUserInput: update.hasUserInput }),
                 ...(update.unread !== undefined && { unread: update.unread }),
+                ...(update.name !== undefined && { name: update.name }),
               }
             : s
         )
@@ -254,9 +255,7 @@ export function App(): React.ReactElement {
 
   const handleRenameSession = useCallback(
     (id: string, newName: string) => {
-      window.electronAPI.sessionRename(id, newName).then((updated) => {
-        setSessions((prev) => prev.map((s) => (s.id === id ? updated : s)));
-      });
+      window.electronAPI.sessionRename(id, newName);
     },
     []
   );
