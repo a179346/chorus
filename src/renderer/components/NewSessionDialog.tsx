@@ -11,6 +11,7 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
   const [cwd, setCwd] = useState('');
   const [worktree, setWorktree] = useState('');
   const [autoMode, setAutoMode] = useState(false);
+  const [skipPermissions, setSkipPermissions] = useState(false);
   const [chrome, setChrome] = useState(false);
   const [notifyOnIdle, setNotifyOnIdle] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -21,6 +22,7 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
     window.electronAPI.appGetNewSessionDefaults().then((defaults) => {
       setCwd(defaults.cwd || '');
       setAutoMode(defaults.flags.includes('--enable-auto-mode'));
+      setSkipPermissions(defaults.flags.includes('--dangerously-skip-permissions'));
       setChrome(defaults.flags.includes('--chrome'));
       setNotifyOnIdle(defaults.notifyOnIdle ?? false);
     });
@@ -70,10 +72,11 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
       if (!name.trim() || !cwd.trim()) return;
       const flags: string[] = [];
       if (autoMode) flags.push('--enable-auto-mode');
+      if (skipPermissions) flags.push('--dangerously-skip-permissions');
       flags.push(chrome ? '--chrome' : '--no-chrome');
       onSubmit({ name: name.trim(), cwd: cwd.trim(), worktree: worktree.trim(), flags, notifyOnIdle });
     },
-    [name, cwd, worktree, autoMode, chrome, notifyOnIdle, onSubmit]
+    [name, cwd, worktree, autoMode, skipPermissions, chrome, notifyOnIdle, onSubmit]
   );
 
   if (!open) return null;
@@ -140,6 +143,25 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
               onClick={() => setAutoMode(!autoMode)}
             >
               Enable auto mode
+            </label>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div
+              style={{
+                ...checkboxStyle,
+                background: skipPermissions ? 'var(--status-error, #e53e3e)' : 'var(--bg-surface)',
+                borderColor: skipPermissions ? 'var(--status-error, #e53e3e)' : 'var(--border-default)',
+              }}
+              onClick={() => setSkipPermissions(!skipPermissions)}
+            >
+              {skipPermissions && <span style={{ fontSize: 10, lineHeight: 1 }}>✓</span>}
+            </div>
+            <label
+              style={{ fontSize: 11, color: skipPermissions ? 'var(--status-error, #e53e3e)' : 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}
+              onClick={() => setSkipPermissions(!skipPermissions)}
+            >
+              Skip permissions
             </label>
           </div>
 
