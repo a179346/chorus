@@ -40,13 +40,14 @@ export class PtyManager {
     const defaultRows = 30;
 
     // Build claude command args — only allow flags starting with -,
-    // plus value arguments that follow --session-id or --resume
+    // plus value arguments that follow known valued flags
+    const valuedFlags = new Set(['--session-id', '--resume', '--worktree', '--name']);
     const claudeArgs: string[] = [];
     for (let i = 0; i < flags.length; i++) {
       const f = flags[i];
       if (f.startsWith('-')) {
         claudeArgs.push(f);
-        if ((f === '--session-id' || f === '--resume' || f === '--worktree') && i + 1 < flags.length) {
+        if (valuedFlags.has(f) && i + 1 < flags.length) {
           claudeArgs.push(flags[++i]);
         }
       }
