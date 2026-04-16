@@ -82,6 +82,12 @@ describe('PtyManager', () => {
       expect(firstCall[1]).toContain('uuid-abc-123');
     });
 
+    it('should spawn claude with --dangerously-skip-permissions flag', () => {
+      manager.spawn('session-1', '/tmp/test', ['--dangerously-skip-permissions']);
+      const firstCall = nodePty.spawn.mock.calls[0];
+      expect(firstCall[1]).toContain('--dangerously-skip-permissions');
+    });
+
     it('should combine --session-id with other flags', () => {
       manager.spawn('session-1', '/tmp/test', ['--enable-auto-mode', '--session-id', 'uuid-123']);
       const firstCall = nodePty.spawn.mock.calls[0];

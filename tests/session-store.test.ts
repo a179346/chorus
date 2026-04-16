@@ -266,6 +266,19 @@ describe('SessionStore', () => {
       expect(defaults.cwd).toBe('/home/user');
       expect(defaults.flags).toContain('--enable-auto-mode');
     });
+
+    it('should persist --dangerously-skip-permissions in new session defaults', () => {
+      vi.mocked(fs.readFileSync).mockReturnValue(
+        JSON.stringify({
+          windowBounds: { x: 0, y: 0, width: 800, height: 600 },
+          panelSizes: { sidebarWidth: 300, shellHeight: 200, toolkitHeight: 200, shellCollapsed: false },
+          lastActiveSessionId: null,
+          newSessionDefaults: { cwd: '/tmp', flags: ['--dangerously-skip-permissions'] },
+        })
+      );
+      const defaults = store.getNewSessionDefaults();
+      expect(defaults.flags).toContain('--dangerously-skip-permissions');
+    });
   });
 
   describe('toolkit commands', () => {
