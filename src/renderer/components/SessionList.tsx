@@ -348,7 +348,7 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      {/* Row 1: name + bell + status */}
+      {/* Row 1: name + status + bell */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
         {isEditing ? (
           <input
@@ -428,6 +428,20 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
         )}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
           <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              backgroundColor: statusColor,
+              display: 'inline-block',
+              animation: isPulsing ? 'statusPulse 1.5s ease-in-out infinite' : undefined,
+              boxShadow: isPulsing ? `0 0 4px ${statusColor}` : undefined,
+            }}
+          />
+          <span style={{ fontSize: 10, color: statusColor, textTransform: 'capitalize' }}>
+            {session.status}
+          </span>
+          <span
             onClick={(e) => {
               e.stopPropagation();
               onToggleNotify();
@@ -443,20 +457,6 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
             }}
           >
             {session.notifyOnIdle ? <Bell size={11} /> : <BellOff size={11} />}
-          </span>
-          <span
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: '50%',
-              backgroundColor: statusColor,
-              display: 'inline-block',
-              animation: isPulsing ? 'statusPulse 1.5s ease-in-out infinite' : undefined,
-              boxShadow: isPulsing ? `0 0 4px ${statusColor}` : undefined,
-            }}
-          />
-          <span style={{ fontSize: 10, color: statusColor, textTransform: 'capitalize' }}>
-            {session.status}
           </span>
         </div>
       </div>
