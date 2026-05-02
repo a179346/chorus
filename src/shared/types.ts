@@ -9,6 +9,19 @@ export type SessionStatus =
   | 'error'
   | 'ended';
 
+export type SessionStage =
+  | 'no-pr'
+  | 'draft'
+  | 'ready'
+  | 'merged'
+  | 'closed';
+
+export interface PrRef {
+  owner: string;
+  repo: string;
+  number: number;
+}
+
 export interface Session {
   id: string;
   name: string;
@@ -24,6 +37,9 @@ export interface Session {
   createdAt: number;
   lastActiveAt: number;
   hasUserInput: boolean;
+  pr: PrRef | null;
+  stage: SessionStage;
+  stageUpdatedAt: number | null;
 }
 
 export interface SessionConfig {
@@ -42,6 +58,9 @@ export interface SessionStateUpdate {
   hasUserInput?: boolean;
   unread?: boolean;
   name?: string;
+  pr?: PrRef | null;
+  stage?: SessionStage;
+  stageUpdatedAt?: number | null;
 }
 
 // ─── Persistence (subset of Session saved to disk) ──────
@@ -59,6 +78,9 @@ export interface PersistedSession {
   createdAt: number;
   lastActiveAt: number;
   hasUserInput: boolean;
+  pr: PrRef | null;
+  stage: SessionStage;
+  stageUpdatedAt: number | null;
 }
 
 // ─── Toolkit ─────────────────────────────────────────────

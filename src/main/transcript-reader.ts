@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import type { PrRef } from '../shared/types';
 
 /** Known context window sizes by model family. */
 const CONTEXT_LIMITS: Record<string, number> = {
@@ -130,4 +131,114 @@ export async function readTranscriptMetadata(transcriptPath: string): Promise<Tr
   }
 
   return { model: null, contextUsage: null };
+}
+
+// ─── PR ref extraction ────────────────────────────────────
+
+const GH_PR_CREATE_REGEX = /(?:^|[\s;|&(])gh\s+pr\s+create\b/;
+const PR_URL_REGEX = /https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/g;
+
+function isCreatePrToolUse(block: unknown): boolean {
+  if (!block || typeof block !== 'object') return false;
+  const b = block as Record<string, unknown>;
+  if (b.type !== 'tool_use') return false;
+  if (b.name === 'mcp__github__create_pull_request') return true;
+  if (b.name === 'Bash') {
+    const input = b.input as Record<string, unknown> | undefined;
+    if (input && typeof input.command === 'string') {
+      return GH_PR_CREATE_REGEX.test(input.command);
+    }
+  }
+  return false;
+}
+
+function extractToolResultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const block of content) {
+      if (block && typeof block === 'object' && (block as { type?: unknown }).type === 'text') {
+        const text = (block as { text?: unknown }).text;
+        if (typeof text === 'string') parts.push(text);
+      }
+    }
+    return parts.join('\n');
+  }
+  return '';
+}
+
+function extractLastPrUrl(text: string): PrRef | null {
+  const matches = [...text.matchAll(PR_URL_REGEX)];
+  if (matches.length === 0) return null;
+  const last = matches[matches.length - 1];
+  return {
+    owner: last[1],
+    repo: last[2],
+    number: parseInt(last[3], 10),
+  };
+}
+
+/**
+ * Scan the tail of a Claude Code transcript for the most recent successful
+ * `gh pr create` (or `mcp__github__create_pull_request`) tool call and return
+ * the PR ref parsed from its tool_result.
+ *
+ * Anchors on the create-PR tool_use itself (matched via tool_use_id) so that
+ * `gh pr list` / `gh pr view <other>` URLs in the same window cannot pollute
+ * the result.
+ *
+ * Returns null on any error (missing file, IO failure, malformed JSONL, no
+ * matching create call). Never throws.
+ */
+export async function extractPrFromCreateCall(
+  transcriptPath: string,
+  tailLines = 200,
+): Promise<PrRef | null> {
+  try {
+    if (!fs.existsSync(transcriptPath)) return null;
+
+    // readTailLines returns reverse order (newest first); flip to chronological
+    const reversed = readTailLines(transcriptPath, tailLines, 0);
+    const lines = reversed.slice().reverse();
+
+    // Walk lines in chronological order, collecting create-PR tool_use ids and
+    // tool_result text by tool_use_id. Same line can contain multiple blocks.
+    const createPrIds: string[] = [];
+    const resultByToolUseId = new Map<string, string>();
+
+    for (const line of lines) {
+      let entry: unknown;
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+
+      const message = (entry as { message?: { content?: unknown } } | null)?.message;
+      const content = message?.content;
+      if (!Array.isArray(content)) continue;
+
+      for (const block of content) {
+        if (!block || typeof block !== 'object') continue;
+        const b = block as Record<string, unknown>;
+        if (b.type === 'tool_use' && typeof b.id === 'string' && isCreatePrToolUse(b)) {
+          createPrIds.push(b.id);
+        } else if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+          resultByToolUseId.set(b.tool_use_id, extractToolResultText(b.content));
+        }
+      }
+    }
+
+    // Walk create ids latest-first, return first one with a matching PR URL
+    for (let i = createPrIds.length - 1; i >= 0; i--) {
+      const text = resultByToolUseId.get(createPrIds[i]);
+      if (!text) continue;
+      const ref = extractLastPrUrl(text);
+      if (ref) return ref;
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
 }

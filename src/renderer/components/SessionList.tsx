@@ -15,6 +15,7 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Session } from '../../shared/types';
+import { STAGE_ICON } from '../stage';
 
 interface SessionListProps {
   sessions: Session[];
@@ -369,6 +370,26 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
           />
         ) : (
           <span style={{ display: 'flex', alignItems: 'center', gap: 5, overflow: 'hidden', minWidth: 0 }}>
+            {session.stage !== 'no-pr' && STAGE_ICON[session.stage] && (() => {
+              const { Icon, color, background, tooltip } = STAGE_ICON[session.stage];
+              return (
+                <span
+                  title={tooltip}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0,
+                    color,
+                    background,
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '2px 3px',
+                  }}
+                >
+                  <Icon size={13} />
+                </span>
+              );
+            })()}
             {session.unread ? (
               <span
                 title="Unread"
