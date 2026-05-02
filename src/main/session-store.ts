@@ -171,6 +171,9 @@ export class SessionStore {
         createdAt: s.createdAt,
         lastActiveAt: s.lastActiveAt,
         hasUserInput: s.hasUserInput,
+        pr: s.pr,
+        stage: s.stage,
+        stageUpdatedAt: s.stageUpdatedAt,
       };
       writeJson(sessionFilePath(s.id), persisted);
     }

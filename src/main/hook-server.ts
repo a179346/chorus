@@ -2,8 +2,8 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import type { SessionStatus } from '../shared/types';
-import { readTranscriptMetadata } from './transcript-reader';
+import type { PrRef, SessionStatus } from '../shared/types';
+import { extractPrFromCreateCall, readTranscriptMetadata } from './transcript-reader';
 
 export interface HookEvent {
   session_id: string;
@@ -39,18 +39,21 @@ export interface HookUpdate {
 }
 
 export type HookStatusCallback = (sessionId: string, update: HookUpdate) => void;
+export type PrDetectedCallback = (sessionId: string, pr: PrRef) => void;
 
 export class HookServer {
   private server: http.Server | null = null;
   private port = 0;
   private callback: HookStatusCallback;
+  private prCallback: PrDetectedCallback | null = null;
   /** Tracks which cwd directories have had hooks installed this session. */
   private installedDirs: Set<string> = new Set();
   /** Maps session ID -> transcript path. */
   private transcriptPaths: Map<string, string> = new Map();
 
-  constructor(callback: HookStatusCallback) {
+  constructor(callback: HookStatusCallback, prCallback?: PrDetectedCallback) {
     this.callback = callback;
+    this.prCallback = prCallback ?? null;
   }
 
   /** Start the HTTP server on a random available port. */
@@ -213,25 +216,38 @@ export class HookServer {
       return;
     }
 
-    // On Stop, read transcript for updated model + context usage
+    // On Stop, read transcript for updated model + context usage + PR detection
     if (event.hook_event_name === 'Stop') {
       // Emit status immediately so UI updates fast
       this.callback(event.session_id, { status });
 
-      // Wait briefly for Claude Code to flush the transcript, then read metadata
+      // Wait briefly for Claude Code to flush the transcript, then run both
+      // metadata + PR extraction in parallel against the freshly-flushed file.
       const transcriptPath = this.transcriptPaths.get(event.session_id);
       if (transcriptPath) {
-        new Promise((r) => setTimeout(r, 500)).then(() => readTranscriptMetadata(transcriptPath)).then((meta) => {
-          if (meta.model || meta.contextUsage !== null) {
-            this.callback(event.session_id, {
-              status,
-              model: meta.model ?? undefined,
-              contextUsage: meta.contextUsage ?? undefined,
-            });
-          }
-        }).catch(() => {
-          // Ignore transcript read failures
-        });
+        const sessionId = event.session_id;
+        new Promise((r) => setTimeout(r, 500))
+          .then(() =>
+            Promise.all([
+              readTranscriptMetadata(transcriptPath),
+              extractPrFromCreateCall(transcriptPath),
+            ]),
+          )
+          .then(([meta, pr]) => {
+            if (meta.model || meta.contextUsage !== null) {
+              this.callback(sessionId, {
+                status,
+                model: meta.model ?? undefined,
+                contextUsage: meta.contextUsage ?? undefined,
+              });
+            }
+            if (pr && this.prCallback) {
+              this.prCallback(sessionId, pr);
+            }
+          })
+          .catch(() => {
+            // Ignore transcript read failures
+          });
       }
       return;
     }

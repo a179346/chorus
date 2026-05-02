@@ -1,8 +1,9 @@
 import { app, BrowserWindow, Menu, ipcMain, dialog, Notification, shell } from "electron";
 import path from "node:path";
 import fs from "node:fs";
-import { execSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import crypto from "node:crypto";
+import pLimit from "p-limit";
 import { IpcChannels, IpcErrorCodes } from "../shared/ipc";
 import type {
   Session,
@@ -17,6 +18,8 @@ import type {
   ToolkitListPayload,
   ToolkitSavePayload,
   AppState,
+  PrRef,
+  SessionStage,
 } from "../shared/types";
 import { SessionStore } from "./session-store";
 import { PtyManager } from "./pty-manager";
@@ -75,6 +78,231 @@ if (!app.isPackaged) {
 const sessionStore = new SessionStore();
 let mainWindow: BrowserWindow | null = null;
 let activeSessionId: string | null = null;
+
+// ─── Stage Refresh ──────────────────────────────────────────
+
+const GH_TIMEOUT_MS = 10_000;
+const GH_RETRY_AFTER_MS = 5 * 60 * 1000;
+const STAGE_DEBOUNCE_MS = 1000;
+const STAGE_POLL_INTERVAL_MS = 60_000;
+
+const stageRefreshLimit = pLimit(4);
+const stageRefreshInFlight: Map<string, Promise<void>> = new Map();
+const stageRefreshDebouncers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+let ghAvailable = true;
+let ghUnavailableUntil = 0;
+
+type GhResult =
+  | { type: 'ok'; stage: SessionStage }
+  | { type: 'not-found' }
+  | { type: 'unavailable' }
+  | { type: 'error' };
+
+function deriveStage(json: {
+  state?: unknown;
+  isDraft?: unknown;
+  mergedAt?: unknown;
+}): SessionStage {
+  const state = typeof json.state === 'string' ? json.state.toUpperCase() : '';
+  const isDraft = json.isDraft === true;
+  const merged = json.mergedAt !== null && json.mergedAt !== undefined && json.mergedAt !== '';
+  if (state === 'MERGED' || merged) return 'merged';
+  if (state === 'CLOSED') return 'closed';
+  if (state === 'OPEN') return isDraft ? 'draft' : 'ready';
+  return 'no-pr';
+}
+
+function runGhPrView(pr: PrRef): Promise<GhResult> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (r: GhResult): void => {
+      if (settled) return;
+      settled = true;
+      resolve(r);
+    };
+
+    let child;
+    try {
+      child = spawn(
+        'gh',
+        [
+          'pr',
+          'view',
+          String(pr.number),
+          '-R',
+          `${pr.owner}/${pr.repo}`,
+          '--json',
+          'state,isDraft,mergedAt',
+        ],
+        { stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+    } catch {
+      settle({ type: 'unavailable' });
+      return;
+    }
+
+    let stdout = '';
+    let stderr = '';
+
+    const timeout = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        /* ignore */
+      }
+      settle({ type: 'error' });
+    }, GH_TIMEOUT_MS);
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    child.on('error', (err: NodeJS.ErrnoException) => {
+      clearTimeout(timeout);
+      if (err.code === 'ENOENT') settle({ type: 'unavailable' });
+      else settle({ type: 'error' });
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(timeout);
+      if (code === 0) {
+        try {
+          settle({ type: 'ok', stage: deriveStage(JSON.parse(stdout)) });
+        } catch {
+          settle({ type: 'error' });
+        }
+        return;
+      }
+      const msg = stderr.toLowerCase();
+      if (msg.includes('not authenticated') || msg.includes('command not found')) {
+        settle({ type: 'unavailable' });
+      } else if (msg.includes('not found') || msg.includes('could not resolve')) {
+        settle({ type: 'not-found' });
+      } else {
+        settle({ type: 'error' });
+      }
+    });
+  });
+}
+
+function pushSessionState(payload: Record<string, unknown> & { sessionId: string }): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(IpcChannels.SESSION_STATE, payload);
+  }
+}
+
+function refreshStage(sessionId: string): Promise<void> {
+  const session = sessionStore.getSession(sessionId);
+  if (!session || !session.pr || session.status === 'ended') return Promise.resolve();
+
+  const existing = stageRefreshInFlight.get(sessionId);
+  if (existing) return existing;
+
+  if (!ghAvailable && Date.now() < ghUnavailableUntil) return Promise.resolve();
+
+  const promise = stageRefreshLimit(async () => {
+    const s = sessionStore.getSession(sessionId);
+    if (!s || !s.pr || s.status === 'ended') return;
+
+    const result = await runGhPrView(s.pr);
+
+    const after = sessionStore.getSession(sessionId);
+    if (!after || after.status === 'ended') return;
+
+    if (result.type === 'unavailable') {
+      ghAvailable = false;
+      ghUnavailableUntil = Date.now() + GH_RETRY_AFTER_MS;
+      return;
+    }
+    if (result.type === 'error') return;
+
+    ghAvailable = true;
+    const ts = Date.now();
+
+    if (result.type === 'not-found') {
+      const changed = after.pr !== null || after.stage !== 'no-pr';
+      if (changed) {
+        sessionStore.updateSession(sessionId, {
+          pr: null,
+          stage: 'no-pr',
+          stageUpdatedAt: ts,
+        });
+        sessionStore.persistSessions();
+        pushSessionState({ sessionId, pr: null, stage: 'no-pr', stageUpdatedAt: ts });
+      } else {
+        after.stageUpdatedAt = ts;
+      }
+      return;
+    }
+
+    if (after.stage !== result.stage) {
+      sessionStore.updateSession(sessionId, {
+        stage: result.stage,
+        stageUpdatedAt: ts,
+      });
+      sessionStore.persistSessions();
+      pushSessionState({ sessionId, stage: result.stage, stageUpdatedAt: ts });
+    } else {
+      after.stageUpdatedAt = ts;
+    }
+  }).finally(() => {
+    stageRefreshInFlight.delete(sessionId);
+  });
+
+  stageRefreshInFlight.set(sessionId, promise);
+  return promise;
+}
+
+function scheduleRefresh(sessionId: string | null): void {
+  if (!sessionId) return;
+  const existing = stageRefreshDebouncers.get(sessionId);
+  if (existing) clearTimeout(existing);
+  stageRefreshDebouncers.set(
+    sessionId,
+    setTimeout(() => {
+      stageRefreshDebouncers.delete(sessionId);
+      void refreshStage(sessionId);
+    }, STAGE_DEBOUNCE_MS),
+  );
+}
+
+function cleanupStageRefresh(sessionId: string): void {
+  stageRefreshInFlight.delete(sessionId);
+  const t = stageRefreshDebouncers.get(sessionId);
+  if (t) {
+    clearTimeout(t);
+    stageRefreshDebouncers.delete(sessionId);
+  }
+}
+
+function refreshAllStages(): void {
+  for (const s of sessionStore.getAllSessions()) {
+    if (s.pr && s.status !== 'ended') void refreshStage(s.id);
+  }
+}
+
+function handlePrDetected(sessionId: string, pr: PrRef): void {
+  const session = sessionStore.getSession(sessionId);
+  if (!session || session.status === 'ended') return;
+  const current = session.pr;
+  if (
+    current &&
+    current.owner === pr.owner &&
+    current.repo === pr.repo &&
+    current.number === pr.number
+  ) {
+    void refreshStage(sessionId);
+    return;
+  }
+  sessionStore.updateSession(sessionId, { pr });
+  sessionStore.persistSessions();
+  pushSessionState({ sessionId, pr });
+  void refreshStage(sessionId);
+}
+
 const hookServer = new HookServer((sessionId, update) => {
   const updates: Partial<Session> = { status: update.status };
   if (update.status === "thinking") updates.hasUserInput = true;
@@ -128,7 +356,7 @@ const hookServer = new HookServer((sessionId, update) => {
     if (updates.unread !== undefined) payload.unread = updates.unread;
     mainWindow.webContents.send(IpcChannels.SESSION_STATE, payload);
   }
-});
+}, handlePrDetected);
 
 const ptyManager = new PtyManager();
 
@@ -186,6 +414,9 @@ async function createSessionFromConfig(
     createdAt: now,
     lastActiveAt: now,
     hasUserInput: false,
+    pr: null,
+    stage: "no-pr",
+    stageUpdatedAt: null,
   };
 
   const worktreeCwd = worktree
@@ -270,6 +501,7 @@ function createWindow(): void {
 
   mainWindow.on("focus", () => {
     if (!activeSessionId) return;
+    scheduleRefresh(activeSessionId);
     const session = sessionStore.getSession(activeSessionId);
     if (session?.unread) {
       session.unread = false;
@@ -507,6 +739,7 @@ function registerIpcHandlers(): void {
         );
       ptyManager.kill(payload.id);
       sessionStore.updateSession(payload.id, { status: "ended" });
+      cleanupStageRefresh(payload.id);
       sessionStore.removeSession(payload.id);
       sessionStore.persistSessions();
     },
@@ -524,6 +757,7 @@ function registerIpcHandlers(): void {
       activeSessionId = payload.id;
       sessionStore.saveAppState({ lastActiveSessionId: payload.id });
       session.lastActiveAt = Date.now();
+      scheduleRefresh(payload.id);
       if (session.unread) {
         session.unread = false;
         updateDockBadge();
@@ -726,6 +960,9 @@ function restoreSessions(): void {
         createdAt: ps.createdAt,
         lastActiveAt: ps.lastActiveAt,
         hasUserInput: ps.hasUserInput,
+        pr: ps.pr ?? null,
+        stage: ps.stage ?? "no-pr",
+        stageUpdatedAt: ps.stageUpdatedAt ?? null,
       };
       sessionStore.addSession(session);
     } catch {
@@ -749,6 +986,8 @@ app.whenReady().then(async () => {
   createWindow();
   restoreSessions();
 
+  refreshAllStages();
+  setInterval(refreshAllStages, STAGE_POLL_INTERVAL_MS);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {

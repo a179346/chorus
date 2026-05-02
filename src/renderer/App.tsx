@@ -90,6 +90,9 @@ export function App(): React.ReactElement {
                 ...(update.hasUserInput !== undefined && { hasUserInput: update.hasUserInput }),
                 ...(update.unread !== undefined && { unread: update.unread }),
                 ...(update.name !== undefined && { name: update.name }),
+                ...(update.pr !== undefined && { pr: update.pr }),
+                ...(update.stage !== undefined && { stage: update.stage }),
+                ...(update.stageUpdatedAt !== undefined && { stageUpdatedAt: update.stageUpdatedAt }),
               }
             : s
         )

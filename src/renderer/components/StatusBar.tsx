@@ -1,6 +1,7 @@
 import React from 'react';
 import { GitBranch } from 'lucide-react';
 import type { Session } from '../../shared/types';
+import { STAGE_ICON } from '../stage';
 
 interface StatusBarProps {
   session: Session | null;
@@ -89,6 +90,22 @@ export function StatusBar({ session }: StatusBarProps): React.ReactElement {
             {session.worktree}
           </span>
         )}
+        {session.stage !== 'no-pr' && STAGE_ICON[session.stage] && (() => {
+          const { Icon, color, background, tooltip } = STAGE_ICON[session.stage];
+          return (
+            <span
+              title={tooltip}
+              style={{
+                ...tagStyle,
+                background,
+                color,
+                padding: '3px 5px',
+              }}
+            >
+              <Icon size={13} />
+            </span>
+          );
+        })()}
       </div>
 
       {/* Right — Model + Context */}
