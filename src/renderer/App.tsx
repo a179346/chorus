@@ -5,7 +5,7 @@ import { StatusBar } from './components/StatusBar';
 import { ShellPanel } from './components/ShellPanel';
 import { SessionList } from './components/SessionList';
 import { ToolkitPanel } from './components/ToolkitPanel';
-import { TerminalView, disposeTerminal, focusTerminal, getFocusedTerminalInfo, setAllTerminalsFontFamily } from './components/TerminalView';
+import { TerminalView, disposeTerminal, focusTerminal, getFocusedTerminalInfo, applyTerminalSettings } from './components/TerminalView';
 import { SearchBar } from './components/SearchBar';
 import { NewSessionDialog } from './components/NewSessionDialog';
 import { PreferencesDialog } from './components/PreferencesDialog';
@@ -15,6 +15,7 @@ import { setTerminalTheme } from './components/TerminalView';
 const DEFAULT_SIDEBAR_WIDTH = 320;
 const DEFAULT_SHELL_HEIGHT = 200;
 const DEFAULT_TOOLKIT_HEIGHT = 200;
+const DEFAULT_FONT_SIZE = 13;
 
 export function App(): React.ReactElement {
   // ─── State ──────────────────────────────────────────
@@ -25,6 +26,8 @@ export function App(): React.ReactElement {
   const [showNewSession, setShowNewSession] = useState(false);
   const [showPreferences, setShowPreferences] = useState(false);
   const [terminalFontFamily, setTerminalFontFamily] = useState("'MesloLGS NF', 'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace");
+  const [claudeFontSize, setClaudeFontSize] = useState(DEFAULT_FONT_SIZE);
+  const [shellFontSize, setShellFontSize] = useState(DEFAULT_FONT_SIZE);
   const [endSessionConfirm, setEndSessionConfirm] = useState<string | null>(null);
   const [currentTheme, setCurrentTheme] = useState(DEFAULT_THEME_ID);
   const [ptySearch, setPtySearch] = useState<{ sessionId: string; key: number } | null>(null);
@@ -55,6 +58,12 @@ export function App(): React.ReactElement {
       }
       if (state.terminalSettings?.fontFamily) {
         setTerminalFontFamily(state.terminalSettings.fontFamily);
+      }
+      if (state.terminalSettings?.claudeFontSize) {
+        setClaudeFontSize(state.terminalSettings.claudeFontSize);
+      }
+      if (state.terminalSettings?.shellFontSize) {
+        setShellFontSize(state.terminalSettings.shellFontSize);
       }
       if (state.terminalSettings?.theme) {
         const tid = state.terminalSettings.theme;
@@ -305,12 +314,25 @@ export function App(): React.ReactElement {
   }, []);
 
   const handleSavePreferences = useCallback(
-    (settings: { fontFamily: string; theme: string }) => {
+    (settings: { fontFamily: string; theme: string; claudeFontSize: number; shellFontSize: number }) => {
       setTerminalFontFamily(settings.fontFamily);
-      setAllTerminalsFontFamily(settings.fontFamily);
+      setClaudeFontSize(settings.claudeFontSize);
+      setShellFontSize(settings.shellFontSize);
+      applyTerminalSettings({
+        fontFamily: settings.fontFamily,
+        claudeFontSize: settings.claudeFontSize,
+        shellFontSize: settings.shellFontSize,
+      });
       setCurrentTheme(settings.theme);
       handlePreviewTheme(settings.theme);
-      window.electronAPI.appSaveState({ terminalSettings: { fontFamily: settings.fontFamily, theme: settings.theme } });
+      window.electronAPI.appSaveState({
+        terminalSettings: {
+          fontFamily: settings.fontFamily,
+          theme: settings.theme,
+          claudeFontSize: settings.claudeFontSize,
+          shellFontSize: settings.shellFontSize,
+        },
+      });
       setShowPreferences(false);
     },
     [handlePreviewTheme]
@@ -415,7 +437,7 @@ export function App(): React.ReactElement {
                   onClose={() => setPtySearch(null)}
                 />
               )}
-              <TerminalView sessionId={activeSessionId} type="pty" fontFamily={terminalFontFamily} />
+              <TerminalView sessionId={activeSessionId} type="pty" fontFamily={terminalFontFamily} fontSize={claudeFontSize} />
             </div>
 
             {/* Shell terminal (collapsible) */}
@@ -429,7 +451,7 @@ export function App(): React.ReactElement {
                     onClose={() => setShellSearch(null)}
                   />
                 )}
-                <TerminalView sessionId={activeSessionId} type="shell" visible={!shellCollapsed} fontFamily={terminalFontFamily} />
+                <TerminalView sessionId={activeSessionId} type="shell" visible={!shellCollapsed} fontFamily={terminalFontFamily} fontSize={shellFontSize} />
               </div>
             </ShellPanel>
           </SplitPane>
@@ -479,6 +501,8 @@ export function App(): React.ReactElement {
         open={showPreferences}
         fontFamily={terminalFontFamily}
         theme={currentTheme}
+        claudeFontSize={claudeFontSize}
+        shellFontSize={shellFontSize}
         onClose={() => setShowPreferences(false)}
         onSave={handleSavePreferences}
         onPreviewTheme={handlePreviewTheme}

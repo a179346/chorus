@@ -267,6 +267,45 @@ describe('SessionStore', () => {
       expect(defaults.flags).toContain('--enable-auto-mode');
     });
 
+    it('should include default font sizes in terminalSettings when file is missing', () => {
+      vi.mocked(fs.readFileSync).mockImplementation(() => {
+        throw new Error('ENOENT');
+      });
+      const state = store.loadAppState();
+      expect(state.terminalSettings.claudeFontSize).toBe(13);
+      expect(state.terminalSettings.shellFontSize).toBe(13);
+      expect(typeof state.terminalSettings.fontFamily).toBe('string');
+      expect(typeof state.terminalSettings.theme).toBe('string');
+    });
+
+    it('should backfill missing fontSize fields when state.json predates them', () => {
+      vi.mocked(fs.readFileSync).mockReturnValue(
+        JSON.stringify({
+          windowBounds: { x: 0, y: 0, width: 800, height: 600 },
+          panelSizes: { sidebarWidth: 300, shellHeight: 200, toolkitHeight: 200, shellCollapsed: false },
+          lastActiveSessionId: null,
+          newSessionDefaults: { cwd: '/tmp', flags: [] },
+          terminalSettings: { fontFamily: 'monospace', theme: 'espresso' },
+        })
+      );
+      const state = store.loadAppState();
+      expect(state.terminalSettings.fontFamily).toBe('monospace');
+      expect(state.terminalSettings.theme).toBe('espresso');
+      expect(state.terminalSettings.claudeFontSize).toBe(13);
+      expect(state.terminalSettings.shellFontSize).toBe(13);
+    });
+
+    it('should preserve user-set fontSize values', () => {
+      vi.mocked(fs.readFileSync).mockReturnValue(
+        JSON.stringify({
+          terminalSettings: { fontFamily: 'monospace', theme: 'espresso', claudeFontSize: 16, shellFontSize: 11 },
+        })
+      );
+      const state = store.loadAppState();
+      expect(state.terminalSettings.claudeFontSize).toBe(16);
+      expect(state.terminalSettings.shellFontSize).toBe(11);
+    });
+
     it('should persist --dangerously-skip-permissions in new session defaults', () => {
       vi.mocked(fs.readFileSync).mockReturnValue(
         JSON.stringify({
