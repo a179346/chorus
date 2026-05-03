@@ -95,6 +95,7 @@ export function App(): React.ReactElement {
                 ...(update.status !== undefined && { status: update.status }),
                 ...(update.model !== undefined && { model: update.model }),
                 ...(update.contextUsage !== undefined && { contextUsage: update.contextUsage }),
+                ...(update.contextLimit !== undefined && { contextLimit: update.contextLimit }),
                 ...(update.gitBranch !== undefined && { gitBranch: update.gitBranch }),
                 ...(update.hasUserInput !== undefined && { hasUserInput: update.hasUserInput }),
                 ...(update.unread !== undefined && { unread: update.unread }),

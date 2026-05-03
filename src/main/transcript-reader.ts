@@ -1,27 +1,33 @@
 import fs from 'node:fs';
 import type { PrRef } from '../shared/types';
 
-/** Known context window sizes by model family. */
-const CONTEXT_LIMITS: Record<string, number> = {
-  'opus': 200_000,
-  'sonnet': 200_000,
-  'haiku': 200_000,
-};
-
+/**
+ * Default context window — every current Claude model ships with at least 200k.
+ * Some (Opus 4.7, Sonnet 4.5) can be toggled to 1M at runtime via beta header,
+ * but the model id in the transcript looks identical for both modes, so we
+ * cannot tell from the model string alone. See detect1mFromUsage below.
+ */
 const DEFAULT_CONTEXT_LIMIT = 200_000;
+const EXTENDED_CONTEXT_LIMIT = 1_000_000;
 const LINES_PER_CHUNK = 15;
 const MAX_ATTEMPTS = 4;
-
-function getContextLimit(model: string): number {
-  for (const [family, limit] of Object.entries(CONTEXT_LIMITS)) {
-    if (model.includes(family)) return limit;
-  }
-  return DEFAULT_CONTEXT_LIMIT;
-}
 
 export interface TranscriptMetadata {
   model: string | null;
   contextUsage: number | null; // 0-100 percentage
+  contextLimit: number | null; // tokens
+}
+
+/**
+ * One-way detection: if the prompt for a single turn ever exceeded 200k, the
+ * session must be in 1M mode (a 200k session physically cannot hold that many
+ * tokens). Sticky — once detected, callers should keep passing the bumped
+ * limit back in so it persists across restarts.
+ */
+function detectLimit(prevLimit: number | null | undefined, observedInputTokens: number): number {
+  const base = prevLimit && prevLimit > 0 ? prevLimit : DEFAULT_CONTEXT_LIMIT;
+  if (observedInputTokens > DEFAULT_CONTEXT_LIMIT) return EXTENDED_CONTEXT_LIMIT;
+  return base;
 }
 
 /**
@@ -84,10 +90,21 @@ function readTailLines(filePath: string, lineCount: number, skipLines: number): 
  * and estimated context usage from the most recent assistant message.
  *
  * Reads 15 lines from the tail at a time, up to 4 attempts (60 lines max).
+ *
+ * `prevContextLimit` lets the caller persist a previously detected 1M limit
+ * across calls; once a session has been observed to exceed 200k it stays at
+ * 1M even if later turns are smaller (e.g. after /clear).
+ *
+ * The numerator counts only prompt tokens (input + cache_read + cache_creation),
+ * matching what Claude Code's own /context displays — output_tokens are excluded
+ * because they don't carry into the next turn's context budget.
  */
-export async function readTranscriptMetadata(transcriptPath: string): Promise<TranscriptMetadata> {
+export async function readTranscriptMetadata(
+  transcriptPath: string,
+  prevContextLimit?: number | null,
+): Promise<TranscriptMetadata> {
   if (!fs.existsSync(transcriptPath)) {
-    return { model: null, contextUsage: null };
+    return { model: null, contextUsage: null, contextLimit: prevContextLimit ?? null };
   }
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -112,25 +129,25 @@ export async function readTranscriptMetadata(transcriptPath: string): Promise<Tr
       const usage = msg.usage;
 
       let contextUsage: number | null = null;
+      let contextLimit: number | null = prevContextLimit ?? null;
       if (usage) {
         const inputTokens =
           (usage.input_tokens ?? 0) +
           (usage.cache_creation_input_tokens ?? 0) +
           (usage.cache_read_input_tokens ?? 0);
-        const outputTokens = usage.output_tokens ?? 0;
-        const totalTokens = inputTokens + outputTokens;
 
-        if (model && totalTokens > 0) {
-          const limit = getContextLimit(model);
-          contextUsage = Math.min(100, Math.round((totalTokens / limit) * 100));
+        contextLimit = detectLimit(prevContextLimit, inputTokens);
+
+        if (model && inputTokens > 0) {
+          contextUsage = Math.min(100, Math.round((inputTokens / contextLimit) * 100));
         }
       }
 
-      return { model, contextUsage };
+      return { model, contextUsage, contextLimit };
     }
   }
 
-  return { model: null, contextUsage: null };
+  return { model: null, contextUsage: null, contextLimit: prevContextLimit ?? null };
 }
 
 // ─── PR ref extraction ────────────────────────────────────

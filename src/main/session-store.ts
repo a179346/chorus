@@ -170,6 +170,7 @@ export class SessionStore {
         unread: s.unread,
         model: s.model,
         contextUsage: s.contextUsage,
+        contextLimit: s.contextLimit,
         createdAt: s.createdAt,
         lastActiveAt: s.lastActiveAt,
         hasUserInput: s.hasUserInput,

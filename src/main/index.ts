@@ -309,6 +309,8 @@ const hookServer = new HookServer((sessionId, update) => {
   if (update.model !== undefined) updates.model = update.model;
   if (update.contextUsage !== undefined)
     updates.contextUsage = update.contextUsage;
+  if (update.contextLimit !== undefined)
+    updates.contextLimit = update.contextLimit;
 
   // Check flags before updating (need previous status)
   const session = sessionStore.getSession(sessionId);
@@ -353,10 +355,12 @@ const hookServer = new HookServer((sessionId, update) => {
     if (update.model !== undefined) payload.model = update.model;
     if (update.contextUsage !== undefined)
       payload.contextUsage = update.contextUsage;
+    if (update.contextLimit !== undefined)
+      payload.contextLimit = update.contextLimit;
     if (updates.unread !== undefined) payload.unread = updates.unread;
     mainWindow.webContents.send(IpcChannels.SESSION_STATE, payload);
   }
-}, handlePrDetected);
+}, handlePrDetected, (sessionId) => sessionStore.getSession(sessionId)?.contextLimit ?? null);
 
 const ptyManager = new PtyManager();
 
@@ -407,6 +411,7 @@ async function createSessionFromConfig(
     status: "creating",
     model: null,
     contextUsage: null,
+    contextLimit: null,
     gitBranch: null,
     flags: config.flags,
     notifyOnIdle: false,
@@ -953,6 +958,7 @@ function restoreSessions(): void {
         status: "creating",
         model: ps.model ?? null,
         contextUsage: ps.contextUsage ?? null,
+        contextLimit: ps.contextLimit ?? null,
         gitBranch: null,
         flags: ps.flags,
         notifyOnIdle: ps.notifyOnIdle ?? false,

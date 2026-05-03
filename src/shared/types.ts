@@ -30,6 +30,7 @@ export interface Session {
   status: SessionStatus;
   model: string | null;
   contextUsage: number | null;
+  contextLimit: number | null;
   gitBranch: string | null;
   flags: string[];
   notifyOnIdle: boolean;
@@ -54,6 +55,7 @@ export interface SessionStateUpdate {
   status?: SessionStatus;
   model?: string | null;
   contextUsage?: number | null;
+  contextLimit?: number | null;
   gitBranch?: string | null;
   hasUserInput?: boolean;
   unread?: boolean;
@@ -75,6 +77,7 @@ export interface PersistedSession {
   unread: boolean;
   model: string | null;
   contextUsage: number | null;
+  contextLimit: number | null;
   createdAt: number;
   lastActiveAt: number;
   hasUserInput: boolean;
