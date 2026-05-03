@@ -4,7 +4,11 @@ import {
   GitMerge,
   GitPullRequestClosed,
 } from 'lucide-react';
-import type { SessionStage } from '../shared/types';
+import type { PrRef, SessionStage } from '../shared/types';
+
+export function prUrl(pr: PrRef): string {
+  return `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`;
+}
 
 export const STAGE_ICON: Record<Exclude<SessionStage, 'no-pr'>, {
   Icon: typeof GitPullRequestArrow;

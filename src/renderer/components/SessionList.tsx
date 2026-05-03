@@ -15,7 +15,7 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Session } from '../../shared/types';
-import { STAGE_ICON } from '../stage';
+import { STAGE_ICON, prUrl } from '../stage';
 
 interface SessionListProps {
   sessions: Session[];
@@ -371,9 +371,14 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
           <span style={{ display: 'flex', alignItems: 'center', gap: 5, overflow: 'hidden', minWidth: 0 }}>
             {session.stage !== 'no-pr' && STAGE_ICON[session.stage] && (() => {
               const { Icon, color, background, tooltip } = STAGE_ICON[session.stage];
+              const clickable = session.pr != null;
               return (
                 <span
                   title={tooltip}
+                  onClick={clickable ? (e) => {
+                    e.stopPropagation();
+                    void window.electronAPI.openExternal(prUrl(session.pr!));
+                  } : undefined}
                   style={{
                     display: 'inline-flex',
                     alignItems: 'center',
@@ -383,6 +388,7 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
                     background,
                     borderRadius: 'var(--radius-sm)',
                     padding: '2px 3px',
+                    cursor: clickable ? 'pointer' : undefined,
                   }}
                 >
                   <Icon size={13} />
