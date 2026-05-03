@@ -36,24 +36,33 @@ export interface HookUpdate {
   status: SessionStatus;
   model?: string | null;
   contextUsage?: number | null;
+  contextLimit?: number | null;
 }
 
 export type HookStatusCallback = (sessionId: string, update: HookUpdate) => void;
 export type PrDetectedCallback = (sessionId: string, pr: PrRef) => void;
+/** Returns the previously detected context limit for a session, or null. */
+export type GetContextLimitCallback = (sessionId: string) => number | null;
 
 export class HookServer {
   private server: http.Server | null = null;
   private port = 0;
   private callback: HookStatusCallback;
   private prCallback: PrDetectedCallback | null = null;
+  private getContextLimit: GetContextLimitCallback | null = null;
   /** Tracks which cwd directories have had hooks installed this session. */
   private installedDirs: Set<string> = new Set();
   /** Maps session ID -> transcript path. */
   private transcriptPaths: Map<string, string> = new Map();
 
-  constructor(callback: HookStatusCallback, prCallback?: PrDetectedCallback) {
+  constructor(
+    callback: HookStatusCallback,
+    prCallback?: PrDetectedCallback,
+    getContextLimit?: GetContextLimitCallback,
+  ) {
     this.callback = callback;
     this.prCallback = prCallback ?? null;
+    this.getContextLimit = getContextLimit ?? null;
   }
 
   /** Start the HTTP server on a random available port. */
@@ -226,19 +235,21 @@ export class HookServer {
       const transcriptPath = this.transcriptPaths.get(event.session_id);
       if (transcriptPath) {
         const sessionId = event.session_id;
+        const prevLimit = this.getContextLimit?.(sessionId) ?? null;
         new Promise((r) => setTimeout(r, 500))
           .then(() =>
             Promise.all([
-              readTranscriptMetadata(transcriptPath),
+              readTranscriptMetadata(transcriptPath, prevLimit),
               extractPrFromCreateCall(transcriptPath),
             ]),
           )
           .then(([meta, pr]) => {
-            if (meta.model || meta.contextUsage !== null) {
+            if (meta.model || meta.contextUsage !== null || meta.contextLimit !== null) {
               this.callback(sessionId, {
                 status,
                 model: meta.model ?? undefined,
                 contextUsage: meta.contextUsage ?? undefined,
+                contextLimit: meta.contextLimit ?? undefined,
               });
             }
             if (pr && this.prCallback) {
