@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -54,6 +54,82 @@ export function setTerminalTheme(xtermTheme: XtermColors, searchDecorations: Sea
 }
 
 // ─── Public API ────────────────────────────────────────────
+
+/**
+ * Create a cached Terminal for the given session if one doesn't exist yet,
+ * and register its PTY/shell data listener immediately. The terminal is not
+ * mounted to the DOM — that happens lazily when TerminalView renders for
+ * this session — but the listener captures output as soon as the PTY emits
+ * it, so background sessions don't lose the resume-time conversation history.
+ */
+export function preloadTerminal(
+  type: 'pty' | 'shell',
+  sessionId: string,
+  fontFamily?: string,
+  fontSize?: number,
+): TerminalEntry {
+  const key = getTerminalKey(type, sessionId);
+  const existing = terminalCache.get(key);
+  if (existing) return existing;
+
+  const terminal = new Terminal({
+    allowProposedApi: true,
+    cursorBlink: true,
+    cursorStyle: 'bar',
+    fontFamily: fontFamily || DEFAULT_FONT_FAMILY,
+    fontSize: fontSize && fontSize > 0 ? fontSize : DEFAULT_FONT_SIZE,
+    lineHeight: 1,
+    theme: currentXtermTheme,
+    allowTransparency: false,
+    scrollback: 10000,
+  });
+
+  const fitAddon = new FitAddon();
+  terminal.loadAddon(fitAddon);
+  terminal.loadAddon(new WebLinksAddon((_event, url) => {
+    window.electronAPI.openExternal(url);
+  }));
+  const searchAddon = new SearchAddon();
+  terminal.loadAddon(searchAddon);
+
+  const searchResult: SearchResult = { resultIndex: -1, resultCount: 0 };
+  searchAddon.onDidChangeResults((e) => {
+    searchResult.resultIndex = e.resultIndex;
+    searchResult.resultCount = e.resultCount;
+  });
+
+  // Register data listener at creation time so background sessions keep receiving output
+  const listenerMethod = type === 'pty' ? 'onPtyData' : 'onShellData';
+  const removeDataListener = window.electronAPI[listenerMethod]((payload) => {
+    if (payload.sessionId === sessionId) {
+      terminal.write(payload.data);
+    }
+  });
+
+  // Sync terminal title changes (e.g. Claude Code /rename) back to Chorus session name
+  if (type === 'pty') {
+    let lastTitle = '';
+    terminal.onTitleChange((title: string) => {
+      const trimmed = title.trim();
+      if (trimmed && trimmed !== lastTitle) {
+        lastTitle = trimmed;
+        window.electronAPI.sessionRename(sessionId, trimmed);
+      }
+    });
+  }
+
+  const entry: TerminalEntry = {
+    terminal,
+    fitAddon,
+    searchAddon,
+    searchResult,
+    mountedIn: null,
+    opened: false,
+    removeDataListener,
+  };
+  terminalCache.set(key, entry);
+  return entry;
+}
 
 /** Focus a cached terminal instance. */
 export function focusTerminal(type: 'pty' | 'shell', sessionId: string): void {
@@ -173,63 +249,6 @@ export function TerminalView({ sessionId, type, visible = true, fontFamily, font
 
   const resizeMethod = type === 'pty' ? 'ptyResize' : 'shellResize' as const;
   const writeMethod = type === 'pty' ? 'ptyWrite' : 'shellWrite' as const;
-  const resolvedFont = fontFamily || DEFAULT_FONT_FAMILY;
-  const resolvedFontSize = fontSize && fontSize > 0 ? fontSize : DEFAULT_FONT_SIZE;
-
-  const getOrCreateTerminal = useCallback((key: string, sid: string): TerminalEntry => {
-    const existing = terminalCache.get(key);
-    if (existing) return existing;
-
-    const terminal = new Terminal({
-      allowProposedApi: true,
-      cursorBlink: true,
-      cursorStyle: 'bar',
-      fontFamily: resolvedFont,
-      fontSize: resolvedFontSize,
-      lineHeight: 1,
-      theme: currentXtermTheme,
-      allowTransparency: false,
-      scrollback: 10000,
-    });
-
-    const fitAddon = new FitAddon();
-    terminal.loadAddon(fitAddon);
-    terminal.loadAddon(new WebLinksAddon((_event, url) => {
-      window.electronAPI.openExternal(url);
-    }));
-    const searchAddon = new SearchAddon();
-    terminal.loadAddon(searchAddon);
-
-    const searchResult: SearchResult = { resultIndex: -1, resultCount: 0 };
-    searchAddon.onDidChangeResults((e) => {
-      searchResult.resultIndex = e.resultIndex;
-      searchResult.resultCount = e.resultCount;
-    });
-
-    // Register data listener at creation time so background sessions keep receiving output
-    const listenerMethod = type === 'pty' ? 'onPtyData' : 'onShellData';
-    const removeDataListener = window.electronAPI[listenerMethod]((payload) => {
-      if (payload.sessionId === sid) {
-        terminal.write(payload.data);
-      }
-    });
-
-    // Sync terminal title changes (e.g. Claude Code /rename) back to Chorus session name
-    if (type === 'pty') {
-      let lastTitle = '';
-      terminal.onTitleChange((title: string) => {
-        const trimmed = title.trim();
-        if (trimmed && trimmed !== lastTitle) {
-          lastTitle = trimmed;
-          window.electronAPI.sessionRename(sid, trimmed);
-        }
-      });
-    }
-
-    const entry: TerminalEntry = { terminal, fitAddon, searchAddon, searchResult, mountedIn: null, opened: false, removeDataListener };
-    terminalCache.set(key, entry);
-    return entry;
-  }, [type, resolvedFont, resolvedFontSize]);
 
   // Attach terminal to DOM and handle I/O
   useEffect(() => {
@@ -237,7 +256,7 @@ export function TerminalView({ sessionId, type, visible = true, fontFamily, font
 
     const key = getTerminalKey(type, sessionId);
     const isNewTerminal = !terminalCache.has(key);
-    const entry = getOrCreateTerminal(key, sessionId);
+    const entry = preloadTerminal(type, sessionId, fontFamily, fontSize);
     const { terminal, fitAddon } = entry;
     const container = containerRef.current;
 
@@ -351,7 +370,7 @@ export function TerminalView({ sessionId, type, visible = true, fontFamily, font
       }
       entry.mountedIn = null;
     };
-  }, [sessionId, type, visible, getOrCreateTerminal, resizeMethod, writeMethod]);
+  }, [sessionId, type, visible, fontFamily, fontSize, resizeMethod, writeMethod]);
 
   return (
     <div
