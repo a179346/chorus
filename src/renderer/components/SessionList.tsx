@@ -38,8 +38,8 @@ const statusColors: Record<string, string> = {
   ended: 'var(--status-ended)',
 };
 
-function shortenPath(path: string): string {
-  return path.replace(/^\/Users\/[^/]+/, '~');
+function basename(path: string): string {
+  return path.split('/').filter(Boolean).pop() ?? path;
 }
 
 interface ContextMenuState {
@@ -309,7 +309,6 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
   const [editValue, setEditValue] = useState(session.name);
   const inputRef = useRef<HTMLInputElement>(null);
   const statusColor = statusColors[session.status] ?? 'var(--text-dimmed)';
-  const isPulsing = session.status === 'thinking' || session.status === 'generating' || session.status === 'waiting';
 
   // Focus input when entering edit mode
   useEffect(() => {
@@ -348,7 +347,7 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      {/* Row 1: name + status + bell */}
+      {/* Row 1: name + bell */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
         {isEditing ? (
           <input
@@ -428,20 +427,6 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
         )}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
           <span
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: '50%',
-              backgroundColor: statusColor,
-              display: 'inline-block',
-              animation: isPulsing ? 'statusPulse 1.5s ease-in-out infinite' : undefined,
-              boxShadow: isPulsing ? `0 0 4px ${statusColor}` : undefined,
-            }}
-          />
-          <span style={{ fontSize: 10, color: statusColor, textTransform: 'capitalize' }}>
-            {session.status}
-          </span>
-          <span
             onClick={(e) => {
               e.stopPropagation();
               onToggleNotify();
@@ -461,49 +446,21 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
         </div>
       </div>
 
-      {/* Row 2: cwd + worktree */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
-        <div style={{ fontSize: 10, color: 'var(--text-dimmed)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>
-          {shortenPath(session.cwd)}
+      {/* Row 2: cwd + worktree (left) — status (right) */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0, overflow: 'hidden' }}>
+          <span style={{ fontSize: 10, color: 'var(--text-dimmed)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+            {basename(session.cwd)}
+          </span>
+          {session.worktree && (
+            <span style={{ ...cardTagStyle, flexShrink: 0, background: 'none', padding: 0 }}>
+              <GitBranch size={10} style={{ color: 'var(--accent-blue)' }} /> {session.worktree}
+            </span>
+          )}
         </div>
-        {session.worktree && (
-          <span style={{ ...cardTagStyle, flexShrink: 0, background: 'none', padding: 0 }}>
-            <GitBranch size={10} style={{ color: 'var(--accent-blue)' }} /> {session.worktree}
-          </span>
-        )}
-      </div>
-
-      {/* Row 3: model, branch, context */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
-        {session.model && (
-          <span style={cardTagStyle}>{session.model}</span>
-        )}
-        {session.gitBranch && (
-          <span style={cardTagStyle}>
-            <span style={{ color: 'var(--accent-orange)' }}></span> {session.gitBranch}
-          </span>
-        )}
-        {session.contextUsage != null && (
-          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 3 }}>
-            <div style={{ width: 36, height: 3, background: 'rgba(var(--tint-rgb), 0.08)', borderRadius: 2, overflow: 'hidden' }}>
-              <div
-                style={{
-                  width: `${Math.min(100, session.contextUsage)}%`,
-                  height: '100%',
-                  borderRadius: 2,
-                  backgroundColor:
-                    session.contextUsage > 80
-                      ? 'var(--accent-red)'
-                      : session.contextUsage > 50
-                        ? 'var(--accent-yellow)'
-                        : 'var(--accent-primary)',
-                  transition: 'width var(--transition-normal)',
-                }}
-              />
-            </div>
-            <span style={{ fontSize: 9, color: 'var(--text-dimmed)' }}>{session.contextUsage}%</span>
-          </div>
-        )}
+        <span style={{ fontSize: 10, color: statusColor, textTransform: 'capitalize', flexShrink: 0 }}>
+          {session.status}
+        </span>
       </div>
     </div>
   );
