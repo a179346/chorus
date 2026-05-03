@@ -8,12 +8,14 @@ import { getTheme, DEFAULT_THEME_ID } from '../themes';
 import type { XtermColors, SearchDecorations } from '../themes';
 
 const DEFAULT_FONT_FAMILY = "'MesloLGS NF', 'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace";
+const DEFAULT_FONT_SIZE = 13;
 
 interface TerminalViewProps {
   sessionId: string | null;
   type: 'pty' | 'shell';
   visible?: boolean;
   fontFamily?: string;
+  fontSize?: number;
 }
 
 interface SearchResult {
@@ -108,11 +110,42 @@ export function terminalClearSearch(type: 'pty' | 'shell', sessionId: string): v
   if (entry) entry.searchAddon.clearDecorations();
 }
 
-/** Update font family on all cached terminal instances. */
-export function setAllTerminalsFontFamily(fontFamily: string): void {
-  for (const entry of terminalCache.values()) {
-    entry.terminal.options.fontFamily = fontFamily;
-    try { entry.fitAddon.fit(); } catch { /* not mounted */ }
+interface TerminalSettingsUpdate {
+  fontFamily?: string;
+  claudeFontSize?: number;
+  shellFontSize?: number;
+}
+
+/**
+ * Apply font family and per-type font size updates to all cached terminals,
+ * refit once per terminal, and notify the corresponding PTY of new dimensions.
+ * Pass only the keys you want to change.
+ */
+export function applyTerminalSettings(update: TerminalSettingsUpdate): void {
+  for (const [key, entry] of terminalCache.entries()) {
+    const isPty = key.startsWith('pty:');
+    const sessionId = key.slice(isPty ? 4 : 6);
+    const resizeMethod = isPty ? 'ptyResize' : 'shellResize';
+    let changed = false;
+
+    try {
+      if (update.fontFamily !== undefined) {
+        entry.terminal.options.fontFamily = update.fontFamily;
+        changed = true;
+      }
+      const newSize = isPty ? update.claudeFontSize : update.shellFontSize;
+      if (newSize !== undefined && newSize > 0) {
+        entry.terminal.options.fontSize = newSize;
+        changed = true;
+      }
+    } catch {
+      // Terminal may have been disposed concurrently; skip it.
+      continue;
+    }
+
+    if (changed) {
+      safeFitAndResize(entry.fitAddon, entry.terminal, sessionId, resizeMethod);
+    }
   }
 }
 
@@ -133,7 +166,7 @@ function safeFitAndResize(
   }
 }
 
-export function TerminalView({ sessionId, type, visible = true, fontFamily }: TerminalViewProps): React.ReactElement {
+export function TerminalView({ sessionId, type, visible = true, fontFamily, fontSize }: TerminalViewProps): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null);
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
@@ -141,6 +174,7 @@ export function TerminalView({ sessionId, type, visible = true, fontFamily }: Te
   const resizeMethod = type === 'pty' ? 'ptyResize' : 'shellResize' as const;
   const writeMethod = type === 'pty' ? 'ptyWrite' : 'shellWrite' as const;
   const resolvedFont = fontFamily || DEFAULT_FONT_FAMILY;
+  const resolvedFontSize = fontSize && fontSize > 0 ? fontSize : DEFAULT_FONT_SIZE;
 
   const getOrCreateTerminal = useCallback((key: string, sid: string): TerminalEntry => {
     const existing = terminalCache.get(key);
@@ -151,7 +185,7 @@ export function TerminalView({ sessionId, type, visible = true, fontFamily }: Te
       cursorBlink: true,
       cursorStyle: 'bar',
       fontFamily: resolvedFont,
-      fontSize: 13,
+      fontSize: resolvedFontSize,
       lineHeight: 1,
       theme: currentXtermTheme,
       allowTransparency: false,
@@ -195,7 +229,7 @@ export function TerminalView({ sessionId, type, visible = true, fontFamily }: Te
     const entry: TerminalEntry = { terminal, fitAddon, searchAddon, searchResult, mountedIn: null, opened: false, removeDataListener };
     terminalCache.set(key, entry);
     return entry;
-  }, [type, resolvedFont]);
+  }, [type, resolvedFont, resolvedFontSize]);
 
   // Attach terminal to DOM and handle I/O
   useEffect(() => {

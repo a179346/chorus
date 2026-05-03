@@ -40,6 +40,8 @@ const DEFAULT_NEW_SESSION_DEFAULTS: NewSessionDefaults = {
 const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
   fontFamily: "'MesloLGS NF', 'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace",
   theme: 'espresso',
+  claudeFontSize: 13,
+  shellFontSize: 13,
 };
 
 const DEFAULT_APP_STATE: AppState = {
@@ -208,7 +210,16 @@ export class SessionStore {
   // ─── App State ────────────────────────────────────────────
 
   loadAppState(): AppState {
-    return readJson<AppState>(STATE_FILE, DEFAULT_APP_STATE);
+    const loaded = readJson<Partial<AppState> | null>(STATE_FILE, null);
+    if (!loaded || typeof loaded !== 'object') return DEFAULT_APP_STATE;
+    return {
+      ...DEFAULT_APP_STATE,
+      ...loaded,
+      windowBounds: { ...DEFAULT_APP_STATE.windowBounds, ...(loaded.windowBounds ?? {}) },
+      panelSizes: { ...DEFAULT_APP_STATE.panelSizes, ...(loaded.panelSizes ?? {}) },
+      newSessionDefaults: { ...DEFAULT_APP_STATE.newSessionDefaults, ...(loaded.newSessionDefaults ?? {}) },
+      terminalSettings: { ...DEFAULT_APP_STATE.terminalSettings, ...(loaded.terminalSettings ?? {}) },
+    };
   }
 
   saveAppState(partial: Partial<AppState>): void {

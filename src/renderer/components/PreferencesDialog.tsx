@@ -5,14 +5,28 @@ interface PreferencesDialogProps {
   open: boolean;
   fontFamily: string;
   theme: string;
+  claudeFontSize: number;
+  shellFontSize: number;
   onClose: () => void;
-  onSave: (settings: { fontFamily: string; theme: string }) => void;
+  onSave: (settings: { fontFamily: string; theme: string; claudeFontSize: number; shellFontSize: number }) => void;
   onPreviewTheme: (themeId: string) => void;
 }
 
-export function PreferencesDialog({ open, fontFamily, theme, onClose, onSave, onPreviewTheme }: PreferencesDialogProps): React.ReactElement | null {
+const MIN_FONT_SIZE = 8;
+const MAX_FONT_SIZE = 32;
+
+function parseFontSize(value: string): number | null {
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n)) return null;
+  if (n < MIN_FONT_SIZE || n > MAX_FONT_SIZE) return null;
+  return n;
+}
+
+export function PreferencesDialog({ open, fontFamily, theme, claudeFontSize, shellFontSize, onClose, onSave, onPreviewTheme }: PreferencesDialogProps): React.ReactElement | null {
   const [font, setFont] = useState(fontFamily);
   const [selectedTheme, setSelectedTheme] = useState(theme);
+  const [claudeSize, setClaudeSize] = useState<string>(String(claudeFontSize));
+  const [shellSize, setShellSize] = useState<string>(String(shellFontSize));
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
 
@@ -20,8 +34,10 @@ export function PreferencesDialog({ open, fontFamily, theme, onClose, onSave, on
     if (!open) return;
     setFont(fontFamily);
     setSelectedTheme(theme);
+    setClaudeSize(String(claudeFontSize));
+    setShellSize(String(shellFontSize));
     setTimeout(() => inputRef.current?.focus(), 50);
-  }, [open, fontFamily, theme]);
+  }, [open, fontFamily, theme, claudeFontSize, shellFontSize]);
 
   useEffect(() => {
     if (!open) return;
@@ -60,10 +76,19 @@ export function PreferencesDialog({ open, fontFamily, theme, onClose, onSave, on
     onPreviewTheme(id);
   };
 
+  const claudeSizeNum = parseFontSize(claudeSize);
+  const shellSizeNum = parseFontSize(shellSize);
+  const canSave = font.trim().length > 0 && claudeSizeNum !== null && shellSizeNum !== null;
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!font.trim()) return;
-    onSave({ fontFamily: font.trim(), theme: selectedTheme });
+    if (!canSave) return;
+    onSave({
+      fontFamily: font.trim(),
+      theme: selectedTheme,
+      claudeFontSize: claudeSizeNum,
+      shellFontSize: shellSizeNum,
+    });
   };
 
   if (!open) return null;
@@ -153,10 +178,41 @@ export function PreferencesDialog({ open, fontFamily, theme, onClose, onSave, on
             </span>
           </div>
 
+          {/* Font sizes */}
+          <div style={fieldStyle}>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <div style={{ ...fieldStyle, flex: 1 }}>
+                <label style={labelStyle}>Claude Code Font Size</label>
+                <input
+                  type="number"
+                  min={MIN_FONT_SIZE}
+                  max={MAX_FONT_SIZE}
+                  step={1}
+                  style={{ ...inputStyle, borderColor: claudeSizeNum === null ? 'var(--accent-red)' : undefined }}
+                  value={claudeSize}
+                  onChange={(e) => setClaudeSize(e.target.value)}
+                />
+              </div>
+              <div style={{ ...fieldStyle, flex: 1 }}>
+                <label style={labelStyle}>Shell Font Size</label>
+                <input
+                  type="number"
+                  min={MIN_FONT_SIZE}
+                  max={MAX_FONT_SIZE}
+                  step={1}
+                  style={{ ...inputStyle, borderColor: shellSizeNum === null ? 'var(--accent-red)' : undefined }}
+                  value={shellSize}
+                  onChange={(e) => setShellSize(e.target.value)}
+                />
+              </div>
+            </div>
+            <span style={hintStyle}>Between {MIN_FONT_SIZE} and {MAX_FONT_SIZE}.</span>
+          </div>
+
           {/* Preview */}
           <div style={previewContainerStyle}>
             <span style={previewLabelStyle}>Preview</span>
-            <div style={{ ...previewTextStyle, fontFamily: font || undefined }}>
+            <div style={{ ...previewTextStyle, fontFamily: font || undefined, fontSize: claudeSizeNum ?? 13 }}>
               AaBbCc 0123 {'{ }'} =&gt; !=
             </div>
           </div>
@@ -169,9 +225,10 @@ export function PreferencesDialog({ open, fontFamily, theme, onClose, onSave, on
               type="submit"
               style={{
                 ...submitButtonStyle,
-                opacity: font.trim() ? 1 : 0.4,
+                opacity: canSave ? 1 : 0.4,
+                cursor: canSave ? 'pointer' : 'not-allowed',
               }}
-              disabled={!font.trim()}
+              disabled={!canSave}
             >
               Save
             </button>

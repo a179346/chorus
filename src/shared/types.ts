@@ -97,6 +97,8 @@ export interface ToolkitCommand {
 export interface TerminalSettings {
   fontFamily: string;
   theme: string;
+  claudeFontSize: number;
+  shellFontSize: number;
 }
 
 // ─── App State ───────────────────────────────────────────
