@@ -5,7 +5,7 @@ import { StatusBar } from './components/StatusBar';
 import { ShellPanel } from './components/ShellPanel';
 import { SessionList } from './components/SessionList';
 import { ToolkitPanel } from './components/ToolkitPanel';
-import { TerminalView, disposeTerminal, focusTerminal, getFocusedTerminalInfo, applyTerminalSettings } from './components/TerminalView';
+import { TerminalView, disposeTerminal, focusTerminal, getFocusedTerminalInfo, applyTerminalSettings, preloadTerminal } from './components/TerminalView';
 import { SearchBar } from './components/SearchBar';
 import { NewSessionDialog } from './components/NewSessionDialog';
 import { PreferencesDialog } from './components/PreferencesDialog';
@@ -83,6 +83,28 @@ export function App(): React.ReactElement {
 
     window.electronAPI.toolkitList().then(setToolkitCommands);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ─── Preload terminals for every session ───────────
+  // Background sessions emit PTY data immediately on app restart (claude --resume
+  // dumps conversation history). Without a registered listener, that output is
+  // dropped. preloadTerminal creates a cached xterm + IPC listener per session
+  // so the data is captured even before the user switches to that session.
+  useEffect(() => {
+    for (const s of sessions) {
+      preloadTerminal('pty', s.id, terminalFontFamily, claudeFontSize);
+      preloadTerminal('shell', s.id, terminalFontFamily, shellFontSize);
+    }
+  }, [sessions, terminalFontFamily, claudeFontSize, shellFontSize]);
+
+  // Keep cached terminals' fonts in sync with current settings (handles the
+  // case where preloadTerminal ran with defaults before appGetState resolved).
+  useEffect(() => {
+    applyTerminalSettings({
+      fontFamily: terminalFontFamily,
+      claudeFontSize,
+      shellFontSize,
+    });
+  }, [terminalFontFamily, claudeFontSize, shellFontSize]);
 
   // ─── Session state updates from main ────────────────
   useEffect(() => {
