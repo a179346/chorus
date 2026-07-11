@@ -48,6 +48,8 @@ export interface SessionConfig {
   worktree?: string;
   flags: string[];
   notifyOnIdle?: boolean;
+  /** GitHub PR URL — links the session to the PR for stage tracking. */
+  prUrl?: string;
 }
 
 // Fields the main process may push to the renderer over SESSION_STATE.
@@ -120,6 +122,8 @@ export interface AppState {
   lastActiveSessionId: string | null;
   newSessionDefaults: NewSessionDefaults;
   terminalSettings: TerminalSettings;
+  /** Pinned working directories offered as one-click choices in the new-session dialog. */
+  favoriteDirectories: string[];
 }
 
 export interface WindowBounds {

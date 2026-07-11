@@ -5,7 +5,8 @@ import { execSync } from "node:child_process";
 import crypto from "node:crypto";
 import { IpcChannels, IpcErrorCodes } from "../shared/ipc";
 import type { IpcInvokeMap } from "../shared/ipc";
-import type { Session, SessionConfig } from "../shared/types";
+import type { PrRef, Session, SessionConfig } from "../shared/types";
+import { parsePrUrl } from "../shared/pr-url";
 import { SessionStore, fromPersisted } from "./session-store";
 import { SessionState } from "./session-state";
 import { StageMonitor } from "./stage-monitor";
@@ -144,6 +145,17 @@ async function createSessionFromConfig(
   const cwd = validateCwd(config.cwd);
   const worktree = config.worktree || null;
 
+  let pr: PrRef | null = null;
+  if (config.prUrl?.trim()) {
+    pr = parsePrUrl(config.prUrl);
+    if (!pr) {
+      throw ipcError(
+        IpcErrorCodes.INVALID_PR_URL,
+        `Not a GitHub PR URL: ${config.prUrl}`,
+      );
+    }
+  }
+
   const session: Session = {
     id,
     name: config.name,
@@ -193,6 +205,10 @@ async function createSessionFromConfig(
   // Session stays in 'creating' status — the renderer / PTY output parser
   // will transition to 'idle' once the Claude prompt is detected.
   sessionStore.addSession(session);
+  if (pr) {
+    // Link the PR now (synchronously sets session.pr) and kick off a stage lookup
+    stageMonitor.handlePrDetected(id, pr);
+  }
   return session;
 }
 

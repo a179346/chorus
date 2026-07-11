@@ -66,6 +66,7 @@ export const IpcErrorCodes = {
   SESSION_NOT_FOUND: 'SESSION_NOT_FOUND',
   PTY_SPAWN_FAILED: 'PTY_SPAWN_FAILED',
   INVALID_DIRECTORY: 'INVALID_DIRECTORY',
+  INVALID_PR_URL: 'INVALID_PR_URL',
 } as const;
 
 export type IpcErrorCode = (typeof IpcErrorCodes)[keyof typeof IpcErrorCodes];

@@ -8,6 +8,7 @@ export interface NewSessionInput {
   worktree: string;
   flags: string[];
   notifyOnIdle: boolean;
+  prUrl: string;
 }
 
 /**
@@ -55,6 +56,7 @@ export function useSessions() {
       worktree: input.worktree || undefined,
       flags: input.flags,
       notifyOnIdle: input.notifyOnIdle,
+      prUrl: input.prUrl || undefined,
     });
     setSessions((prev) => [...prev, session]);
     setActiveSessionId(session.id);

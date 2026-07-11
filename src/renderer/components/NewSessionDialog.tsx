@@ -1,16 +1,30 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import { SortableContext, rectSortingStrategy, useSortable } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { invoke, IpcChannels } from '../ipc';
+import { parsePrUrl } from '../../shared/pr-url';
+import { basename } from '../session-presentation';
 
 interface NewSessionDialogProps {
   open: boolean;
   onClose: () => void;
-  onSubmit: (config: { name: string; cwd: string; worktree: string; flags: string[]; notifyOnIdle: boolean }) => void;
+  onSubmit: (config: { name: string; cwd: string; worktree: string; flags: string[]; notifyOnIdle: boolean; prUrl: string }) => void;
 }
 
 export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogProps): React.ReactElement | null {
   const [name, setName] = useState('');
   const [cwd, setCwd] = useState('');
   const [worktree, setWorktree] = useState('');
+  const [prUrl, setPrUrl] = useState('');
+  const [favorites, setFavorites] = useState<string[]>([]);
   const [autoMode, setAutoMode] = useState(false);
   const [skipPermissions, setSkipPermissions] = useState(false);
   const [chrome, setChrome] = useState(false);
@@ -27,8 +41,12 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
       setChrome(defaults.flags.includes('--chrome'));
       setNotifyOnIdle(defaults.notifyOnIdle ?? false);
     });
+    void invoke(IpcChannels.APP_GET_STATE).then((state) => {
+      setFavorites(state.favoriteDirectories);
+    });
     setName('');
     setWorktree('');
+    setPrUrl('');
     setTimeout(() => nameRef.current?.focus(), 50);
   }, [open]);
 
@@ -67,17 +85,54 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
     if (dir) setCwd(dir);
   }, []);
 
+  const isFavorite = favorites.includes(cwd.trim());
+
+  const saveFavorites = useCallback((next: string[]) => {
+    setFavorites(next);
+    void invoke(IpcChannels.APP_SAVE_STATE, { favoriteDirectories: next });
+  }, []);
+
+  const toggleFavorite = useCallback(() => {
+    const dir = cwd.trim();
+    if (!dir) return;
+    saveFavorites(
+      favorites.includes(dir) ? favorites.filter((f) => f !== dir) : [...favorites, dir],
+    );
+  }, [cwd, favorites, saveFavorites]);
+
+  const dragSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+  );
+
+  const handleFavoriteDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const oldIndex = favorites.indexOf(String(active.id));
+      const newIndex = favorites.indexOf(String(over.id));
+      if (oldIndex === -1 || newIndex === -1) return;
+      const reordered = [...favorites];
+      const [moved] = reordered.splice(oldIndex, 1);
+      reordered.splice(newIndex, 0, moved);
+      saveFavorites(reordered);
+    },
+    [favorites, saveFavorites],
+  );
+
+  const prUrlInvalid = prUrl.trim() !== '' && parsePrUrl(prUrl) === null;
+  const canSubmit = !!name.trim() && !!cwd.trim() && !prUrlInvalid;
+
   const handleSubmit = useCallback(
     (e: React.FormEvent) => {
       e.preventDefault();
-      if (!name.trim() || !cwd.trim()) return;
+      if (!canSubmit) return;
       const flags: string[] = [];
       if (autoMode) flags.push('--enable-auto-mode');
       if (skipPermissions) flags.push('--dangerously-skip-permissions');
       flags.push(chrome ? '--chrome' : '--no-chrome');
-      onSubmit({ name: name.trim(), cwd: cwd.trim(), worktree: worktree.trim(), flags, notifyOnIdle });
+      onSubmit({ name: name.trim(), cwd: cwd.trim(), worktree: worktree.trim(), flags, notifyOnIdle, prUrl: prUrl.trim() });
     },
-    [name, cwd, worktree, autoMode, skipPermissions, chrome, notifyOnIdle, onSubmit]
+    [canSubmit, name, cwd, worktree, autoMode, skipPermissions, chrome, notifyOnIdle, prUrl, onSubmit]
   );
 
   if (!open) return null;
@@ -110,10 +165,39 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
                 onChange={(e) => setCwd(e.target.value)}
                 placeholder="/Users/..."
               />
+              <button
+                type="button"
+                style={{
+                  ...browseButtonStyle,
+                  padding: '7px 9px',
+                  color: isFavorite ? 'var(--accent-primary)' : 'var(--text-dimmed)',
+                }}
+                onClick={toggleFavorite}
+                title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+                aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+              >
+                {isFavorite ? '★' : '☆'}
+              </button>
               <button type="button" style={browseButtonStyle} onClick={handleSelectDir}>
                 Browse
               </button>
             </div>
+            {favorites.length > 0 && (
+              <DndContext sensors={dragSensors} collisionDetection={closestCenter} onDragEnd={handleFavoriteDragEnd}>
+                <SortableContext items={favorites} strategy={rectSortingStrategy}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 2 }}>
+                    {favorites.map((dir) => (
+                      <FavoriteChip
+                        key={dir}
+                        dir={dir}
+                        selected={dir === cwd.trim()}
+                        onSelect={() => setCwd(dir)}
+                      />
+                    ))}
+                  </div>
+                </SortableContext>
+              </DndContext>
+            )}
           </div>
 
           {/* Worktree */}
@@ -125,6 +209,25 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
               onChange={(e) => setWorktree(e.target.value)}
               placeholder="Leave empty to skip"
             />
+          </div>
+
+          {/* PR URL */}
+          <div style={fieldStyle}>
+            <label style={labelStyle}>Pull Request URL <span style={{ color: 'var(--text-dimmed)', fontWeight: 400 }}>(optional)</span></label>
+            <input
+              style={{
+                ...inputStyle,
+                borderColor: prUrlInvalid ? 'var(--status-error, #e53e3e)' : 'var(--border-default)',
+              }}
+              value={prUrl}
+              onChange={(e) => setPrUrl(e.target.value)}
+              placeholder="https://github.com/owner/repo/pull/123"
+            />
+            {prUrlInvalid && (
+              <span style={{ fontSize: 10, color: 'var(--status-error, #e53e3e)' }}>
+                Expected a GitHub PR URL like https://github.com/owner/repo/pull/123
+              </span>
+            )}
           </div>
 
           {/* Flags */}
@@ -213,9 +316,9 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
               type="submit"
               style={{
                 ...submitButtonStyle,
-                opacity: name.trim() && cwd.trim() ? 1 : 0.4,
+                opacity: canSubmit ? 1 : 0.4,
               }}
-              disabled={!name.trim() || !cwd.trim()}
+              disabled={!canSubmit}
             >
               Create
             </button>
@@ -223,6 +326,41 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
         </form>
       </div>
     </div>
+  );
+}
+
+interface FavoriteChipProps {
+  dir: string;
+  selected: boolean;
+  onSelect: () => void;
+}
+
+/** Draggable favorite-directory chip: click selects, drag reorders. */
+function FavoriteChip({ dir, selected, onSelect }: FavoriteChipProps): React.ReactElement {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: dir,
+  });
+
+  return (
+    <button
+      ref={setNodeRef}
+      type="button"
+      style={{
+        ...favoriteChipStyle,
+        borderColor: selected ? 'var(--accent-primary)' : 'var(--border-default)',
+        color: selected ? 'var(--text-primary)' : 'var(--text-secondary)',
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.5 : 1,
+        zIndex: isDragging ? 1 : 0,
+      }}
+      title={dir}
+      onClick={onSelect}
+      {...attributes}
+      {...listeners}
+    >
+      {basename(dir)}
+    </button>
   );
 }
 
@@ -292,6 +430,21 @@ const browseButtonStyle: React.CSSProperties = {
   cursor: 'pointer',
   fontFamily: 'var(--font-ui)',
   transition: 'all var(--transition-fast)',
+  whiteSpace: 'nowrap',
+};
+
+const favoriteChipStyle: React.CSSProperties = {
+  background: 'var(--bg-surface)',
+  border: '1px solid var(--border-default)',
+  borderRadius: 'var(--radius-sm)',
+  padding: '3px 8px',
+  fontSize: 10,
+  fontFamily: 'var(--font-mono)',
+  cursor: 'pointer',
+  transition: 'all var(--transition-fast)',
+  maxWidth: '100%',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
 };
 
