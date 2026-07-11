@@ -66,45 +66,6 @@ export class HookInstaller {
     this.installedDirs.add(cwd);
   }
 
-  /**
-   * Remove Chorus hooks from a cwd's settings when a session ends.
-   * If no other Chorus sessions use this cwd, clean up our hooks.
-   */
-  remove(cwd: string): void {
-    this.installedDirs.delete(cwd);
-
-    const settingsPath = path.join(cwd, '.claude', 'settings.local.json');
-    try {
-      if (!fs.existsSync(settingsPath)) return;
-
-      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
-      if (!settings.hooks) return;
-
-      settings.hooks = removeChorusHooks(settings.hooks);
-
-      // Remove empty hook arrays
-      for (const [event, entries] of Object.entries(settings.hooks as Record<string, unknown[]>)) {
-        if (Array.isArray(entries) && entries.length === 0) {
-          delete (settings.hooks as Record<string, unknown[]>)[event];
-        }
-      }
-
-      // Remove hooks key entirely if empty
-      if (Object.keys(settings.hooks as object).length === 0) {
-        delete settings.hooks;
-      }
-
-      // If settings is now empty, delete the file; otherwise write back
-      if (Object.keys(settings).length === 0) {
-        fs.unlinkSync(settingsPath);
-      } else {
-        fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
-      }
-    } catch {
-      // Best-effort cleanup
-    }
-  }
-
   private buildHookConfig(): Record<string, unknown[]> {
     const curlCmd = `curl -s -X POST http://127.0.0.1:${this.getPort()}/hook -H 'Content-Type: application/json' -d @- 2>/dev/null || true`;
 
