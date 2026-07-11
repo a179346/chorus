@@ -67,6 +67,21 @@ function resizePty(kind: TerminalKind, sessionId: string, cols: number, rows: nu
   void invoke(KIND_CHANNELS[kind].resize, { sessionId, cols, rows });
 }
 
+/**
+ * Force xterm to recompute the DOM viewport's scroll-area height and
+ * scrollTop from the internal buffer. Writes that arrive while a terminal is
+ * detached from the DOM run xterm's viewport refresh against a 0-height
+ * element, leaving stale scroll metrics that make trackpad scrolling jump
+ * and stop short of the bottom after reattach. Nothing on the public API
+ * triggers this resync, so reach into _core (the same escape hatch xterm
+ * addons use).
+ */
+function syncViewport(terminal: Terminal): void {
+  const core = (terminal as unknown as { _core?: { viewport?: { syncScrollArea(immediate?: boolean): void } } })
+    ._core;
+  core?.viewport?.syncScrollArea(true);
+}
+
 function safeFitAndResize(entry: TerminalEntry, kind: TerminalKind, sessionId: string): void {
   try {
     entry.fitAddon.fit();
@@ -198,14 +213,11 @@ function attach(
   requestAnimationFrame(() => {
     safeFitAndResize(entry, kind, sessionId);
     terminal.refresh(0, terminal.rows - 1);
+    syncViewport(terminal);
     if (kind === 'pty') {
       terminal.focus();
     }
   });
-  const viewport = container.querySelector('.xterm-viewport');
-  if (viewport) {
-    viewport.scrollTop = viewport.scrollHeight;
-  }
 
   // After renderer reload (Cmd+R), the PTY process is still alive but the
   // xterm buffer is empty. Force SIGWINCH by jiggling PTY dimensions so the
