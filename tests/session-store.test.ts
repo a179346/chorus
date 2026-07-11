@@ -224,6 +224,23 @@ describe('SessionStore', () => {
       expect(state.panelSizes).toBeDefined();
       expect(state.lastActiveSessionId).toBeNull();
       expect(state.newSessionDefaults).toBeDefined();
+      expect(state.favoriteDirectories).toEqual([]);
+    });
+
+    it('should backfill favoriteDirectories when state.json predates them', () => {
+      vi.mocked(fs.readFileSync).mockReturnValue(
+        JSON.stringify({
+          windowBounds: { x: 0, y: 0, width: 800, height: 600 },
+        })
+      );
+      expect(store.loadAppState().favoriteDirectories).toEqual([]);
+    });
+
+    it('should preserve saved favoriteDirectories', () => {
+      vi.mocked(fs.readFileSync).mockReturnValue(
+        JSON.stringify({ favoriteDirectories: ['/Users/me/code/app'] })
+      );
+      expect(store.loadAppState().favoriteDirectories).toEqual(['/Users/me/code/app']);
     });
 
     it('should return default app state for corrupted JSON', () => {

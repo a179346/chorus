@@ -50,6 +50,7 @@ const DEFAULT_APP_STATE: AppState = {
   lastActiveSessionId: null,
   newSessionDefaults: DEFAULT_NEW_SESSION_DEFAULTS,
   terminalSettings: DEFAULT_TERMINAL_SETTINGS,
+  favoriteDirectories: [],
 };
 
 function ensureDir(): void {
