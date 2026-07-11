@@ -1,29 +1,17 @@
 import { app, BrowserWindow, Menu, ipcMain, dialog, Notification, shell } from "electron";
 import path from "node:path";
 import fs from "node:fs";
-import { execSync, spawn } from "node:child_process";
+import { execSync } from "node:child_process";
 import crypto from "node:crypto";
-import pLimit from "p-limit";
 import { IpcChannels, IpcErrorCodes } from "../shared/ipc";
-import type {
-  Session,
-  SessionConfig,
-  SessionIdPayload,
-  SessionRenamePayload,
-  SessionReorderPayload,
-  PtyWritePayload,
-  PtyResizePayload,
-  ToolkitCommand,
-  ToolkitExecutePayload,
-  ToolkitListPayload,
-  ToolkitSavePayload,
-  AppState,
-  PrRef,
-  SessionStage,
-} from "../shared/types";
-import { SessionStore } from "./session-store";
+import type { IpcInvokeMap } from "../shared/ipc";
+import type { Session, SessionConfig } from "../shared/types";
+import { SessionStore, fromPersisted } from "./session-store";
+import { SessionState } from "./session-state";
+import { StageMonitor } from "./stage-monitor";
 import { PtyManager } from "./pty-manager";
 import { HookServer } from "./hook-server";
+import { HookInstaller } from "./hook-installer";
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
@@ -73,301 +61,45 @@ if (!app.isPackaged) {
   }
 }
 
-// ─── Singletons ─────────────────────────────────────────────
+// ─── Composition ────────────────────────────────────────────
 
 const sessionStore = new SessionStore();
 let mainWindow: BrowserWindow | null = null;
-let activeSessionId: string | null = null;
 
-// ─── Stage Refresh ──────────────────────────────────────────
-
-const GH_TIMEOUT_MS = 10_000;
-const GH_RETRY_AFTER_MS = 5 * 60 * 1000;
-const STAGE_DEBOUNCE_MS = 1000;
-const STAGE_POLL_INTERVAL_MS = 60_000;
-
-const stageRefreshLimit = pLimit(4);
-const stageRefreshInFlight: Map<string, Promise<void>> = new Map();
-const stageRefreshDebouncers: Map<string, ReturnType<typeof setTimeout>> = new Map();
-let ghAvailable = true;
-let ghUnavailableUntil = 0;
-
-type GhResult =
-  | { type: 'ok'; stage: SessionStage }
-  | { type: 'not-found' }
-  | { type: 'unavailable' }
-  | { type: 'error' };
-
-function deriveStage(json: {
-  state?: unknown;
-  isDraft?: unknown;
-  mergedAt?: unknown;
-}): SessionStage {
-  const state = typeof json.state === 'string' ? json.state.toUpperCase() : '';
-  const isDraft = json.isDraft === true;
-  const merged = json.mergedAt !== null && json.mergedAt !== undefined && json.mergedAt !== '';
-  if (state === 'MERGED' || merged) return 'merged';
-  if (state === 'CLOSED') return 'closed';
-  if (state === 'OPEN') return isDraft ? 'draft' : 'ready';
-  return 'no-pr';
-}
-
-function runGhPrView(pr: PrRef): Promise<GhResult> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const settle = (r: GhResult): void => {
-      if (settled) return;
-      settled = true;
-      resolve(r);
-    };
-
-    let child;
-    try {
-      child = spawn(
-        'gh',
-        [
-          'pr',
-          'view',
-          String(pr.number),
-          '-R',
-          `${pr.owner}/${pr.repo}`,
-          '--json',
-          'state,isDraft,mergedAt',
-        ],
-        { stdio: ['ignore', 'pipe', 'pipe'] },
-      );
-    } catch {
-      settle({ type: 'unavailable' });
-      return;
+const sessionState = new SessionState(sessionStore, {
+  broadcast: (update) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(IpcChannels.SESSION_STATE, update);
     }
+  },
+  isWindowFocused: () =>
+    !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused(),
+  showNotification: (title, body) => {
+    new Notification({ title, body, silent: false }).show();
+  },
+  setUnreadCount: (count) => {
+    app.dock?.setBadge(count > 0 ? String(count) : "");
+  },
+});
 
-    let stdout = '';
-    let stderr = '';
+const stageMonitor = new StageMonitor({
+  getSession: (id) => sessionStore.getSession(id),
+  getAllSessions: () => sessionStore.getAllSessions(),
+  commit: (sessionId, updates) => void sessionState.commit(sessionId, updates),
+});
 
-    const timeout = setTimeout(() => {
-      try {
-        child.kill();
-      } catch {
-        /* ignore */
-      }
-      settle({ type: 'error' });
-    }, GH_TIMEOUT_MS);
+const hookServer = new HookServer(
+  (sessionId, update) => sessionState.applyHookUpdate(sessionId, update),
+  (sessionId, pr) => stageMonitor.handlePrDetected(sessionId, pr),
+  (sessionId) => sessionStore.getSession(sessionId)?.contextLimit ?? null,
+);
 
-    child.stdout?.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
-    child.stderr?.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-
-    child.on('error', (err: NodeJS.ErrnoException) => {
-      clearTimeout(timeout);
-      if (err.code === 'ENOENT') settle({ type: 'unavailable' });
-      else settle({ type: 'error' });
-    });
-
-    child.on('close', (code) => {
-      clearTimeout(timeout);
-      if (code === 0) {
-        try {
-          settle({ type: 'ok', stage: deriveStage(JSON.parse(stdout)) });
-        } catch {
-          settle({ type: 'error' });
-        }
-        return;
-      }
-      const msg = stderr.toLowerCase();
-      if (msg.includes('not authenticated') || msg.includes('command not found')) {
-        settle({ type: 'unavailable' });
-      } else if (msg.includes('not found') || msg.includes('could not resolve')) {
-        settle({ type: 'not-found' });
-      } else {
-        settle({ type: 'error' });
-      }
-    });
-  });
-}
-
-function pushSessionState(payload: Record<string, unknown> & { sessionId: string }): void {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(IpcChannels.SESSION_STATE, payload);
-  }
-}
-
-function refreshStage(sessionId: string): Promise<void> {
-  const session = sessionStore.getSession(sessionId);
-  if (!session || !session.pr || session.status === 'ended') return Promise.resolve();
-
-  const existing = stageRefreshInFlight.get(sessionId);
-  if (existing) return existing;
-
-  if (!ghAvailable && Date.now() < ghUnavailableUntil) return Promise.resolve();
-
-  const promise = stageRefreshLimit(async () => {
-    const s = sessionStore.getSession(sessionId);
-    if (!s || !s.pr || s.status === 'ended') return;
-
-    const result = await runGhPrView(s.pr);
-
-    const after = sessionStore.getSession(sessionId);
-    if (!after || after.status === 'ended') return;
-
-    if (result.type === 'unavailable') {
-      ghAvailable = false;
-      ghUnavailableUntil = Date.now() + GH_RETRY_AFTER_MS;
-      return;
-    }
-    if (result.type === 'error') return;
-
-    ghAvailable = true;
-    const ts = Date.now();
-
-    if (result.type === 'not-found') {
-      const changed = after.pr !== null || after.stage !== 'no-pr';
-      if (changed) {
-        sessionStore.updateSession(sessionId, {
-          pr: null,
-          stage: 'no-pr',
-          stageUpdatedAt: ts,
-        });
-        sessionStore.persistSessions();
-        pushSessionState({ sessionId, pr: null, stage: 'no-pr', stageUpdatedAt: ts });
-      } else {
-        after.stageUpdatedAt = ts;
-      }
-      return;
-    }
-
-    if (after.stage !== result.stage) {
-      sessionStore.updateSession(sessionId, {
-        stage: result.stage,
-        stageUpdatedAt: ts,
-      });
-      sessionStore.persistSessions();
-      pushSessionState({ sessionId, stage: result.stage, stageUpdatedAt: ts });
-    } else {
-      after.stageUpdatedAt = ts;
-    }
-  }).finally(() => {
-    stageRefreshInFlight.delete(sessionId);
-  });
-
-  stageRefreshInFlight.set(sessionId, promise);
-  return promise;
-}
-
-function scheduleRefresh(sessionId: string | null): void {
-  if (!sessionId) return;
-  const existing = stageRefreshDebouncers.get(sessionId);
-  if (existing) clearTimeout(existing);
-  stageRefreshDebouncers.set(
-    sessionId,
-    setTimeout(() => {
-      stageRefreshDebouncers.delete(sessionId);
-      void refreshStage(sessionId);
-    }, STAGE_DEBOUNCE_MS),
-  );
-}
-
-function cleanupStageRefresh(sessionId: string): void {
-  stageRefreshInFlight.delete(sessionId);
-  const t = stageRefreshDebouncers.get(sessionId);
-  if (t) {
-    clearTimeout(t);
-    stageRefreshDebouncers.delete(sessionId);
-  }
-}
-
-function refreshAllStages(): void {
-  for (const s of sessionStore.getAllSessions()) {
-    if (s.pr && s.status !== 'ended') void refreshStage(s.id);
-  }
-}
-
-function handlePrDetected(sessionId: string, pr: PrRef): void {
-  const session = sessionStore.getSession(sessionId);
-  if (!session || session.status === 'ended') return;
-  const current = session.pr;
-  if (
-    current &&
-    current.owner === pr.owner &&
-    current.repo === pr.repo &&
-    current.number === pr.number
-  ) {
-    void refreshStage(sessionId);
-    return;
-  }
-  sessionStore.updateSession(sessionId, { pr });
-  sessionStore.persistSessions();
-  pushSessionState({ sessionId, pr });
-  void refreshStage(sessionId);
-}
-
-const hookServer = new HookServer((sessionId, update) => {
-  const updates: Partial<Session> = { status: update.status };
-  if (update.status === "thinking") updates.hasUserInput = true;
-  if (update.model !== undefined) updates.model = update.model;
-  if (update.contextUsage !== undefined)
-    updates.contextUsage = update.contextUsage;
-  if (update.contextLimit !== undefined)
-    updates.contextLimit = update.contextLimit;
-
-  // Check flags before updating (need previous status)
-  const session = sessionStore.getSession(sessionId);
-  const becameIdle =
-    session &&
-    (session.status === "thinking" || session.status === "generating") &&
-    (update.status === "idle" || update.status === "waiting");
-
-  // Mark unread if session finished and it's not the one the user is looking at
-  if (becameIdle) {
-    const isWindowFocused = mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused();
-    if (!isWindowFocused || sessionId !== activeSessionId) {
-      updates.unread = true;
-    }
-  }
-
-  const shouldNotify = session?.notifyOnIdle && becameIdle;
-
-  sessionStore.updateSession(sessionId, updates);
-  if (updates.unread !== undefined) updateDockBadge();
-
-  if (shouldNotify && session) {
-    const isWindowFocused = mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused();
-
-    if (!isWindowFocused) {
-      const statusLabel = update.status === "idle" ? "Idle" : "Waiting for input";
-      new Notification({
-        title: session.name,
-        body: `Session is now ${statusLabel}`,
-        silent: false,
-      }).show();
-    }
-  }
-
-  // Push only defined fields to renderer
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    const payload: Record<string, unknown> = {
-      sessionId,
-      status: update.status,
-    };
-    if (update.status === "thinking") payload.hasUserInput = true;
-    if (update.model !== undefined) payload.model = update.model;
-    if (update.contextUsage !== undefined)
-      payload.contextUsage = update.contextUsage;
-    if (update.contextLimit !== undefined)
-      payload.contextLimit = update.contextLimit;
-    if (updates.unread !== undefined) payload.unread = updates.unread;
-    mainWindow.webContents.send(IpcChannels.SESSION_STATE, payload);
-  }
-}, handlePrDetected, (sessionId) => sessionStore.getSession(sessionId)?.contextLimit ?? null);
+const hookInstaller = new HookInstaller(() => hookServer.getPort());
 
 const ptyManager = new PtyManager();
-
-function updateDockBadge(): void {
-  const count = sessionStore.getAllSessions().filter((s) => s.unread).length;
-  app.dock?.setBadge(count > 0 ? String(count) : '');
-}
+ptyManager.setExitHandler((sessionId, exitCode) =>
+  sessionState.handleClaudeExit(sessionId, exitCode),
+);
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -384,6 +116,13 @@ function ipcError(code: string, message: string): IpcHandlerError {
   return new IpcHandlerError(code, message);
 }
 
+function requireSession(id: string): Session {
+  const session = sessionStore.getSession(id);
+  if (!session)
+    throw ipcError(IpcErrorCodes.SESSION_NOT_FOUND, `Session not found: ${id}`);
+  return session;
+}
+
 function validateCwd(cwd: string): string {
   const resolved = path.resolve(cwd);
   if (!fs.existsSync(resolved)) {
@@ -394,6 +133,8 @@ function validateCwd(cwd: string): string {
   }
   return resolved;
 }
+
+// ─── Session Launcher ───────────────────────────────────────
 
 async function createSessionFromConfig(
   config: SessionConfig,
@@ -412,9 +153,8 @@ async function createSessionFromConfig(
     model: null,
     contextUsage: null,
     contextLimit: null,
-    gitBranch: null,
     flags: config.flags,
-    notifyOnIdle: false,
+    notifyOnIdle: config.notifyOnIdle ?? false,
     unread: false,
     createdAt: now,
     lastActiveAt: now,
@@ -439,8 +179,9 @@ async function createSessionFromConfig(
     spawnFlags.push("--worktree", worktree);
   }
 
-  // Spawn PTYs
+  // Spawn PTYs (hooks must be on disk before claude starts)
   try {
+    hookInstaller.ensureInstalled(spawnCwd);
     ptyManager.spawn(id, spawnCwd, spawnFlags, cwd);
   } catch (err) {
     throw ipcError(
@@ -453,6 +194,31 @@ async function createSessionFromConfig(
   // will transition to 'idle' once the Claude prompt is detected.
   sessionStore.addSession(session);
   return session;
+}
+
+function restoreSessions(): void {
+  const persisted = sessionStore.loadPersistedSessions().filter((ps) => ps.hasUserInput);
+  for (const ps of persisted) {
+    const resolvedCwd = path.resolve(ps.cwd);
+    if (!fs.existsSync(resolvedCwd)) continue;
+
+    try {
+      // Use --resume <id> to restore the exact Claude Code session
+      // For worktree sessions, resume from the worktree directory
+      const spawnCwd = ps.worktree
+        ? path.join(resolvedCwd, ".claude", "worktrees", ps.worktree)
+        : resolvedCwd;
+      if (!fs.existsSync(spawnCwd)) continue;
+
+      const resumeFlags = [...ps.flags, "--resume", ps.id];
+      hookInstaller.ensureInstalled(spawnCwd);
+      ptyManager.spawn(ps.id, spawnCwd, resumeFlags, resolvedCwd);
+      sessionStore.addSession(fromPersisted(ps, resolvedCwd));
+    } catch {
+      // Skip sessions that fail to restore
+    }
+  }
+  sessionState.refreshUnreadBadge();
 }
 
 // ─── Window ─────────────────────────────────────────────────
@@ -505,19 +271,10 @@ function createWindow(): void {
   mainWindow.on("move", saveBounds);
 
   mainWindow.on("focus", () => {
-    if (!activeSessionId) return;
-    scheduleRefresh(activeSessionId);
-    const session = sessionStore.getSession(activeSessionId);
-    if (session?.unread) {
-      session.unread = false;
-      updateDockBadge();
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send(IpcChannels.SESSION_STATE, {
-          sessionId: activeSessionId,
-          unread: false,
-        });
-      }
-    }
+    const activeId = sessionState.activeSessionId;
+    if (!activeId) return;
+    stageMonitor.scheduleRefresh(activeId);
+    sessionState.markRead(activeId);
   });
 
   mainWindow.on("closed", () => {
@@ -562,7 +319,7 @@ function createMenu(): void {
         },
         { type: "separator" },
         {
-          label: "Preferences\u2026",
+          label: "Preferences…",
           accelerator: "CmdOrCtrl+,",
           click: () => {
             mainWindow?.webContents.send(IpcChannels.MENU_PREFERENCES);
@@ -682,298 +439,165 @@ function createMenu(): void {
 }
 
 // ─── IPC Handlers ───────────────────────────────────────────
+// One entry per invoke channel. The mapped type makes coverage exhaustive:
+// adding a channel to IpcInvokeMap without a handler here is a compile error.
 
-function registerIpcHandlers(): void {
+type InvokeHandlers = {
+  [C in keyof IpcInvokeMap]: (
+    payload: IpcInvokeMap[C]["payload"],
+  ) => IpcInvokeMap[C]["response"] | Promise<IpcInvokeMap[C]["response"]>;
+};
+
+const invokeHandlers: InvokeHandlers = {
   // --- Session management ---
 
-  ipcMain.handle(
-    IpcChannels.SESSION_CREATE,
-    async (_event, config: SessionConfig): Promise<Session> => {
-      const session = await createSessionFromConfig(config);
-      activeSessionId = session.id;
-      sessionStore.saveAppState({
-        newSessionDefaults: { cwd: config.cwd, flags: config.flags, notifyOnIdle: false },
-        lastActiveSessionId: session.id,
-      });
-      sessionStore.persistSessions();
-      return session;
-    },
-  );
+  [IpcChannels.SESSION_CREATE]: async (config) => {
+    const session = await createSessionFromConfig(config);
+    sessionState.setActiveSession(session.id);
+    sessionStore.saveAppState({
+      newSessionDefaults: {
+        cwd: config.cwd,
+        flags: config.flags,
+        notifyOnIdle: config.notifyOnIdle ?? false,
+      },
+      lastActiveSessionId: session.id,
+    });
+    sessionStore.persistSessions();
+    return session;
+  },
 
-  ipcMain.handle(IpcChannels.SESSION_LIST, (): Session[] => {
-    return sessionStore.getAllSessions();
-  });
+  [IpcChannels.SESSION_LIST]: () => sessionStore.getAllSessions(),
 
-  ipcMain.handle(
-    IpcChannels.SESSION_GET,
-    (_event, payload: SessionIdPayload): Session | null => {
-      return sessionStore.getSession(payload.id);
-    },
-  );
+  [IpcChannels.SESSION_GET]: ({ id }) => sessionStore.getSession(id),
 
-  ipcMain.handle(
-    IpcChannels.SESSION_RENAME,
-    (_event, payload: SessionRenamePayload): Session => {
-      const session = sessionStore.updateSession(payload.id, {
-        name: payload.name,
-      });
-      if (!session)
-        throw ipcError(
-          IpcErrorCodes.SESSION_NOT_FOUND,
-          `Session not found: ${payload.id}`,
-        );
-      sessionStore.persistSessions();
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send(IpcChannels.SESSION_STATE, {
-          sessionId: payload.id,
-          name: payload.name,
-        });
-      }
-      return session;
-    },
-  );
+  [IpcChannels.SESSION_RENAME]: ({ id, name }) => {
+    requireSession(id);
+    return sessionState.commit(id, { name })!;
+  },
 
-  ipcMain.handle(
-    IpcChannels.SESSION_END,
-    (_event, payload: SessionIdPayload): void => {
-      const session = sessionStore.getSession(payload.id);
-      if (!session)
-        throw ipcError(
-          IpcErrorCodes.SESSION_NOT_FOUND,
-          `Session not found: ${payload.id}`,
-        );
-      ptyManager.kill(payload.id);
-      sessionStore.updateSession(payload.id, { status: "ended" });
-      cleanupStageRefresh(payload.id);
-      sessionStore.removeSession(payload.id);
-      sessionStore.persistSessions();
-    },
-  );
+  [IpcChannels.SESSION_END]: ({ id }) => {
+    requireSession(id);
+    ptyManager.kill(id);
+    sessionStore.updateSession(id, { status: "ended" });
+    stageMonitor.forget(id);
+    sessionStore.removeSession(id);
+    sessionStore.persistSessions();
+    sessionState.refreshUnreadBadge();
+  },
 
-  ipcMain.handle(
-    IpcChannels.SESSION_SWITCH,
-    (_event, payload: SessionIdPayload): Session => {
-      const session = sessionStore.getSession(payload.id);
-      if (!session)
-        throw ipcError(
-          IpcErrorCodes.SESSION_NOT_FOUND,
-          `Session not found: ${payload.id}`,
-        );
-      activeSessionId = payload.id;
-      sessionStore.saveAppState({ lastActiveSessionId: payload.id });
-      session.lastActiveAt = Date.now();
-      scheduleRefresh(payload.id);
-      if (session.unread) {
-        session.unread = false;
-        updateDockBadge();
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send(IpcChannels.SESSION_STATE, {
-            sessionId: payload.id,
-            unread: false,
-          });
-        }
-      }
-      return session;
-    },
-  );
+  [IpcChannels.SESSION_SWITCH]: ({ id }) => {
+    const session = requireSession(id);
+    sessionState.setActiveSession(id);
+    sessionStore.saveAppState({ lastActiveSessionId: id });
+    session.lastActiveAt = Date.now();
+    stageMonitor.scheduleRefresh(id);
+    sessionState.markRead(id);
+    return session;
+  },
 
-  ipcMain.handle(
-    IpcChannels.SESSION_TOGGLE_NOTIFY,
-    (_event, payload: SessionIdPayload): Session => {
-      const session = sessionStore.getSession(payload.id);
-      if (!session)
-        throw ipcError(
-          IpcErrorCodes.SESSION_NOT_FOUND,
-          `Session not found: ${payload.id}`,
-        );
-      sessionStore.updateSession(payload.id, {
-        notifyOnIdle: !session.notifyOnIdle,
-      });
-      sessionStore.persistSessions();
-      return sessionStore.getSession(payload.id)!;
-    },
-  );
+  [IpcChannels.SESSION_TOGGLE_NOTIFY]: ({ id }) => {
+    const session = requireSession(id);
+    return sessionState.commit(id, { notifyOnIdle: !session.notifyOnIdle })!;
+  },
 
-  ipcMain.handle(
-    IpcChannels.SESSION_REORDER,
-    (_event, payload: SessionReorderPayload): void => {
-      sessionStore.reorderSessions(payload.sessionIds);
-    },
-  );
+  [IpcChannels.SESSION_REORDER]: ({ sessionIds }) => {
+    sessionStore.reorderSessions(sessionIds);
+  },
 
   // --- PTY I/O ---
 
-  ipcMain.handle(
-    IpcChannels.PTY_WRITE,
-    (_event, payload: PtyWritePayload): void => {
-      ptyManager.writeToClaude(payload.sessionId, payload.data);
-    },
-  );
+  [IpcChannels.PTY_WRITE]: ({ sessionId, data }) => {
+    ptyManager.writeToClaude(sessionId, data);
+  },
 
-  ipcMain.handle(
-    IpcChannels.PTY_RESIZE,
-    (_event, payload: PtyResizePayload): void => {
-      ptyManager.resizeClaude(payload.sessionId, payload.cols, payload.rows);
-    },
-  );
+  [IpcChannels.PTY_RESIZE]: ({ sessionId, cols, rows }) => {
+    ptyManager.resizeClaude(sessionId, cols, rows);
+  },
 
   // --- Shell terminal ---
 
-  ipcMain.handle(
-    IpcChannels.SHELL_WRITE,
-    (_event, payload: PtyWritePayload): void => {
-      ptyManager.writeToShell(payload.sessionId, payload.data);
-    },
-  );
+  [IpcChannels.SHELL_WRITE]: ({ sessionId, data }) => {
+    ptyManager.writeToShell(sessionId, data);
+  },
 
-  ipcMain.handle(
-    IpcChannels.SHELL_RESIZE,
-    (_event, payload: PtyResizePayload): void => {
-      ptyManager.resizeShell(payload.sessionId, payload.cols, payload.rows);
-    },
-  );
+  [IpcChannels.SHELL_RESIZE]: ({ sessionId, cols, rows }) => {
+    ptyManager.resizeShell(sessionId, cols, rows);
+  },
 
   // --- Toolkit ---
 
-  ipcMain.handle(IpcChannels.TOOLKIT_LIST, () => {
-    return sessionStore.getToolkitCommands();
-  });
+  [IpcChannels.TOOLKIT_LIST]: () => sessionStore.loadToolkitCommands(),
 
-  ipcMain.handle(
-    IpcChannels.TOOLKIT_SAVE,
-    (_event, payload: ToolkitSavePayload): void => {
-      sessionStore.saveToolkitCommands(payload.commands);
-    },
-  );
+  [IpcChannels.TOOLKIT_SAVE]: ({ commands }) => {
+    sessionStore.saveToolkitCommands(commands);
+  },
 
-  ipcMain.handle(
-    IpcChannels.TOOLKIT_EXECUTE,
-    (_event, payload: ToolkitExecutePayload): void => {
-      const commands = sessionStore.loadToolkitCommands();
-      const cmd = commands.find((c) => c.id === payload.commandId);
-      if (!cmd) return;
-      ptyManager.writeToClaude(payload.sessionId, cmd.command);
-    },
-  );
+  [IpcChannels.TOOLKIT_EXECUTE]: ({ sessionId, commandId }) => {
+    const commands = sessionStore.loadToolkitCommands();
+    const cmd = commands.find((c) => c.id === commandId);
+    if (!cmd) return;
+    ptyManager.writeToClaude(sessionId, cmd.command);
+  },
 
-  ipcMain.handle(
-    IpcChannels.TOOLKIT_ADD,
-    (_event, command: ToolkitCommand): ToolkitCommand => {
-      const commands = sessionStore.loadToolkitCommands();
-      commands.push(command);
-      sessionStore.saveToolkitCommands(commands);
-      return command;
-    },
-  );
+  [IpcChannels.TOOLKIT_ADD]: (command) => {
+    const commands = sessionStore.loadToolkitCommands();
+    commands.push(command);
+    sessionStore.saveToolkitCommands(commands);
+    return command;
+  },
 
-  ipcMain.handle(
-    IpcChannels.TOOLKIT_UPDATE,
-    (_event, command: ToolkitCommand): ToolkitCommand => {
-      const commands = sessionStore.loadToolkitCommands();
-      const idx = commands.findIndex((c) => c.id === command.id);
-      if (idx !== -1) {
-        commands[idx] = command;
-      }
-      sessionStore.saveToolkitCommands(commands);
-      return command;
-    },
-  );
+  [IpcChannels.TOOLKIT_UPDATE]: (command) => {
+    const commands = sessionStore.loadToolkitCommands();
+    const idx = commands.findIndex((c) => c.id === command.id);
+    if (idx !== -1) {
+      commands[idx] = command;
+    }
+    sessionStore.saveToolkitCommands(commands);
+    return command;
+  },
 
-  ipcMain.handle(
-    IpcChannels.TOOLKIT_DELETE,
-    (_event, payload: SessionIdPayload): void => {
-      const commands = sessionStore.loadToolkitCommands();
-      const filtered = commands.filter((c) => c.id !== payload.id);
-      sessionStore.saveToolkitCommands(filtered);
-    },
-  );
+  [IpcChannels.TOOLKIT_DELETE]: ({ id }) => {
+    const commands = sessionStore.loadToolkitCommands();
+    const filtered = commands.filter((c) => c.id !== id);
+    sessionStore.saveToolkitCommands(filtered);
+  },
 
   // --- App state ---
 
-  ipcMain.handle(IpcChannels.APP_GET_STATE, (): AppState => {
-    return sessionStore.loadAppState();
-  });
+  [IpcChannels.APP_GET_STATE]: () => sessionStore.loadAppState(),
 
-  ipcMain.handle(
-    IpcChannels.APP_SAVE_STATE,
-    (_event, partial: Partial<AppState>): void => {
-      if (partial.lastActiveSessionId !== undefined) {
-        activeSessionId = partial.lastActiveSessionId;
-      }
-      sessionStore.saveAppState(partial);
-    },
-  );
+  [IpcChannels.APP_SAVE_STATE]: (partial) => {
+    if (partial.lastActiveSessionId !== undefined) {
+      sessionState.setActiveSession(partial.lastActiveSessionId);
+    }
+    sessionStore.saveAppState(partial);
+  },
 
-  ipcMain.handle(IpcChannels.APP_GET_NEW_SESSION_DEFAULTS, () => {
-    return sessionStore.getNewSessionDefaults();
-  });
+  [IpcChannels.APP_GET_NEW_SESSION_DEFAULTS]: () =>
+    sessionStore.getNewSessionDefaults(),
 
   // --- Dialog ---
 
-  ipcMain.handle(
-    IpcChannels.DIALOG_SELECT_DIRECTORY,
-    async (): Promise<string | null> => {
-      if (!mainWindow) return null;
-      const result = await dialog.showOpenDialog(mainWindow, {
-        properties: ["openDirectory", "createDirectory"],
-      });
-      if (result.canceled || result.filePaths.length === 0) return null;
-      return result.filePaths[0];
-    },
-  );
+  [IpcChannels.DIALOG_SELECT_DIRECTORY]: async () => {
+    if (!mainWindow) return null;
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  },
 
   // --- Shell utilities ---
 
-  ipcMain.handle(
-    IpcChannels.SHELL_OPEN_EXTERNAL,
-    async (_event: Electron.IpcMainInvokeEvent, payload: { url: string }) => {
-      await shell.openExternal(payload.url);
-    },
-  );
-}
+  [IpcChannels.SHELL_OPEN_EXTERNAL]: async ({ url }) => {
+    await shell.openExternal(url);
+  },
+};
 
-// ─── Session Restoration ────────────────────────────────────
-
-function restoreSessions(): void {
-  const persisted = sessionStore.loadPersistedSessions().filter((ps) => ps.hasUserInput);
-  for (const ps of persisted) {
-    const resolvedCwd = path.resolve(ps.cwd);
-    if (!fs.existsSync(resolvedCwd)) continue;
-
-    try {
-      // Use --resume <id> to restore the exact Claude Code session
-      // For worktree sessions, resume from the worktree directory
-      const spawnCwd = ps.worktree
-        ? path.join(resolvedCwd, ".claude", "worktrees", ps.worktree)
-        : resolvedCwd;
-      if (!fs.existsSync(spawnCwd)) continue;
-
-      const resumeFlags = [...ps.flags, "--resume", ps.id];
-      ptyManager.spawn(ps.id, spawnCwd, resumeFlags, resolvedCwd);
-      const session: Session = {
-        id: ps.id,
-        name: ps.name,
-        cwd: resolvedCwd,
-        worktree: ps.worktree ?? null,
-        status: "creating",
-        model: ps.model ?? null,
-        contextUsage: ps.contextUsage ?? null,
-        contextLimit: ps.contextLimit ?? null,
-        gitBranch: null,
-        flags: ps.flags,
-        notifyOnIdle: ps.notifyOnIdle ?? false,
-        unread: ps.unread ?? false,
-        createdAt: ps.createdAt,
-        lastActiveAt: ps.lastActiveAt,
-        hasUserInput: ps.hasUserInput,
-        pr: ps.pr ?? null,
-        stage: ps.stage ?? "no-pr",
-        stageUpdatedAt: ps.stageUpdatedAt ?? null,
-      };
-      sessionStore.addSession(session);
-    } catch {
-      // Skip sessions that fail to restore
-    }
+function registerIpcHandlers(): void {
+  for (const channel of Object.keys(invokeHandlers) as (keyof IpcInvokeMap)[]) {
+    const handler = invokeHandlers[channel] as (payload: unknown) => unknown;
+    ipcMain.handle(channel, (_event, payload) => handler(payload));
   }
 }
 
@@ -981,19 +605,17 @@ function restoreSessions(): void {
 
 app.whenReady().then(async () => {
   // Initialize active session from persisted state
-  activeSessionId = sessionStore.loadAppState().lastActiveSessionId;
+  sessionState.setActiveSession(sessionStore.loadAppState().lastActiveSessionId);
 
   // Start hook server before spawning any sessions
   await hookServer.start();
-  ptyManager.setHookServer(hookServer);
 
   createMenu();
   registerIpcHandlers();
   createWindow();
   restoreSessions();
 
-  refreshAllStages();
-  setInterval(refreshAllStages, STAGE_POLL_INTERVAL_MS);
+  stageMonitor.start();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -1005,6 +627,7 @@ app.whenReady().then(async () => {
 app.on("before-quit", () => {
   sessionStore.persistSessions();
   sessionStore.cleanupOrphanedSessionFiles();
+  stageMonitor.stop();
   ptyManager.killAll();
   hookServer.stop();
 });

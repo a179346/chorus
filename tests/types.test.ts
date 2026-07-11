@@ -33,7 +33,6 @@ describe('Data Model Validation', () => {
         status: 'idle',
         model: 'claude-sonnet-4-6',
         contextUsage: 42,
-        gitBranch: 'main',
         flags: ['--enable-auto-mode'],
         createdAt: Date.now(),
         lastActiveAt: Date.now(),
@@ -60,7 +59,6 @@ describe('Data Model Validation', () => {
           status,
           model: null,
           contextUsage: null,
-          gitBranch: null,
           flags: [],
           createdAt: 0,
           lastActiveAt: 0,
@@ -78,14 +76,12 @@ describe('Data Model Validation', () => {
         status: 'idle',
         model: null,
         contextUsage: null,
-        gitBranch: null,
         flags: [],
         createdAt: 0,
         lastActiveAt: 0,
       };
       expect(session.model).toBeNull();
       expect(session.contextUsage).toBeNull();
-      expect(session.gitBranch).toBeNull();
       expect(session.worktree).toBeNull();
     });
   });
@@ -147,7 +143,6 @@ describe('Data Model Validation', () => {
         status: 'generating',
         model: 'claude-opus-4-6',
         contextUsage: 75,
-        gitBranch: 'feature/new',
       };
       expect(update.contextUsage).toBe(75);
     });

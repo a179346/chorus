@@ -2,25 +2,27 @@ import * as pty from 'node-pty';
 import type { BrowserWindow } from 'electron';
 import { IpcChannels } from '../shared/ipc';
 import type { PtyDataPayload } from '../shared/types';
-import type { HookServer } from './hook-server';
 
 interface PtyPair {
   claude: pty.IPty;
   shell: pty.IPty;
 }
 
+/** Called when a claude PTY exits on its own (not via kill()). */
+export type ClaudeExitHandler = (sessionId: string, exitCode: number) => void;
+
 export class PtyManager {
   private ptys: Map<string, PtyPair> = new Map();
   private killedSessions: Set<string> = new Set();
   private mainWindow: BrowserWindow | null = null;
-  private hookServer: HookServer | null = null;
+  private exitHandler: ClaudeExitHandler | null = null;
 
   setMainWindow(win: BrowserWindow | null): void {
     this.mainWindow = win;
   }
 
-  setHookServer(hookServer: HookServer): void {
-    this.hookServer = hookServer;
+  setExitHandler(handler: ClaudeExitHandler | null): void {
+    this.exitHandler = handler;
   }
 
   /**
@@ -32,9 +34,6 @@ export class PtyManager {
     flags: string[],
     shellCwd?: string,
   ): PtyPair {
-    // Ensure hooks are installed in the working directory before spawning
-    this.hookServer?.ensureHooksInstalled(cwd);
-
     const shell = process.env.SHELL ?? '/bin/zsh';
     const defaultCols = 120;
     const defaultRows = 30;
@@ -81,18 +80,13 @@ export class PtyManager {
     });
 
     claudePty.onExit(({ exitCode }) => {
-      // Don't send state update for intentionally killed sessions
+      // Don't report intentionally killed sessions
       if (this.killedSessions.has(sessionId)) {
         this.killedSessions.delete(sessionId);
         return;
       }
 
-      if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-        this.mainWindow.webContents.send(IpcChannels.SESSION_STATE, {
-          sessionId,
-          status: exitCode === 0 ? 'ended' : 'error',
-        });
-      }
+      this.exitHandler?.(sessionId, exitCode);
     });
 
     // Forward shell PTY output to renderer

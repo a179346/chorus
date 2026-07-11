@@ -21,7 +21,6 @@ function makeSession(overrides: Partial<import('../src/shared/types').Session> =
     status: 'idle',
     model: null,
     contextUsage: null,
-    gitBranch: null,
     flags: [],
     createdAt: 1000,
     lastActiveAt: 1000,
@@ -178,7 +177,6 @@ describe('SessionStore', () => {
         status: 'thinking',
         model: 'opus',
         contextUsage: 50,
-        gitBranch: 'main',
       }));
       store.persistSessions();
 
@@ -359,7 +357,7 @@ describe('SessionStore', () => {
           ],
         })
       );
-      const all = store.getToolkitCommands();
+      const all = store.loadToolkitCommands();
       expect(all).toHaveLength(2);
     });
   });

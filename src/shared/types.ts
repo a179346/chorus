@@ -31,7 +31,6 @@ export interface Session {
   model: string | null;
   contextUsage: number | null;
   contextLimit: number | null;
-  gitBranch: string | null;
   flags: string[];
   notifyOnIdle: boolean;
   unread: boolean;
@@ -48,22 +47,31 @@ export interface SessionConfig {
   cwd: string;
   worktree?: string;
   flags: string[];
+  notifyOnIdle?: boolean;
 }
 
-export interface SessionStateUpdate {
-  sessionId: string;
-  status?: SessionStatus;
-  model?: string | null;
-  contextUsage?: number | null;
-  contextLimit?: number | null;
-  gitBranch?: string | null;
-  hasUserInput?: boolean;
-  unread?: boolean;
-  name?: string;
-  pr?: PrRef | null;
-  stage?: SessionStage;
-  stageUpdatedAt?: number | null;
-}
+// Fields the main process may push to the renderer over SESSION_STATE.
+// SessionStateUpdate is derived from this list, so a new syncable field is
+// declared exactly once and both sides of the seam pick it up.
+export const SESSION_SYNC_FIELDS = [
+  'status',
+  'model',
+  'contextUsage',
+  'contextLimit',
+  'hasUserInput',
+  'unread',
+  'name',
+  'notifyOnIdle',
+  'pr',
+  'stage',
+  'stageUpdatedAt',
+] as const satisfies readonly (keyof Session)[];
+
+export type SessionSyncField = (typeof SESSION_SYNC_FIELDS)[number];
+
+export type SessionStateUpdate = { sessionId: string } & Partial<
+  Pick<Session, SessionSyncField>
+>;
 
 // ─── Persistence (subset of Session saved to disk) ──────
 
