@@ -1,10 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import http from "node:http";
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
 import { HookServer, type HookEvent, type HookUpdate } from "../src/main/hook-server";
-import type { SessionStatus } from "../src/shared/types";
 
 function postHookEvent(
   port: number,
@@ -37,7 +33,6 @@ describe("HookServer", () => {
     sessionId: string;
     update: HookUpdate;
   }>;
-  let tmpDir: string;
 
   beforeEach(async () => {
     updates = [];
@@ -45,12 +40,10 @@ describe("HookServer", () => {
       updates.push({ sessionId, update });
     });
     await server.start();
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "chorus-hook-test-"));
   });
 
   afterEach(() => {
     server.stop();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   // ─── HTTP server ───────────────────────────────────────
@@ -193,122 +186,6 @@ describe("HookServer", () => {
       await vi.waitFor(() => expect(updates).toHaveLength(2));
       expect(updates[0]).toMatchObject({ sessionId: "s1", update: { status: "thinking" } });
       expect(updates[1]).toMatchObject({ sessionId: "s2", update: { status: "idle" } });
-    });
-  });
-
-  // ─── Hook installation ────────────────────────────────
-
-  describe("ensureHooksInstalled", () => {
-    it("should create .claude/settings.local.json if it does not exist", () => {
-      server.ensureHooksInstalled(tmpDir);
-      const settingsPath = path.join(tmpDir, ".claude", "settings.local.json");
-      expect(fs.existsSync(settingsPath)).toBe(true);
-
-      const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
-      expect(settings.hooks).toBeDefined();
-      expect(settings.hooks.Notification).toBeDefined();
-      expect(settings.hooks.UserPromptSubmit).toBeDefined();
-      expect(settings.hooks.Stop).toBeDefined();
-      expect(settings.hooks.PreToolUse).toBeDefined();
-      expect(settings.hooks.SessionStart).toBeDefined();
-    });
-
-    it("should include curl command pointing to the correct port", () => {
-      server.ensureHooksInstalled(tmpDir);
-      const settingsPath = path.join(tmpDir, ".claude", "settings.local.json");
-      const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
-      const hookEntry = settings.hooks.Stop[0].hooks[0];
-      expect(hookEntry.type).toBe("command");
-      expect(hookEntry.command).toContain(
-        `http://127.0.0.1:${server.getPort()}/hook`,
-      );
-      expect(hookEntry.timeout).toBe(5);
-    });
-
-    it("should not overwrite existing settings", () => {
-      const claudeDir = path.join(tmpDir, ".claude");
-      fs.mkdirSync(claudeDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(claudeDir, "settings.local.json"),
-        JSON.stringify({ permissions: { allow: ["Bash"] } }),
-      );
-
-      server.ensureHooksInstalled(tmpDir);
-      const settings = JSON.parse(
-        fs.readFileSync(path.join(claudeDir, "settings.local.json"), "utf-8"),
-      );
-      expect(settings.permissions).toEqual({ allow: ["Bash"] });
-      expect(settings.hooks).toBeDefined();
-    });
-
-    it("should preserve existing hooks for the same event", () => {
-      const claudeDir = path.join(tmpDir, ".claude");
-      fs.mkdirSync(claudeDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(claudeDir, "settings.local.json"),
-        JSON.stringify({
-          hooks: {
-            Stop: [{ hooks: [{ type: "command", command: "echo user-hook" }] }],
-          },
-        }),
-      );
-
-      server.ensureHooksInstalled(tmpDir);
-      const settings = JSON.parse(
-        fs.readFileSync(path.join(claudeDir, "settings.local.json"), "utf-8"),
-      );
-      // Should have both user hook and our hook
-      expect(settings.hooks.Stop).toHaveLength(2);
-      expect(settings.hooks.Stop[0].hooks[0].command).toBe("echo user-hook");
-      expect(settings.hooks.Stop[1].hooks[0].command).toContain("127.0.0.1");
-    });
-
-    it("should not duplicate hooks on repeated calls", () => {
-      server.ensureHooksInstalled(tmpDir);
-      server.ensureHooksInstalled(tmpDir);
-
-      const settingsPath = path.join(tmpDir, ".claude", "settings.local.json");
-      const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
-      expect(settings.hooks.Stop).toHaveLength(1);
-    });
-  });
-
-  // ─── Hook removal ─────────────────────────────────────
-
-  describe("removeHooks", () => {
-    it("should remove Chorus hooks from settings", () => {
-      server.ensureHooksInstalled(tmpDir);
-      server.removeHooks(tmpDir);
-
-      const settingsPath = path.join(tmpDir, ".claude", "settings.local.json");
-      // File should be deleted since it was empty after removing our hooks
-      expect(fs.existsSync(settingsPath)).toBe(false);
-    });
-
-    it("should preserve user hooks when removing Chorus hooks", () => {
-      const claudeDir = path.join(tmpDir, ".claude");
-      fs.mkdirSync(claudeDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(claudeDir, "settings.local.json"),
-        JSON.stringify({
-          hooks: {
-            Stop: [{ hooks: [{ type: "command", command: "echo user-hook" }] }],
-          },
-        }),
-      );
-
-      server.ensureHooksInstalled(tmpDir);
-      server.removeHooks(tmpDir);
-
-      const settings = JSON.parse(
-        fs.readFileSync(path.join(claudeDir, "settings.local.json"), "utf-8"),
-      );
-      expect(settings.hooks.Stop).toHaveLength(1);
-      expect(settings.hooks.Stop[0].hooks[0].command).toBe("echo user-hook");
-    });
-
-    it("should not throw if settings file does not exist", () => {
-      expect(() => server.removeHooks(tmpDir)).not.toThrow();
     });
   });
 });

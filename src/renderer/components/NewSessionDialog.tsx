@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { invoke, IpcChannels } from '../ipc';
 
 interface NewSessionDialogProps {
   open: boolean;
@@ -19,7 +20,7 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
   useEffect(() => {
     if (!open) return;
     // Load defaults
-    window.electronAPI.appGetNewSessionDefaults().then((defaults) => {
+    void invoke(IpcChannels.APP_GET_NEW_SESSION_DEFAULTS).then((defaults) => {
       setCwd(defaults.cwd || '');
       setAutoMode(defaults.flags.includes('--enable-auto-mode'));
       setSkipPermissions(defaults.flags.includes('--dangerously-skip-permissions'));
@@ -62,7 +63,7 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
   }, [open, onClose]);
 
   const handleSelectDir = useCallback(async () => {
-    const dir = await window.electronAPI.selectDirectory();
+    const dir = await invoke(IpcChannels.DIALOG_SELECT_DIRECTORY);
     if (dir) setCwd(dir);
   }, []);
 

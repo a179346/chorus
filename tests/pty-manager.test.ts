@@ -300,39 +300,33 @@ describe('PtyManager', () => {
   });
 
   describe('onExit handling', () => {
-    it('should send session state update on claude PTY exit with code 0', () => {
-      const win = makeMockWindow();
-      manager.setMainWindow(win);
+    it('should report claude PTY exit with code 0 to the exit handler', () => {
+      const exitHandler = vi.fn();
+      manager.setExitHandler(exitHandler);
       manager.spawn('session-1', '/tmp/test', []);
 
       const claudeOnExit = nodePty.spawn.mock.results[0].value.onExit;
       const exitCallback = claudeOnExit.mock.calls[0][0];
 
       exitCallback({ exitCode: 0, signal: 0 });
-      expect(win.webContents.send).toHaveBeenCalledWith('session:state', {
-        sessionId: 'session-1',
-        status: 'ended',
-      });
+      expect(exitHandler).toHaveBeenCalledWith('session-1', 0);
     });
 
-    it('should send error status on claude PTY exit with non-zero code', () => {
-      const win = makeMockWindow();
-      manager.setMainWindow(win);
+    it('should report non-zero exit codes to the exit handler', () => {
+      const exitHandler = vi.fn();
+      manager.setExitHandler(exitHandler);
       manager.spawn('session-1', '/tmp/test', []);
 
       const claudeOnExit = nodePty.spawn.mock.results[0].value.onExit;
       const exitCallback = claudeOnExit.mock.calls[0][0];
 
       exitCallback({ exitCode: 1, signal: 0 });
-      expect(win.webContents.send).toHaveBeenCalledWith('session:state', {
-        sessionId: 'session-1',
-        status: 'error',
-      });
+      expect(exitHandler).toHaveBeenCalledWith('session-1', 1);
     });
 
-    it('should not send state update for intentionally killed sessions', () => {
-      const win = makeMockWindow();
-      manager.setMainWindow(win);
+    it('should not report intentionally killed sessions', () => {
+      const exitHandler = vi.fn();
+      manager.setExitHandler(exitHandler);
       manager.spawn('session-1', '/tmp/test', []);
 
       const claudeOnExit = nodePty.spawn.mock.results[0].value.onExit;
@@ -340,36 +334,18 @@ describe('PtyManager', () => {
 
       // Kill the session first, then trigger onExit
       manager.kill('session-1');
-      win.webContents.send.mockClear();
 
       exitCallback({ exitCode: 0, signal: 0 });
-      // Should NOT have sent session:state because the kill was intentional
-      expect(win.webContents.send).not.toHaveBeenCalledWith(
-        'session:state',
-        expect.anything(),
-      );
+      expect(exitHandler).not.toHaveBeenCalled();
     });
 
-    it('should not crash on exit when window is null', () => {
-      manager.setMainWindow(null);
+    it('should not crash on exit when no exit handler is set', () => {
       manager.spawn('session-1', '/tmp/test', []);
 
       const claudeOnExit = nodePty.spawn.mock.results[0].value.onExit;
       const exitCallback = claudeOnExit.mock.calls[0][0];
 
       expect(() => exitCallback({ exitCode: 0, signal: 0 })).not.toThrow();
-    });
-
-    it('should not crash on exit when window is destroyed', () => {
-      const win = makeMockWindow(true);
-      manager.setMainWindow(win);
-      manager.spawn('session-1', '/tmp/test', []);
-
-      const claudeOnExit = nodePty.spawn.mock.results[0].value.onExit;
-      const exitCallback = claudeOnExit.mock.calls[0][0];
-
-      expect(() => exitCallback({ exitCode: 0, signal: 0 })).not.toThrow();
-      expect(win.webContents.send).not.toHaveBeenCalled();
     });
   });
 

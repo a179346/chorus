@@ -15,7 +15,8 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Session } from '../../shared/types';
-import { STAGE_ICON, prUrl } from '../stage';
+import { STAGE_ICON, prUrl, statusColor, basename } from '../session-presentation';
+import { invoke, IpcChannels } from '../ipc';
 
 interface SessionListProps {
   sessions: Session[];
@@ -26,20 +27,6 @@ interface SessionListProps {
   onEndSession: (id: string) => void;
   onToggleNotify: (id: string) => void;
   onReorderSessions: (sessions: Session[]) => void;
-}
-
-const statusColors: Record<string, string> = {
-  idle: 'var(--status-idle)',
-  waiting: 'var(--status-idle)',
-  thinking: 'var(--status-thinking)',
-  generating: 'var(--status-generating)',
-  creating: 'var(--status-creating)',
-  error: 'var(--status-error)',
-  ended: 'var(--status-ended)',
-};
-
-function basename(path: string): string {
-  return path.split('/').filter(Boolean).pop() ?? path;
 }
 
 interface ContextMenuState {
@@ -308,7 +295,6 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
   const [hovered, setHovered] = useState(false);
   const [editValue, setEditValue] = useState(session.name);
   const inputRef = useRef<HTMLInputElement>(null);
-  const statusColor = statusColors[session.status] ?? 'var(--text-dimmed)';
 
   // Focus input when entering edit mode
   useEffect(() => {
@@ -377,7 +363,7 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
                   title={tooltip}
                   onClick={clickable ? (e) => {
                     e.stopPropagation();
-                    void window.electronAPI.openExternal(prUrl(session.pr!));
+                    void invoke(IpcChannels.SHELL_OPEN_EXTERNAL, { url: prUrl(session.pr!) });
                   } : undefined}
                   style={{
                     display: 'inline-flex',
@@ -464,7 +450,7 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
             </span>
           )}
         </div>
-        <span style={{ fontSize: 10, color: statusColor, textTransform: 'capitalize', flexShrink: 0 }}>
+        <span style={{ fontSize: 10, color: statusColor(session.status), textTransform: 'capitalize', flexShrink: 0 }}>
           {session.status}
         </span>
       </div>

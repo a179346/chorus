@@ -85,6 +85,52 @@ interface SessionsIndex {
   sessionIds: string[];
 }
 
+// The Session ⇄ PersistedSession mapping lives in this pair and nowhere else.
+
+export function toPersisted(s: Session): PersistedSession {
+  return {
+    id: s.id,
+    name: s.name,
+    cwd: s.cwd,
+    worktree: s.worktree,
+    flags: s.flags,
+    notifyOnIdle: s.notifyOnIdle,
+    unread: s.unread,
+    model: s.model,
+    contextUsage: s.contextUsage,
+    contextLimit: s.contextLimit,
+    createdAt: s.createdAt,
+    lastActiveAt: s.lastActiveAt,
+    hasUserInput: s.hasUserInput,
+    pr: s.pr,
+    stage: s.stage,
+    stageUpdatedAt: s.stageUpdatedAt,
+  };
+}
+
+/** Rebuild a runtime Session from disk. `cwd` may be re-resolved by the caller. */
+export function fromPersisted(ps: PersistedSession, cwd: string = ps.cwd): Session {
+  return {
+    id: ps.id,
+    name: ps.name,
+    cwd,
+    worktree: ps.worktree ?? null,
+    status: 'creating',
+    model: ps.model ?? null,
+    contextUsage: ps.contextUsage ?? null,
+    contextLimit: ps.contextLimit ?? null,
+    flags: ps.flags,
+    notifyOnIdle: ps.notifyOnIdle ?? false,
+    unread: ps.unread ?? false,
+    createdAt: ps.createdAt,
+    lastActiveAt: ps.lastActiveAt,
+    hasUserInput: ps.hasUserInput,
+    pr: ps.pr ?? null,
+    stage: ps.stage ?? 'no-pr',
+    stageUpdatedAt: ps.stageUpdatedAt ?? null,
+  };
+}
+
 export class SessionStore {
   private sessions: Map<string, Session> = new Map();
 
@@ -160,25 +206,7 @@ export class SessionStore {
 
     // Write each session file
     for (const s of activeSessions) {
-      const persisted: PersistedSession = {
-        id: s.id,
-        name: s.name,
-        cwd: s.cwd,
-        worktree: s.worktree,
-        flags: s.flags,
-        notifyOnIdle: s.notifyOnIdle,
-        unread: s.unread,
-        model: s.model,
-        contextUsage: s.contextUsage,
-        contextLimit: s.contextLimit,
-        createdAt: s.createdAt,
-        lastActiveAt: s.lastActiveAt,
-        hasUserInput: s.hasUserInput,
-        pr: s.pr,
-        stage: s.stage,
-        stageUpdatedAt: s.stageUpdatedAt,
-      };
-      writeJson(sessionFilePath(s.id), persisted);
+      writeJson(sessionFilePath(s.id), toPersisted(s));
     }
 
     // Write index
@@ -243,9 +271,5 @@ export class SessionStore {
 
   saveToolkitCommands(commands: ToolkitCommand[]): void {
     writeJson(TOOLKIT_FILE, { commands });
-  }
-
-  getToolkitCommands(): ToolkitCommand[] {
-    return this.loadToolkitCommands();
   }
 }

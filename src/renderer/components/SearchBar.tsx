@@ -1,15 +1,11 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import {
-  terminalFindNext,
-  terminalFindPrevious,
-  terminalClearSearch,
-  getFocusedTerminalInfo,
-} from './TerminalView';
+import { terminals, type TerminalKind } from '../terminal-host';
+import { on, IpcChannels } from '../ipc';
 
-let activeSearchType: 'pty' | 'shell' | null = null;
+let activeSearchType: TerminalKind | null = null;
 
 interface SearchBarProps {
-  type: 'pty' | 'shell';
+  type: TerminalKind;
   sessionId: string;
   onClose: () => void;
 }
@@ -29,11 +25,11 @@ export function SearchBar({ type, sessionId, onClose }: SearchBarProps): React.R
 
   useEffect(() => {
     if (query) {
-      const result = terminalFindNext(type, sessionId, query);
+      const result = terminals.findNext(type, sessionId, query);
       setResultIndex(result.resultIndex);
       setResultCount(result.resultCount);
     } else {
-      terminalClearSearch(type, sessionId);
+      terminals.clearSearch(type, sessionId);
       setResultIndex(-1);
       setResultCount(0);
     }
@@ -44,7 +40,7 @@ export function SearchBar({ type, sessionId, onClose }: SearchBarProps): React.R
 
   const handleNext = useCallback(() => {
     if (queryRef.current) {
-      const result = terminalFindNext(type, sessionId, queryRef.current);
+      const result = terminals.findNext(type, sessionId, queryRef.current);
       setResultIndex(result.resultIndex);
       setResultCount(result.resultCount);
     }
@@ -52,7 +48,7 @@ export function SearchBar({ type, sessionId, onClose }: SearchBarProps): React.R
 
   const handlePrev = useCallback(() => {
     if (queryRef.current) {
-      const result = terminalFindPrevious(type, sessionId, queryRef.current);
+      const result = terminals.findPrevious(type, sessionId, queryRef.current);
       setResultIndex(result.resultIndex);
       setResultCount(result.resultCount);
     }
@@ -60,20 +56,20 @@ export function SearchBar({ type, sessionId, onClose }: SearchBarProps): React.R
 
   useEffect(() => {
     const isOwner = () => {
-      const focused = getFocusedTerminalInfo();
-      return focused ? focused.type === type : activeSearchType === type;
+      const focused = terminals.focused();
+      return focused ? focused.kind === type : activeSearchType === type;
     };
     const guardedNext = () => { if (isOwner()) handleNext(); };
     const guardedPrev = () => { if (isOwner()) handlePrev(); };
     const cleanups = [
-      window.electronAPI.onMenuFindNext(guardedNext),
-      window.electronAPI.onMenuFindPrevious(guardedPrev),
+      on(IpcChannels.MENU_FIND_NEXT, guardedNext),
+      on(IpcChannels.MENU_FIND_PREVIOUS, guardedPrev),
     ];
     return () => cleanups.forEach((c) => c());
   }, [handleNext, handlePrev, type]);
 
   const handleClose = useCallback(() => {
-    terminalClearSearch(type, sessionId);
+    terminals.clearSearch(type, sessionId);
     onClose();
   }, [type, sessionId, onClose]);
 

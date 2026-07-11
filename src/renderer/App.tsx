@@ -1,16 +1,18 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import type { Session, SessionStateUpdate, ToolkitCommand } from '../shared/types';
+import type { ToolkitCommand } from '../shared/types';
 import { SplitPane } from './components/SplitPane';
 import { StatusBar } from './components/StatusBar';
 import { ShellPanel } from './components/ShellPanel';
 import { SessionList } from './components/SessionList';
 import { ToolkitPanel } from './components/ToolkitPanel';
-import { TerminalView, disposeTerminal, focusTerminal, getFocusedTerminalInfo, applyTerminalSettings, preloadTerminal } from './components/TerminalView';
+import { TerminalView } from './components/TerminalView';
 import { SearchBar } from './components/SearchBar';
 import { NewSessionDialog } from './components/NewSessionDialog';
 import { PreferencesDialog } from './components/PreferencesDialog';
 import { applyThemeCss, getTheme, DEFAULT_THEME_ID } from './themes';
-import { setTerminalTheme } from './components/TerminalView';
+import { terminals } from './terminal-host';
+import { useSessions, type NewSessionInput } from './use-sessions';
+import { invoke, on, IpcChannels } from './ipc';
 
 const DEFAULT_SIDEBAR_WIDTH = 320;
 const DEFAULT_SHELL_HEIGHT = 200;
@@ -18,9 +20,24 @@ const DEFAULT_TOOLKIT_HEIGHT = 200;
 const DEFAULT_FONT_SIZE = 13;
 
 export function App(): React.ReactElement {
-  // ─── State ──────────────────────────────────────────
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  // ─── Session state (owned by the useSessions hook) ──
+  const {
+    sessions,
+    activeSession,
+    activeSessionId,
+    activeSessionIdRef,
+    setActiveSessionId,
+    selectSession,
+    createSession,
+    endSession,
+    toggleNotify,
+    renameSession,
+    reorderSessions,
+    switchToIndex,
+    switchRelative,
+  } = useSessions();
+
+  // ─── UI state ───────────────────────────────────────
   const [toolkitCommands, setToolkitCommands] = useState<ToolkitCommand[]>([]);
   const [shellCollapsed, setShellCollapsed] = useState(false);
   const [showNewSession, setShowNewSession] = useState(false);
@@ -39,14 +56,11 @@ export function App(): React.ReactElement {
   const [shellHeight, setShellHeight] = useState(DEFAULT_SHELL_HEIGHT);
   const [toolkitHeight, setToolkitHeight] = useState(DEFAULT_TOOLKIT_HEIGHT);
 
-  const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null;
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const activeSessionIdRef = useRef(activeSessionId);
-  activeSessionIdRef.current = activeSessionId;
 
   // ─── Load initial state ─────────────────────────────
   useEffect(() => {
-    window.electronAPI.appGetState().then((state) => {
+    void invoke(IpcChannels.APP_GET_STATE).then((state) => {
       if (state.panelSizes) {
         setSidebarWidth(state.panelSizes.sidebarWidth || DEFAULT_SIDEBAR_WIDTH);
         setShellHeight(state.panelSizes.shellHeight || DEFAULT_SHELL_HEIGHT);
@@ -70,129 +84,68 @@ export function App(): React.ReactElement {
         setCurrentTheme(tid);
         applyThemeCss(tid);
         const t = getTheme(tid);
-        setTerminalTheme(t.xtermTheme, t.searchDecorations);
+        terminals.setTheme(t.xtermTheme, t.searchDecorations);
       }
     });
 
-    window.electronAPI.sessionList().then((list) => {
-      setSessions(list);
-      if (list.length > 0 && !activeSessionId) {
-        setActiveSessionId(list[0].id);
-      }
-    });
-
-    window.electronAPI.toolkitList().then(setToolkitCommands);
+    void invoke(IpcChannels.TOOLKIT_LIST, {}).then(setToolkitCommands);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Preload terminals for every session ───────────
   // Background sessions emit PTY data immediately on app restart (claude --resume
   // dumps conversation history). Without a registered listener, that output is
-  // dropped. preloadTerminal creates a cached xterm + IPC listener per session
+  // dropped. terminals.preload creates a cached xterm + IPC listener per session
   // so the data is captured even before the user switches to that session.
   useEffect(() => {
     for (const s of sessions) {
-      preloadTerminal('pty', s.id, terminalFontFamily, claudeFontSize);
-      preloadTerminal('shell', s.id, terminalFontFamily, shellFontSize);
+      terminals.preload('pty', s.id, terminalFontFamily, claudeFontSize);
+      terminals.preload('shell', s.id, terminalFontFamily, shellFontSize);
     }
   }, [sessions, terminalFontFamily, claudeFontSize, shellFontSize]);
 
   // Keep cached terminals' fonts in sync with current settings (handles the
-  // case where preloadTerminal ran with defaults before appGetState resolved).
+  // case where preload ran with defaults before APP_GET_STATE resolved).
   useEffect(() => {
-    applyTerminalSettings({
+    terminals.applySettings({
       fontFamily: terminalFontFamily,
       claudeFontSize,
       shellFontSize,
     });
   }, [terminalFontFamily, claudeFontSize, shellFontSize]);
 
-  // ─── Session state updates from main ────────────────
-  useEffect(() => {
-    const cleanup = window.electronAPI.onSessionState((update: SessionStateUpdate) => {
-      setSessions((prev) =>
-        prev.map((s) =>
-          s.id === update.sessionId
-            ? {
-                ...s,
-                ...(update.status !== undefined && { status: update.status }),
-                ...(update.model !== undefined && { model: update.model }),
-                ...(update.contextUsage !== undefined && { contextUsage: update.contextUsage }),
-                ...(update.contextLimit !== undefined && { contextLimit: update.contextLimit }),
-                ...(update.gitBranch !== undefined && { gitBranch: update.gitBranch }),
-                ...(update.hasUserInput !== undefined && { hasUserInput: update.hasUserInput }),
-                ...(update.unread !== undefined && { unread: update.unread }),
-                ...(update.name !== undefined && { name: update.name }),
-                ...(update.pr !== undefined && { pr: update.pr }),
-                ...(update.stage !== undefined && { stage: update.stage }),
-                ...(update.stageUpdatedAt !== undefined && { stageUpdatedAt: update.stageUpdatedAt }),
-              }
-            : s
-        )
-      );
-    });
-    return cleanup;
-  }, []);
-
   // ─── Menu event listeners ──────────────────────────
   useEffect(() => {
     const cleanups = [
-      window.electronAPI.onMenuNewSession(() => setShowNewSession(true)),
-      window.electronAPI.onMenuSwitchSession(({ index }) => {
-        setSessions((prev) => {
-          if (index >= 0 && index < prev.length) {
-            setActiveSessionId(prev[index].id);
-          }
-          return prev;
-        });
-      }),
-      window.electronAPI.onMenuPrevSession(() => {
-        setSessions((prev) => {
-          if (prev.length <= 1) return prev;
-          const currentId = activeSessionIdRef.current;
-          const idx = prev.findIndex((s) => s.id === currentId);
-          const prevIdx = idx <= 0 ? prev.length - 1 : idx - 1;
-          setActiveSessionId(prev[prevIdx].id);
-          return prev;
-        });
-      }),
-      window.electronAPI.onMenuNextSession(() => {
-        setSessions((prev) => {
-          if (prev.length <= 1) return prev;
-          const currentId = activeSessionIdRef.current;
-          const idx = prev.findIndex((s) => s.id === currentId);
-          const nextIdx = idx >= prev.length - 1 ? 0 : idx + 1;
-          setActiveSessionId(prev[nextIdx].id);
-          return prev;
-        });
-      }),
-      window.electronAPI.onMenuCloseSession(() => {
+      on(IpcChannels.MENU_NEW_SESSION, () => setShowNewSession(true)),
+      on(IpcChannels.MENU_SWITCH_SESSION, ({ index }) => switchToIndex(index)),
+      on(IpcChannels.MENU_PREV_SESSION, () => switchRelative(-1)),
+      on(IpcChannels.MENU_NEXT_SESSION, () => switchRelative(1)),
+      on(IpcChannels.MENU_CLOSE_SESSION, () => {
         const currentId = activeSessionIdRef.current;
         if (currentId) setEndSessionConfirm(currentId);
       }),
-      window.electronAPI.onMenuFind(() => {
+      on(IpcChannels.MENU_FIND, () => {
         const currentId = activeSessionIdRef.current;
         if (!currentId) return;
         const k = ++searchKeyRef.current;
-        const focused = getFocusedTerminalInfo();
-        if (focused && focused.sessionId === currentId && focused.type === 'shell') {
+        const focused = terminals.focused();
+        if (focused && focused.sessionId === currentId && focused.kind === 'shell') {
           setShellSearch({ sessionId: focused.sessionId, key: k });
         } else {
           setPtySearch({ sessionId: currentId, key: k });
         }
       }),
-      window.electronAPI.onMenuPreferences(() => {
-        setShowPreferences(true);
-      }),
+      on(IpcChannels.MENU_PREFERENCES, () => setShowPreferences(true)),
     ];
     return () => cleanups.forEach((c) => c());
-  }, []);
+  }, [switchToIndex, switchRelative]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Persist panel sizes (debounced) ────────────────
   const savePanelSizes = useCallback(
     (overrides?: { sidebarWidth?: number; shellHeight?: number; toolkitHeight?: number; shellCollapsed?: boolean }) => {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = setTimeout(() => {
-        window.electronAPI.appSaveState({
+        void invoke(IpcChannels.APP_SAVE_STATE, {
           panelSizes: {
             sidebarWidth: overrides?.sidebarWidth ?? sidebarWidth,
             shellHeight: overrides?.shellHeight ?? shellHeight,
@@ -208,56 +161,29 @@ export function App(): React.ReactElement {
   // ─── Handlers ──────────────────────────────────────
   const handleSelectSession = useCallback(
     (id: string) => {
-      setActiveSessionId(id);
       setPtySearch(null);
       setShellSearch(null);
-      window.electronAPI.sessionSwitch(id);
-      window.electronAPI.appSaveState({ lastActiveSessionId: id });
+      selectSession(id);
     },
-    []
+    [selectSession]
   );
 
   const handleNewSession = useCallback(
-    async (config: { name: string; cwd: string; worktree: string; flags: string[]; notifyOnIdle: boolean }) => {
-      const session = await window.electronAPI.sessionCreate({
-        name: config.name,
-        cwd: config.cwd,
-        worktree: config.worktree || undefined,
-        flags: config.flags,
-      });
-      // Set notifyOnIdle if requested
-      if (config.notifyOnIdle) {
-        const updated = await window.electronAPI.sessionToggleNotify(session.id);
-        setSessions((prev) => [...prev, updated]);
-      } else {
-        setSessions((prev) => [...prev, session]);
-      }
-      setActiveSessionId(session.id);
+    async (config: NewSessionInput) => {
+      await createSession(config);
       setShowNewSession(false);
-      window.electronAPI.appSaveState({
-        lastActiveSessionId: session.id,
-        newSessionDefaults: { cwd: config.cwd, flags: config.flags, notifyOnIdle: config.notifyOnIdle },
-      });
     },
-    []
+    [createSession]
   );
 
   const handleEndSession = useCallback(
     async (id: string) => {
-      await window.electronAPI.sessionEnd(id);
-      // Dispose cached xterm instances for this session
-      disposeTerminal('pty', id);
-      disposeTerminal('shell', id);
-      setSessions((prev) => {
-        const filtered = prev.filter((s) => s.id !== id);
-        if (activeSessionIdRef.current === id) {
-          setActiveSessionId(filtered.length > 0 ? filtered[0].id : null);
-        }
-        return filtered;
-      });
+      await endSession(id);
+      terminals.dispose(id);
     },
-    []
+    [endSession]
   );
+
   const requestEndSession = useCallback(
     (id: string) => {
       setEndSessionConfirm(id);
@@ -267,48 +193,25 @@ export function App(): React.ReactElement {
 
   const handleConfirmEndSession = useCallback(() => {
     if (endSessionConfirm) {
-      handleEndSession(endSessionConfirm);
+      void handleEndSession(endSessionConfirm);
       setEndSessionConfirm(null);
     }
   }, [endSessionConfirm, handleEndSession]);
-
-  const handleToggleNotify = useCallback(
-    async (id: string) => {
-      const updated = await window.electronAPI.sessionToggleNotify(id);
-      setSessions((prev) => prev.map((s) => (s.id === id ? updated : s)));
-    },
-    []
-  );
-
-  const handleReorderSessions = useCallback(
-    (reorderedSessions: Session[]) => {
-      setSessions(reorderedSessions);
-      window.electronAPI.sessionReorder(reorderedSessions.map((s) => s.id));
-    },
-    []
-  );
-
-  const handleRenameSession = useCallback(
-    (id: string, newName: string) => {
-      window.electronAPI.sessionRename(id, newName);
-    },
-    []
-  );
 
   const handleToolkitExecute = useCallback(
     (commandId: string) => {
       const sid = activeSessionIdRef.current;
       if (sid) {
-        window.electronAPI.toolkitExecute(sid, commandId);
-        requestAnimationFrame(() => focusTerminal('pty', sid));
+        void invoke(IpcChannels.TOOLKIT_EXECUTE, { sessionId: sid, commandId });
+        requestAnimationFrame(() => terminals.focus('pty', sid));
       }
     },
-    []
+    [] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   const handleToolkitAdd = useCallback(
     async (command: Omit<ToolkitCommand, 'id'>) => {
-      const added = await window.electronAPI.toolkitAdd({ ...command, id: crypto.randomUUID() } as ToolkitCommand);
+      const added = await invoke(IpcChannels.TOOLKIT_ADD, { ...command, id: crypto.randomUUID() } as ToolkitCommand);
       setToolkitCommands((prev) => [...prev, added]);
     },
     []
@@ -316,7 +219,7 @@ export function App(): React.ReactElement {
 
   const handleToolkitUpdate = useCallback(
     async (command: ToolkitCommand) => {
-      const updated = await window.electronAPI.toolkitUpdate(command);
+      const updated = await invoke(IpcChannels.TOOLKIT_UPDATE, command);
       setToolkitCommands((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
     },
     []
@@ -324,7 +227,7 @@ export function App(): React.ReactElement {
 
   const handleToolkitDelete = useCallback(
     async (commandId: string) => {
-      await window.electronAPI.toolkitDelete(commandId);
+      await invoke(IpcChannels.TOOLKIT_DELETE, { id: commandId });
       setToolkitCommands((prev) => prev.filter((c) => c.id !== commandId));
     },
     []
@@ -333,7 +236,7 @@ export function App(): React.ReactElement {
   const handlePreviewTheme = useCallback((themeId: string) => {
     applyThemeCss(themeId);
     const t = getTheme(themeId);
-    setTerminalTheme(t.xtermTheme, t.searchDecorations);
+    terminals.setTheme(t.xtermTheme, t.searchDecorations);
   }, []);
 
   const handleSavePreferences = useCallback(
@@ -341,14 +244,14 @@ export function App(): React.ReactElement {
       setTerminalFontFamily(settings.fontFamily);
       setClaudeFontSize(settings.claudeFontSize);
       setShellFontSize(settings.shellFontSize);
-      applyTerminalSettings({
+      terminals.applySettings({
         fontFamily: settings.fontFamily,
         claudeFontSize: settings.claudeFontSize,
         shellFontSize: settings.shellFontSize,
       });
       setCurrentTheme(settings.theme);
       handlePreviewTheme(settings.theme);
-      window.electronAPI.appSaveState({
+      void invoke(IpcChannels.APP_SAVE_STATE, {
         terminalSettings: {
           fontFamily: settings.fontFamily,
           theme: settings.theme,
@@ -495,10 +398,10 @@ export function App(): React.ReactElement {
             activeSessionId={activeSessionId}
             onSelectSession={handleSelectSession}
             onNewSession={() => setShowNewSession(true)}
-            onRenameSession={handleRenameSession}
+            onRenameSession={renameSession}
             onEndSession={requestEndSession}
-            onToggleNotify={handleToggleNotify}
-            onReorderSessions={handleReorderSessions}
+            onToggleNotify={toggleNotify}
+            onReorderSessions={reorderSessions}
           />
 
           {/* Toolkit */}
@@ -634,4 +537,3 @@ const confirmEndBtnStyle: React.CSSProperties = {
   fontFamily: 'var(--font-ui)',
   transition: 'all var(--transition-fast)',
 };
-

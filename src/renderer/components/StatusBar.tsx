@@ -1,27 +1,16 @@
 import React from 'react';
 import { GitBranch } from 'lucide-react';
 import type { Session } from '../../shared/types';
-import { STAGE_ICON, prUrl } from '../stage';
+import { STAGE_ICON, prUrl, statusColor, PULSING_STATUSES, shortenPath, shortenModel } from '../session-presentation';
+import { invoke, IpcChannels } from '../ipc';
 
 interface StatusBarProps {
   session: Session | null;
 }
 
-const statusColors: Record<string, string> = {
-  idle: 'var(--status-idle)',
-  waiting: 'var(--status-idle)',
-  thinking: 'var(--status-thinking)',
-  generating: 'var(--status-generating)',
-  creating: 'var(--status-creating)',
-  error: 'var(--status-error)',
-  ended: 'var(--status-ended)',
-};
-
-const pulsingStatuses = new Set(['thinking', 'generating', 'waiting']);
-
 function StatusDot({ status }: { status: string }): React.ReactElement {
-  const color = statusColors[status] ?? 'var(--text-dimmed)';
-  const isPulsing = pulsingStatuses.has(status);
+  const color = statusColor(status);
+  const isPulsing = PULSING_STATUSES.has(status);
 
   return (
     <span
@@ -40,15 +29,6 @@ function StatusDot({ status }: { status: string }): React.ReactElement {
   );
 }
 
-function shortenPath(p: string): string {
-  return p.replace(/^\/Users\/[^/]+/, '~');
-}
-
-function shortenModel(model: string): string {
-  // "claude-opus-4-6" → "opus-4-6"
-  return model.replace(/^claude-/, '');
-}
-
 export function StatusBar({ session }: StatusBarProps): React.ReactElement {
   if (!session) {
     return (
@@ -63,7 +43,7 @@ export function StatusBar({ session }: StatusBarProps): React.ReactElement {
       {/* Left — Status */}
       <div style={sectionStyle}>
         <StatusDot status={session.status} />
-        <span style={{ color: statusColors[session.status] ?? 'var(--text-dimmed)', textTransform: 'capitalize', fontWeight: 500 }}>
+        <span style={{ color: statusColor(session.status), textTransform: 'capitalize', fontWeight: 500 }}>
           {session.status}
         </span>
       </div>
@@ -78,12 +58,6 @@ export function StatusBar({ session }: StatusBarProps): React.ReactElement {
         <span style={{ color: 'var(--text-dimmed)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
           {shortenPath(session.cwd)}
         </span>
-        {session.gitBranch && (
-          <span style={tagStyle}>
-            <span style={{ color: 'var(--accent-orange)', marginRight: 3 }}></span>
-            {session.gitBranch}
-          </span>
-        )}
         {session.worktree && (
           <span style={tagStyle}>
             <GitBranch size={11} style={{ color: 'var(--accent-blue)', marginRight: 3 }} />
@@ -97,7 +71,7 @@ export function StatusBar({ session }: StatusBarProps): React.ReactElement {
             <span
               title={tooltip}
               onClick={clickable ? () => {
-                void window.electronAPI.openExternal(prUrl(session.pr!));
+                void invoke(IpcChannels.SHELL_OPEN_EXTERNAL, { url: prUrl(session.pr!) });
               } : undefined}
               style={{
                 ...tagStyle,
