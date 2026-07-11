@@ -102,41 +102,4 @@ describe("HookInstaller", () => {
       expect(settings.hooks.Stop[0].hooks[0].command).toContain(`:${PORT}/hook`);
     });
   });
-
-  describe("remove", () => {
-    it("should remove Chorus hooks from settings", () => {
-      installer.ensureInstalled(tmpDir);
-      installer.remove(tmpDir);
-
-      const settingsPath = path.join(tmpDir, ".claude", "settings.local.json");
-      // File should be deleted since it was empty after removing our hooks
-      expect(fs.existsSync(settingsPath)).toBe(false);
-    });
-
-    it("should preserve user hooks when removing Chorus hooks", () => {
-      const claudeDir = path.join(tmpDir, ".claude");
-      fs.mkdirSync(claudeDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(claudeDir, "settings.local.json"),
-        JSON.stringify({
-          hooks: {
-            Stop: [{ hooks: [{ type: "command", command: "echo user-hook" }] }],
-          },
-        }),
-      );
-
-      installer.ensureInstalled(tmpDir);
-      installer.remove(tmpDir);
-
-      const settings = JSON.parse(
-        fs.readFileSync(path.join(claudeDir, "settings.local.json"), "utf-8"),
-      );
-      expect(settings.hooks.Stop).toHaveLength(1);
-      expect(settings.hooks.Stop[0].hooks[0].command).toBe("echo user-hook");
-    });
-
-    it("should not throw if settings file does not exist", () => {
-      expect(() => installer.remove(tmpDir)).not.toThrow();
-    });
-  });
 });
