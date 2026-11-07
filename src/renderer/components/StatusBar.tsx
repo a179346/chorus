@@ -2,42 +2,17 @@ import React from 'react';
 import { GitBranch } from 'lucide-react';
 import type { Session } from '../../shared/types';
 import { prLabel } from '../../shared/pr-ref';
-import { STAGE_ICON, prTooltip, statusColor, statusLabel, PULSING_STATUSES, shortenPath, shortenModel } from '../session-presentation';
+import { STAGE_ICON, prTooltip, statusColor, statusLabel, shortenPath, shortenModel } from '../session-presentation';
 import { openPrInBrowser } from './PrLinks';
+import { StatusDot } from './StatusDot';
 
 interface StatusBarProps {
   session: Session | null;
 }
 
-function StatusDot({ status }: { status: string }): React.ReactElement {
-  const color = statusColor(status);
-  const isPulsing = PULSING_STATUSES.has(status);
-
-  return (
-    <span
-      style={{
-        display: 'inline-block',
-        width: 7,
-        height: 7,
-        borderRadius: '50%',
-        backgroundColor: color,
-        marginRight: 7,
-        animation: isPulsing ? 'statusPulse 1.5s ease-in-out infinite' : undefined,
-        boxShadow: isPulsing ? `0 0 6px ${color}` : undefined,
-        transition: 'background-color var(--transition-fast)',
-      }}
-    />
-  );
-}
-
 export function StatusBar({ session }: StatusBarProps): React.ReactElement {
-  if (!session) {
-    return (
-      <div style={barStyle}>
-        <span style={{ color: 'var(--text-dimmed)' }}>No active session</span>
-      </div>
-    );
-  }
+  // Still the window's drag handle when there's nothing to show
+  if (!session) return <div style={barStyle} />;
 
   return (
     <div style={barStyle}>
@@ -48,8 +23,6 @@ export function StatusBar({ session }: StatusBarProps): React.ReactElement {
           {statusLabel(session.status)}
         </span>
       </div>
-
-      <span style={separatorDotStyle}>·</span>
 
       {/* Center — Name + CWD + tags */}
       <div style={centerStyle}>
@@ -68,15 +41,16 @@ export function StatusBar({ session }: StatusBarProps): React.ReactElement {
         {session.prs.map((pr) => {
           const { Icon, color, background } = STAGE_ICON[pr.stage];
           return (
-            <span
+            <button
+              type="button"
               key={prLabel(pr)}
-              title={prTooltip(pr)}
+              title={`${prTooltip(pr)} — open on GitHub`}
               onClick={() => openPrInBrowser(pr)}
               style={{ ...tagStyle, ...prTagStyle, background, color }}
             >
               <Icon size={12} />
               #{pr.number}
-            </span>
+            </button>
           );
         })}
       </div>
@@ -118,8 +92,7 @@ export function StatusBar({ session }: StatusBarProps): React.ReactElement {
 const barStyle: React.CSSProperties = {
   height: 'var(--status-bar-height)',
   background: 'var(--bg-status-bar)',
-  borderBottom: '1px solid rgba(var(--tint-rgb), 0.08)',
-  boxShadow: '0 1px 8px rgba(var(--shade-rgb), 0.2)',
+  borderBottom: '1px solid var(--border-subtle)',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
@@ -170,13 +143,6 @@ const prTagStyle: React.CSSProperties = {
   fontFamily: 'var(--font-mono)',
   fontSize: 10,
   cursor: 'pointer',
-  flexShrink: 0,
-};
-
-const separatorDotStyle: React.CSSProperties = {
-  color: 'var(--text-dimmed)',
-  opacity: 0.5,
-  fontSize: 11,
   flexShrink: 0,
 };
 

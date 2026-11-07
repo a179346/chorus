@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findNextNeedingAttention } from '../src/renderer/use-sessions';
+import { countNeedingAttention, findNextNeedingAttention } from '../src/renderer/use-sessions';
 import type { Session } from '../src/shared/types';
 
 function makeSession(id: string, overrides: Partial<Session> = {}): Session {
@@ -81,5 +81,23 @@ describe('findNextNeedingAttention', () => {
 
   it('returns null for an empty list', () => {
     expect(findNextNeedingAttention([], null)).toBeNull();
+  });
+});
+
+describe('countNeedingAttention', () => {
+  it('counts unread and waiting sessions', () => {
+    const sessions = [
+      makeSession('a'),
+      makeSession('b', { unread: true }),
+      makeSession('c', { status: 'waiting' }),
+      makeSession('d', { status: 'generating' }),
+    ];
+    expect(countNeedingAttention(sessions, 'a')).toBe(2);
+  });
+
+  it('leaves out the active session, which you are already looking at', () => {
+    const sessions = [makeSession('a', { status: 'waiting' }), makeSession('b', { unread: true })];
+    expect(countNeedingAttention(sessions, 'a')).toBe(1);
+    expect(countNeedingAttention(sessions, null)).toBe(2);
   });
 });

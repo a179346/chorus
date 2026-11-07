@@ -63,6 +63,7 @@ export const IpcChannels = {
   MENU_FIND_NEXT: 'menu:find-next',
   MENU_FIND_PREVIOUS: 'menu:find-previous',
   MENU_PREFERENCES: 'menu:preferences',
+  MENU_COMMAND_PALETTE: 'menu:command-palette',
 } as const;
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels];
@@ -152,4 +153,5 @@ export interface IpcPushMap {
   [IpcChannels.MENU_FIND_NEXT]: void;
   [IpcChannels.MENU_FIND_PREVIOUS]: void;
   [IpcChannels.MENU_PREFERENCES]: void;
+  [IpcChannels.MENU_COMMAND_PALETTE]: void;
 }

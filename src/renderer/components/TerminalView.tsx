@@ -25,15 +25,25 @@ export function TerminalView({
     return terminals.attach(type, sessionId, containerRef.current, { fontFamily, fontSize });
   }, [sessionId, type, visible, fontFamily, fontSize]);
 
+  // The breathing room lives on a wrapper: the fit addon sizes the terminal
+  // from its container's box, so the container itself must stay unpadded.
   return (
     <div
-      ref={containerRef}
-      style={{
-        width: '100%',
-        height: '100%',
-        background: 'var(--bg-terminal)',
-        display: visible ? 'block' : 'none',
+      style={{ ...gutterStyle, display: visible ? 'block' : 'none' }}
+      onMouseDown={(e) => {
+        if (e.target !== e.currentTarget || !sessionId) return;
+        e.preventDefault();
+        terminals.focus(type, sessionId);
       }}
-    />
+    >
+      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+    </div>
   );
 }
+
+const gutterStyle: React.CSSProperties = {
+  width: '100%',
+  height: '100%',
+  padding: '8px 4px 4px 14px',
+  background: 'var(--bg-terminal)',
+};

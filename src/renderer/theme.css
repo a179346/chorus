@@ -48,7 +48,6 @@
 
   /* Sizing */
   --status-bar-height: 38px;
-  --shell-collapsed-height: 30px;
   --divider-size: 1px;
   --divider-hit-area: 6px;
 
@@ -60,6 +59,10 @@
   --transition-fast: 120ms ease;
   --transition-normal: 200ms ease;
   --transition-slow: 300ms ease-out;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Keyboard focus — visible only for keyboard navigation (:focus-visible) */
+  --focus-ring: 0 0 0 2px rgba(var(--accent-rgb), 0.6);
 
   /* Radius */
   --radius-sm: 4px;

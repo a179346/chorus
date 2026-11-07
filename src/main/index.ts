@@ -572,6 +572,14 @@ function createMenu(): void {
     {
       label: "View",
       submenu: [
+        {
+          label: "Command Palette…",
+          accelerator: "CmdOrCtrl+K",
+          click: () => {
+            mainWindow?.webContents.send(IpcChannels.MENU_COMMAND_PALETTE);
+          },
+        },
+        { type: "separator" },
         { role: "reload" },
         { role: "forceReload" },
         { role: "toggleDevTools" },

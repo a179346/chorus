@@ -1,4 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
+import { ChevronUp, ChevronDown, X } from 'lucide-react';
 import { terminals, type TerminalKind } from '../terminal-host';
 import { on, IpcChannels } from '../ipc';
 
@@ -102,26 +103,22 @@ export function SearchBar({ type, sessionId, onClose }: SearchBarProps): React.R
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => { activeSearchType = type; }}
           onKeyDown={handleKeyDown}
-          placeholder="Search..."
+          placeholder="Find"
+          aria-label="Find in terminal"
+          className="input"
           style={inputStyle}
         />
         {resultText && (
           <span style={resultTextStyle}>{resultText}</span>
         )}
-        <button onClick={handlePrev} style={btnStyle} title="Previous (Shift+Enter)">
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path d="M2.5 7.5L6 4L9.5 7.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
+        <button type="button" className="icon-btn" onClick={handlePrev} title="Previous (⇧↵)" aria-label="Previous match">
+          <ChevronUp size={14} />
         </button>
-        <button onClick={handleNext} style={btnStyle} title="Next (Enter)">
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
+        <button type="button" className="icon-btn" onClick={handleNext} title="Next (↵)" aria-label="Next match">
+          <ChevronDown size={14} />
         </button>
-        <button onClick={handleClose} style={btnStyle} title="Close (Escape)">
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path d="M3 3L9 9M9 3L3 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-          </svg>
+        <button type="button" className="icon-btn" onClick={handleClose} title="Close (Esc)" aria-label="Close find">
+          <X size={13} />
         </button>
       </div>
     </div>
@@ -133,13 +130,13 @@ const containerStyle: React.CSSProperties = {
   top: 8,
   right: 16,
   zIndex: 100,
-  animation: 'slideDown 120ms ease',
+  animation: 'slideDown 140ms var(--ease-out)',
 };
 
 const barStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
-  gap: 4,
+  gap: 2,
   background: 'var(--bg-elevated)',
   border: '1px solid var(--border-default)',
   borderRadius: 'var(--radius-md)',
@@ -149,13 +146,8 @@ const barStyle: React.CSSProperties = {
 
 const inputStyle: React.CSSProperties = {
   width: 180,
-  padding: '4px 8px',
-  fontSize: 12,
+  padding: '3px 8px',
   fontFamily: 'var(--font-ui)',
-  color: 'var(--text-primary)',
-  background: 'var(--bg-surface)',
-  border: '1px solid var(--border-subtle)',
-  borderRadius: 'var(--radius-sm)',
 };
 
 const resultTextStyle: React.CSSProperties = {
@@ -165,16 +157,4 @@ const resultTextStyle: React.CSSProperties = {
   whiteSpace: 'nowrap',
   minWidth: 60,
   textAlign: 'center',
-};
-
-const btnStyle: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  width: 24,
-  height: 24,
-  borderRadius: 'var(--radius-sm)',
-  color: 'var(--text-secondary)',
-  transition: 'all var(--transition-fast)',
-  flexShrink: 0,
 };

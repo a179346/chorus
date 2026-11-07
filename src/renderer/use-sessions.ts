@@ -18,6 +18,11 @@ function needsAttention(session: Session): boolean {
   return session.unread || session.status === 'waiting';
 }
 
+/** Sessions other than the active one that want you — what ⌘J cycles through. */
+export function countNeedingAttention(sessions: Session[], activeId: string | null): number {
+  return sessions.filter((s) => s.id !== activeId && needsAttention(s)).length;
+}
+
 /**
  * The next session after the active one, in sidebar order and wrapping
  * around, that needs attention. Never the active session itself.

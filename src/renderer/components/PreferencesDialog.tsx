@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Check } from 'lucide-react';
 import { THEMES } from '../themes';
-import { useModalKeys } from '../use-modal-keys';
+import { Dialog } from './Dialog';
 
 interface PreferencesDialogProps {
   open: boolean;
@@ -29,7 +30,6 @@ export function PreferencesDialog({ open, fontFamily, theme, claudeFontSize, she
   const [claudeSize, setClaudeSize] = useState<string>(String(claudeFontSize));
   const [shellSize, setShellSize] = useState<string>(String(shellFontSize));
   const inputRef = useRef<HTMLInputElement>(null);
-  const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -44,8 +44,6 @@ export function PreferencesDialog({ open, fontFamily, theme, claudeFontSize, she
     onPreviewTheme(theme); // restore original theme
     onClose();
   }, [theme, onPreviewTheme, onClose]);
-
-  useModalKeys(dialogRef, handleClose, open);
 
   const handleThemeSelect = (id: string) => {
     setSelectedTheme(id);
@@ -70,213 +68,154 @@ export function PreferencesDialog({ open, fontFamily, theme, claudeFontSize, she
   if (!open) return null;
 
   return (
-    <div style={overlayStyle} onClick={handleClose}>
-      <div ref={dialogRef} style={dialogStyle} onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Preferences">
-        <div style={titleStyle}>Preferences</div>
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          {/* Theme picker */}
-          <div style={fieldStyle}>
-            <label style={labelStyle}>Theme</label>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {THEMES.map((t) => {
-                const isActive = selectedTheme === t.id;
-                return (
-                  <button
-                    key={t.id}
-                    type="button"
-                    onClick={() => handleThemeSelect(t.id)}
-                    style={{
-                      width: 'calc(25% - 5px)',
-                      padding: 0,
-                      borderRadius: 'var(--radius-md)',
-                      border: `2px solid ${isActive ? t.preview.accent : 'transparent'}`,
-                      cursor: 'pointer',
-                      overflow: 'hidden',
-                      background: 'none',
-                      transition: 'border-color var(--transition-fast)',
-                    }}
-                  >
+    <Dialog title="Preferences" label="Preferences" onClose={handleClose} width={460}>
+      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {/* Theme picker */}
+        <div className="field" role="radiogroup" aria-label="Theme">
+          <span className="field-label">Theme</span>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+            {THEMES.map((t) => {
+              const isActive = selectedTheme === t.id;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={isActive}
+                  aria-label={t.name}
+                  onClick={() => handleThemeSelect(t.id)}
+                  style={{
+                    padding: 0,
+                    borderRadius: 'var(--radius-md)',
+                    border: '1px solid var(--border-default)',
+                    outline: isActive ? `2px solid ${t.preview.accent}` : 'none',
+                    outlineOffset: 1,
+                    cursor: 'pointer',
+                    overflow: 'hidden',
+                    background: 'none',
+                    transition: 'outline-color var(--transition-fast)',
+                  }}
+                >
+                  <div style={{
+                    height: 38,
+                    background: t.preview.bg,
+                    position: 'relative',
+                  }}>
+                    {isActive && (
+                      <span style={{ position: 'absolute', top: 5, right: 5, display: 'flex', color: t.preview.accent }}>
+                        <Check size={11} strokeWidth={3} />
+                      </span>
+                    )}
                     <div style={{
-                      height: 28,
-                      background: t.preview.bg,
-                      position: 'relative',
-                    }}>
-                      <div style={{
-                        position: 'absolute',
-                        bottom: 5,
-                        left: 7,
-                        width: 10,
-                        height: 3,
-                        borderRadius: 1,
-                        background: t.preview.accent,
-                        opacity: 0.9,
-                      }} />
-                      <div style={{
-                        position: 'absolute',
-                        bottom: 5,
-                        left: 20,
-                        width: 18,
-                        height: 2,
-                        borderRadius: 1,
-                        background: t.preview.accent,
-                        opacity: 0.25,
-                      }} />
-                    </div>
+                      position: 'absolute',
+                      bottom: 5,
+                      left: 7,
+                      width: 10,
+                      height: 3,
+                      borderRadius: 1,
+                      background: t.preview.accent,
+                      opacity: 0.9,
+                    }} />
                     <div style={{
-                      padding: '4px 0',
-                      fontSize: 9,
-                      fontWeight: 600,
-                      background: t.preview.panel,
-                      color: isActive ? t.preview.accent : '#888',
-                      textAlign: 'center',
-                      letterSpacing: '0.02em',
-                    }}>
-                      {t.name}
-                    </div>
-                  </button>
-                );
-              })}
+                      position: 'absolute',
+                      bottom: 5,
+                      left: 20,
+                      width: 18,
+                      height: 2,
+                      borderRadius: 1,
+                      background: t.preview.accent,
+                      opacity: 0.25,
+                    }} />
+                  </div>
+                  <div style={{
+                    padding: '4px 0',
+                    fontSize: 9,
+                    fontWeight: 600,
+                    background: t.preview.panel,
+                    color: isActive ? t.preview.accent : '#888',
+                    textAlign: 'center',
+                    letterSpacing: '0.02em',
+                  }}>
+                    {t.name}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Font family */}
+        <div className="field">
+          <label htmlFor="pref-font" className="field-label">Terminal Font Family</label>
+          <input
+            id="pref-font"
+            ref={inputRef}
+            className="input"
+            spellCheck={false}
+            value={font}
+            onChange={(e) => setFont(e.target.value)}
+            placeholder="'JetBrains Mono', 'Fira Code', monospace"
+          />
+          <span className="field-hint">
+            Comma-separated list of fonts. Fonts are tried in order; the first available one is used.
+          </span>
+        </div>
+
+        {/* Font sizes */}
+        <div className="field">
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div className="field" style={{ flex: 1 }}>
+              <label htmlFor="pref-claude-size" className="field-label">Claude Code Font Size</label>
+              <input
+                id="pref-claude-size"
+                type="number"
+                min={MIN_FONT_SIZE}
+                max={MAX_FONT_SIZE}
+                step={1}
+                className="input"
+                aria-invalid={claudeSizeNum === null}
+                value={claudeSize}
+                onChange={(e) => setClaudeSize(e.target.value)}
+              />
+            </div>
+            <div className="field" style={{ flex: 1 }}>
+              <label htmlFor="pref-shell-size" className="field-label">Shell Font Size</label>
+              <input
+                id="pref-shell-size"
+                type="number"
+                min={MIN_FONT_SIZE}
+                max={MAX_FONT_SIZE}
+                step={1}
+                className="input"
+                aria-invalid={shellSizeNum === null}
+                value={shellSize}
+                onChange={(e) => setShellSize(e.target.value)}
+              />
             </div>
           </div>
+          <span className="field-hint">Between {MIN_FONT_SIZE} and {MAX_FONT_SIZE}.</span>
+        </div>
 
-          {/* Font family */}
-          <div style={fieldStyle}>
-            <label style={labelStyle}>Terminal Font Family</label>
-            <input
-              ref={inputRef}
-              style={inputStyle}
-              value={font}
-              onChange={(e) => setFont(e.target.value)}
-              placeholder="'JetBrains Mono', 'Fira Code', monospace"
-            />
-            <span style={hintStyle}>
-              Comma-separated list of fonts. Fonts are tried in order; the first available one is used.
-            </span>
+        {/* Preview */}
+        <div style={previewContainerStyle}>
+          <span style={previewLabelStyle}>Preview</span>
+          <div style={{ ...previewTextStyle, fontFamily: font || undefined, fontSize: claudeSizeNum ?? 13 }}>
+            AaBbCc 0123 {'{ }'} =&gt; !=
           </div>
+        </div>
 
-          {/* Font sizes */}
-          <div style={fieldStyle}>
-            <div style={{ display: 'flex', gap: 12 }}>
-              <div style={{ ...fieldStyle, flex: 1 }}>
-                <label style={labelStyle}>Claude Code Font Size</label>
-                <input
-                  type="number"
-                  min={MIN_FONT_SIZE}
-                  max={MAX_FONT_SIZE}
-                  step={1}
-                  style={{ ...inputStyle, borderColor: claudeSizeNum === null ? 'var(--accent-red)' : undefined }}
-                  value={claudeSize}
-                  onChange={(e) => setClaudeSize(e.target.value)}
-                />
-              </div>
-              <div style={{ ...fieldStyle, flex: 1 }}>
-                <label style={labelStyle}>Shell Font Size</label>
-                <input
-                  type="number"
-                  min={MIN_FONT_SIZE}
-                  max={MAX_FONT_SIZE}
-                  step={1}
-                  style={{ ...inputStyle, borderColor: shellSizeNum === null ? 'var(--accent-red)' : undefined }}
-                  value={shellSize}
-                  onChange={(e) => setShellSize(e.target.value)}
-                />
-              </div>
-            </div>
-            <span style={hintStyle}>Between {MIN_FONT_SIZE} and {MAX_FONT_SIZE}.</span>
-          </div>
-
-          {/* Preview */}
-          <div style={previewContainerStyle}>
-            <span style={previewLabelStyle}>Preview</span>
-            <div style={{ ...previewTextStyle, fontFamily: font || undefined, fontSize: claudeSizeNum ?? 13 }}>
-              AaBbCc 0123 {'{ }'} =&gt; !=
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
-            <button type="button" style={cancelButtonStyle} onClick={handleClose}>
-              Cancel
-            </button>
-            <button
-              type="submit"
-              style={{
-                ...submitButtonStyle,
-                opacity: canSave ? 1 : 0.4,
-                cursor: canSave ? 'pointer' : 'not-allowed',
-              }}
-              disabled={!canSave}
-            >
-              Save
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <div className="dialog-actions">
+          <button type="button" className="btn" onClick={handleClose}>
+            Cancel
+          </button>
+          <button type="submit" className="btn btn-primary" disabled={!canSave}>
+            Save
+          </button>
+        </div>
+      </form>
+    </Dialog>
   );
 }
-
-const overlayStyle: React.CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  background: 'rgba(var(--shade-rgb), 0.6)',
-  backdropFilter: 'blur(4px)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  zIndex: 2000,
-  animation: 'fadeIn 150ms ease',
-};
-
-const dialogStyle: React.CSSProperties = {
-  background: 'var(--bg-elevated)',
-  border: '1px solid var(--border-default)',
-  borderRadius: 'var(--radius-lg)',
-  boxShadow: 'var(--shadow-lg)',
-  padding: 24,
-  width: 420,
-  maxWidth: '90vw',
-  animation: 'slideUp 200ms ease',
-};
-
-const titleStyle: React.CSSProperties = {
-  fontSize: 14,
-  fontWeight: 600,
-  color: 'var(--text-primary)',
-  marginBottom: 18,
-  letterSpacing: '0.02em',
-};
-
-const fieldStyle: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 4,
-};
-
-const labelStyle: React.CSSProperties = {
-  fontSize: 10,
-  fontWeight: 500,
-  color: 'var(--text-secondary)',
-  textTransform: 'uppercase',
-  letterSpacing: '0.06em',
-};
-
-const inputStyle: React.CSSProperties = {
-  background: 'var(--bg-surface)',
-  border: '1px solid var(--border-default)',
-  borderRadius: 'var(--radius-md)',
-  padding: '7px 10px',
-  fontSize: 12,
-  color: 'var(--text-primary)',
-  fontFamily: 'var(--font-mono)',
-  transition: 'border-color var(--transition-fast)',
-};
-
-const hintStyle: React.CSSProperties = {
-  fontSize: 10,
-  color: 'var(--text-dimmed)',
-  lineHeight: 1.4,
-  marginTop: 2,
-};
 
 const previewContainerStyle: React.CSSProperties = {
   background: 'var(--bg-terminal)',
@@ -302,27 +241,3 @@ const previewTextStyle: React.CSSProperties = {
   lineHeight: 1.4,
 };
 
-const cancelButtonStyle: React.CSSProperties = {
-  padding: '7px 16px',
-  borderRadius: 'var(--radius-md)',
-  fontSize: 11,
-  color: 'var(--text-secondary)',
-  background: 'var(--bg-surface)',
-  border: '1px solid var(--border-default)',
-  cursor: 'pointer',
-  fontFamily: 'var(--font-ui)',
-  transition: 'all var(--transition-fast)',
-};
-
-const submitButtonStyle: React.CSSProperties = {
-  padding: '7px 20px',
-  borderRadius: 'var(--radius-md)',
-  fontSize: 11,
-  fontWeight: 600,
-  color: 'var(--btn-primary-text)',
-  background: 'var(--accent-primary)',
-  border: 'none',
-  cursor: 'pointer',
-  fontFamily: 'var(--font-ui)',
-  transition: 'all var(--transition-fast)',
-};

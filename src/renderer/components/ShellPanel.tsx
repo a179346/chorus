@@ -1,4 +1,8 @@
 import React from 'react';
+import { ChevronDown, SquareTerminal } from 'lucide-react';
+
+/** Also the panel's collapsed size, so the split pane must use the same number. */
+export const SHELL_HEADER_HEIGHT = 28;
 
 interface ShellPanelProps {
   collapsed: boolean;
@@ -9,24 +13,23 @@ interface ShellPanelProps {
 export function ShellPanel({ collapsed, onToggle, children }: ShellPanelProps): React.ReactElement {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-      <div style={headerStyle} onClick={onToggle}>
-        <span style={{ color: 'var(--text-dimmed)', fontWeight: 600, fontSize: 11, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
-          Shell
-        </span>
-        <svg
-          width="10"
-          height="10"
-          viewBox="0 0 10 10"
-          fill="none"
+      <button
+        type="button"
+        style={headerStyle}
+        onClick={onToggle}
+        aria-expanded={!collapsed}
+        title={collapsed ? 'Show shell' : 'Hide shell'}
+      >
+        <SquareTerminal size={12} />
+        <span className="panel-title">Shell</span>
+        <ChevronDown
+          size={12}
           style={{
-            marginLeft: 5,
             transition: 'transform var(--transition-fast)',
-            transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
+            transform: collapsed ? 'rotate(-90deg)' : 'none',
           }}
-        >
-          <path d="M2.5 3.5L5 6.5L7.5 3.5" stroke="var(--text-dimmed)" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-      </div>
+        />
+      </button>
       {!collapsed && (
         <div style={{ flex: 1, overflow: 'hidden', background: 'var(--bg-terminal)' }}>
           {children}
@@ -37,13 +40,14 @@ export function ShellPanel({ collapsed, onToggle, children }: ShellPanelProps): 
 }
 
 const headerStyle: React.CSSProperties = {
-  height: 'var(--shell-collapsed-height)',
+  height: SHELL_HEADER_HEIGHT,
   display: 'flex',
   alignItems: 'center',
+  gap: 6,
+  width: '100%',
   padding: '0 14px',
   background: 'var(--bg-panel)',
-  borderTop: '1px solid rgba(var(--tint-rgb), 0.06)',
-  cursor: 'pointer',
+  color: 'var(--text-dimmed)',
   flexShrink: 0,
   userSelect: 'none',
 };

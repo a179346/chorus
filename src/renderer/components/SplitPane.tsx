@@ -27,6 +27,7 @@ export function SplitPane({
 }: SplitPaneProps): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState(initialSize);
+  const [dragging, setDragging] = useState(false);
   const draggingRef = useRef(false);
   const startPosRef = useRef(0);
   const startSizeRef = useRef(0);
@@ -46,6 +47,7 @@ export function SplitPane({
       if (collapsed) return;
       e.preventDefault();
       draggingRef.current = true;
+      setDragging(true);
       startPosRef.current = isHorizontal ? e.clientX : e.clientY;
       startSizeRef.current = size;
       document.body.style.cursor = isHorizontal ? 'col-resize' : 'row-resize';
@@ -66,6 +68,7 @@ export function SplitPane({
 
       const handleMouseUp = () => {
         draggingRef.current = false;
+        setDragging(false);
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
         window.removeEventListener('mousemove', handleMouseMove);
@@ -97,7 +100,6 @@ export function SplitPane({
     ...(isHorizontal
       ? { width: 'var(--divider-size)', cursor: collapsed ? 'default' : 'col-resize' }
       : { height: 'var(--divider-size)', cursor: collapsed ? 'default' : 'row-resize' }),
-    background: 'rgba(var(--tint-rgb), 0.06)',
     zIndex: 2,
     transition: 'background var(--transition-fast)',
   };
@@ -127,7 +129,7 @@ export function SplitPane({
       }}
     >
       <div style={{ ...firstStyle, overflow: 'hidden' }}>{children[0]}</div>
-      <div data-divider style={dividerStyle} onMouseDown={handleMouseDown}>
+      <div data-divider data-dragging={dragging} data-collapsed={collapsed} style={dividerStyle} onMouseDown={handleMouseDown}>
         <div style={dividerHitAreaStyle} />
       </div>
       <div style={{ ...secondStyle, overflow: 'hidden' }}>{children[1]}</div>

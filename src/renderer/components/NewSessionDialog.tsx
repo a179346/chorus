@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { Star } from 'lucide-react';
 import {
   DndContext,
   closestCenter,
@@ -15,9 +16,10 @@ import { invoke, IpcChannels } from '../ipc';
 import { basename } from '../session-presentation';
 import { readPrDraft } from '../pr-draft';
 import { TOGGLE_LABELS, customFlagText, readCustomFlags, readToggles, toggleFlags } from '../session-flags';
-import { useModalKeys } from '../use-modal-keys';
 import type { NewSessionInput } from '../use-sessions';
 import { PrIdentity, PrRemoveButton, PrUrlInput } from './PrLinks';
+import { Dialog } from './Dialog';
+import { Checkbox } from './Checkbox';
 
 interface NewSessionDialogProps {
   open: boolean;
@@ -62,10 +64,6 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
     setPrompt('');
     setTimeout(() => nameRef.current?.focus(), 50);
   }, [open]);
-
-  const dialogRef = useRef<HTMLDivElement>(null);
-
-  useModalKeys(dialogRef, onClose, open);
 
   const handleSelectDir = useCallback(async () => {
     const dir = await invoke(IpcChannels.DIALOG_SELECT_DIRECTORY);
@@ -133,240 +131,162 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
   if (!open) return null;
 
   return (
-    <div style={overlayStyle} onClick={onClose}>
-      <div ref={dialogRef} style={dialogStyle} onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="New Session">
-        <div style={titleStyle}>New Session</div>
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          {/* Name */}
-          <div style={fieldStyle}>
-            <label style={labelStyle}>Session Name</label>
+    <Dialog title="New Session" label="New Session" onClose={onClose} width={460}>
+      <form
+        onSubmit={handleSubmit}
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter' || !e.metaKey || e.nativeEvent.isComposing) return;
+          e.preventDefault();
+          e.currentTarget.requestSubmit();
+        }}
+        style={{ display: 'flex', flexDirection: 'column', gap: 16 }}
+      >
+        <div className="field">
+          <label htmlFor="new-session-name" className="field-label">Session Name</label>
+          <input
+            id="new-session-name"
+            ref={nameRef}
+            className="input"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="my-session"
+            autoFocus
+          />
+        </div>
+
+        <div className="field">
+          <label htmlFor="new-session-cwd" className="field-label">Working Directory</label>
+          <div style={{ display: 'flex', gap: 6 }}>
             <input
-              ref={nameRef}
-              style={inputStyle}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="my-session"
-              autoFocus
-            />
-          </div>
-
-          {/* Working Directory */}
-          <div style={fieldStyle}>
-            <label style={labelStyle}>Working Directory</label>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <input
-                style={{ ...inputStyle, flex: 1 }}
-                value={cwd}
-                onChange={(e) => setCwd(e.target.value)}
-                placeholder="/Users/..."
-              />
-              <button
-                type="button"
-                style={{
-                  ...browseButtonStyle,
-                  padding: '7px 9px',
-                  color: isFavorite ? 'var(--accent-primary)' : 'var(--text-dimmed)',
-                }}
-                onClick={toggleFavorite}
-                title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
-                aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
-              >
-                {isFavorite ? '★' : '☆'}
-              </button>
-              <button type="button" style={browseButtonStyle} onClick={handleSelectDir}>
-                Browse
-              </button>
-            </div>
-            {favorites.length > 0 && (
-              <DndContext sensors={dragSensors} collisionDetection={closestCenter} onDragEnd={handleFavoriteDragEnd}>
-                <SortableContext items={favorites} strategy={rectSortingStrategy}>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 2 }}>
-                    {favorites.map((dir) => (
-                      <FavoriteChip
-                        key={dir}
-                        dir={dir}
-                        selected={dir === cwd.trim()}
-                        onSelect={() => setCwd(dir)}
-                      />
-                    ))}
-                  </div>
-                </SortableContext>
-              </DndContext>
-            )}
-          </div>
-
-          {/* Worktree */}
-          <div style={fieldStyle}>
-            <label style={labelStyle}>Worktree <span style={{ color: 'var(--text-dimmed)', fontWeight: 400 }}>(optional)</span></label>
-            <input
-              style={inputStyle}
-              value={worktree}
-              onChange={(e) => setWorktree(e.target.value)}
-              placeholder="Leave empty to skip"
-            />
-          </div>
-
-          {/* Pull requests */}
-          <div style={fieldStyle}>
-            <label style={labelStyle}>Pull Requests <span style={{ color: 'var(--text-dimmed)', fontWeight: 400 }}>(optional)</span></label>
-            {prs.map((pr) => (
-              <div key={prLabel(pr)} style={prRowStyle}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <PrIdentity pr={pr} />
-                </div>
-                <PrRemoveButton pr={pr} onRemove={() => setPrs(prs.filter((p) => p !== pr))} />
-              </div>
-            ))}
-            <PrUrlInput
-              value={prDraft}
-              onChange={setPrDraft}
-              linked={prs}
-              onAdd={(pr) => {
-                setPrs([...prs, pr]);
-                setPrDraft('');
-              }}
-            />
-          </div>
-
-          {/* Initial prompt */}
-          <div style={fieldStyle}>
-            <label htmlFor="new-session-prompt" style={labelStyle}>
-              Prompt <span style={{ color: 'var(--text-dimmed)', fontWeight: 400 }}>(optional)</span>
-            </label>
-            <textarea
-              id="new-session-prompt"
-              style={textareaStyle}
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key !== 'Enter' || !e.metaKey || e.nativeEvent.isComposing) return;
-                e.preventDefault();
-                e.currentTarget.form?.requestSubmit();
-              }}
-              placeholder="What should Claude work on?"
-              rows={3}
-            />
-            <span style={hintStyle}>Sent when the session starts · ⌘↵ to create</span>
-          </div>
-
-          {/* Flags */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div
-              style={{
-                ...checkboxStyle,
-                background: autoMode ? 'var(--accent-blue)' : 'var(--bg-surface)',
-                borderColor: autoMode ? 'var(--accent-blue)' : 'var(--border-default)',
-              }}
-              onClick={() => setAutoMode(!autoMode)}
-            >
-              {autoMode && <span style={{ fontSize: 10, lineHeight: 1 }}>✓</span>}
-            </div>
-            <label
-              style={{ fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}
-              onClick={() => setAutoMode(!autoMode)}
-            >
-              {TOGGLE_LABELS.autoMode}
-            </label>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div
-              style={{
-                ...checkboxStyle,
-                background: skipPermissions ? 'var(--status-error, #e53e3e)' : 'var(--bg-surface)',
-                borderColor: skipPermissions ? 'var(--status-error, #e53e3e)' : 'var(--border-default)',
-              }}
-              onClick={() => setSkipPermissions(!skipPermissions)}
-            >
-              {skipPermissions && <span style={{ fontSize: 10, lineHeight: 1 }}>✓</span>}
-            </div>
-            <label
-              style={{ fontSize: 11, color: skipPermissions ? 'var(--status-error, #e53e3e)' : 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}
-              onClick={() => setSkipPermissions(!skipPermissions)}
-            >
-              {TOGGLE_LABELS.skipPermissions}
-            </label>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div
-              style={{
-                ...checkboxStyle,
-                background: chrome ? 'var(--accent-blue)' : 'var(--bg-surface)',
-                borderColor: chrome ? 'var(--accent-blue)' : 'var(--border-default)',
-              }}
-              onClick={() => setChrome(!chrome)}
-            >
-              {chrome && <span style={{ fontSize: 10, lineHeight: 1 }}>✓</span>}
-            </div>
-            <label
-              style={{ fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}
-              onClick={() => setChrome(!chrome)}
-            >
-              {TOGGLE_LABELS.chrome}
-            </label>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div
-              style={{
-                ...checkboxStyle,
-                background: notifyOnIdle ? 'var(--accent-blue)' : 'var(--bg-surface)',
-                borderColor: notifyOnIdle ? 'var(--accent-blue)' : 'var(--border-default)',
-              }}
-              onClick={() => setNotifyOnIdle(!notifyOnIdle)}
-            >
-              {notifyOnIdle && <span style={{ fontSize: 10, lineHeight: 1 }}>✓</span>}
-            </div>
-            <label
-              style={{ fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}
-              onClick={() => setNotifyOnIdle(!notifyOnIdle)}
-            >
-              Notify when idle or waiting
-            </label>
-          </div>
-
-          {/* Additional flags */}
-          <div style={fieldStyle}>
-            <label htmlFor="new-session-flags" style={labelStyle}>
-              Additional Flags <span style={{ color: 'var(--text-dimmed)', fontWeight: 400 }}>(optional)</span>
-            </label>
-            <input
-              id="new-session-flags"
-              style={{
-                ...inputStyle,
-                borderColor: customFlagsDraft.kind === 'invalid' ? 'var(--status-error, #e53e3e)' : 'var(--border-default)',
-              }}
-              value={customFlags}
-              onChange={(e) => setCustomFlags(e.target.value)}
-              placeholder={`--model opus --allowed-tools "Bash(git *)"`}
+              id="new-session-cwd"
+              className="input"
+              style={{ flex: 1 }}
+              value={cwd}
+              onChange={(e) => setCwd(e.target.value)}
+              placeholder="/Users/..."
               spellCheck={false}
-              aria-invalid={customFlagsDraft.kind === 'invalid'}
             />
-            {customFlagsDraft.kind === 'invalid' && (
-              <span style={{ ...hintStyle, color: 'var(--status-error, #e53e3e)' }}>{customFlagsDraft.error}</span>
-            )}
-          </div>
-
-          {/* Actions */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
-            <button type="button" style={cancelButtonStyle} onClick={onClose}>
-              Cancel
-            </button>
             <button
-              type="submit"
-              style={{
-                ...submitButtonStyle,
-                opacity: canSubmit ? 1 : 0.4,
-              }}
-              disabled={!canSubmit}
+              type="button"
+              className="btn"
+              style={{ width: 32, padding: 0, color: isFavorite ? 'var(--accent-primary)' : undefined }}
+              onClick={toggleFavorite}
+              title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+              aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+              aria-pressed={isFavorite}
             >
-              Create
+              <Star size={13} fill={isFavorite ? 'currentColor' : 'none'} />
+            </button>
+            <button type="button" className="btn" onClick={handleSelectDir}>
+              Browse…
             </button>
           </div>
-        </form>
-      </div>
-    </div>
+          {favorites.length > 0 && (
+            <DndContext sensors={dragSensors} collisionDetection={closestCenter} onDragEnd={handleFavoriteDragEnd}>
+              <SortableContext items={favorites} strategy={rectSortingStrategy}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 2 }}>
+                  {favorites.map((dir) => (
+                    <FavoriteChip
+                      key={dir}
+                      dir={dir}
+                      selected={dir === cwd.trim()}
+                      onSelect={() => setCwd(dir)}
+                    />
+                  ))}
+                </div>
+              </SortableContext>
+            </DndContext>
+          )}
+        </div>
+
+        <div className="field">
+          <label htmlFor="new-session-worktree" className="field-label">
+            Worktree <span className="field-optional">(optional)</span>
+          </label>
+          <input
+            id="new-session-worktree"
+            className="input"
+            value={worktree}
+            onChange={(e) => setWorktree(e.target.value)}
+            placeholder="Leave empty to skip"
+            spellCheck={false}
+          />
+        </div>
+
+        <div className="field">
+          <span className="field-label">
+            Pull Requests <span className="field-optional">(optional)</span>
+          </span>
+          {prs.map((pr) => (
+            <div key={prLabel(pr)} style={prRowStyle}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <PrIdentity pr={pr} />
+              </div>
+              <PrRemoveButton pr={pr} onRemove={() => setPrs(prs.filter((p) => p !== pr))} />
+            </div>
+          ))}
+          <PrUrlInput
+            value={prDraft}
+            onChange={setPrDraft}
+            linked={prs}
+            onAdd={(pr) => {
+              setPrs([...prs, pr]);
+              setPrDraft('');
+            }}
+          />
+        </div>
+
+        <div className="field">
+          <label htmlFor="new-session-prompt" className="field-label">
+            Prompt <span className="field-optional">(optional)</span>
+          </label>
+          <textarea
+            id="new-session-prompt"
+            className="input"
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="What should Claude work on?"
+            rows={3}
+          />
+          <span className="field-hint">Sent as the first message when the session starts.</span>
+        </div>
+
+        <div style={optionsGridStyle}>
+          <Checkbox checked={autoMode} onChange={setAutoMode}>{TOGGLE_LABELS.autoMode}</Checkbox>
+          <Checkbox checked={notifyOnIdle} onChange={setNotifyOnIdle}>Notify when idle or waiting</Checkbox>
+          <Checkbox checked={chrome} onChange={setChrome}>{TOGGLE_LABELS.chrome}</Checkbox>
+          <Checkbox checked={skipPermissions} onChange={setSkipPermissions} tone="danger">
+            {TOGGLE_LABELS.skipPermissions}
+          </Checkbox>
+        </div>
+
+        <div className="field">
+          <label htmlFor="new-session-flags" className="field-label">
+            Additional Flags <span className="field-optional">(optional)</span>
+          </label>
+          <input
+            id="new-session-flags"
+            className="input"
+            value={customFlags}
+            onChange={(e) => setCustomFlags(e.target.value)}
+            placeholder={`--model opus --allowed-tools "Bash(git *)"`}
+            spellCheck={false}
+            aria-invalid={customFlagsDraft.kind === 'invalid'}
+          />
+          {customFlagsDraft.kind === 'invalid' && <span className="field-error">{customFlagsDraft.error}</span>}
+        </div>
+
+        <div className="dialog-actions">
+          <button type="button" className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="btn btn-primary" disabled={!canSubmit} title="Create (⌘↵)">
+            Create
+            <span className="btn-kbd">⌘↵</span>
+          </button>
+        </div>
+      </form>
+    </Dialog>
   );
 }
 
@@ -386,10 +306,11 @@ function FavoriteChip({ dir, selected, onSelect }: FavoriteChipProps): React.Rea
     <button
       ref={setNodeRef}
       type="button"
+      className="btn"
       style={{
         ...favoriteChipStyle,
-        borderColor: selected ? 'var(--accent-primary)' : 'var(--border-default)',
-        color: selected ? 'var(--text-primary)' : 'var(--text-secondary)',
+        borderColor: selected ? 'var(--accent-primary)' : undefined,
+        color: selected ? 'var(--text-primary)' : undefined,
         transform: CSS.Transform.toString(transform),
         transition,
         opacity: isDragging ? 0.5 : 1,
@@ -405,76 +326,6 @@ function FavoriteChip({ dir, selected, onSelect }: FavoriteChipProps): React.Rea
   );
 }
 
-const overlayStyle: React.CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  background: 'rgba(var(--shade-rgb), 0.6)',
-  backdropFilter: 'blur(4px)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  zIndex: 2000,
-  animation: 'fadeIn 150ms ease',
-};
-
-const dialogStyle: React.CSSProperties = {
-  background: 'var(--bg-elevated)',
-  border: '1px solid var(--border-default)',
-  borderRadius: 'var(--radius-lg)',
-  boxShadow: 'var(--shadow-lg)',
-  padding: 24,
-  width: 420,
-  maxWidth: '90vw',
-  maxHeight: '90vh',
-  overflowY: 'auto',
-  animation: 'slideUp 200ms ease',
-};
-
-const titleStyle: React.CSSProperties = {
-  fontSize: 14,
-  fontWeight: 600,
-  color: 'var(--text-primary)',
-  marginBottom: 18,
-  letterSpacing: '0.02em',
-};
-
-const fieldStyle: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 4,
-};
-
-const labelStyle: React.CSSProperties = {
-  fontSize: 10,
-  fontWeight: 500,
-  color: 'var(--text-secondary)',
-  textTransform: 'uppercase',
-  letterSpacing: '0.06em',
-};
-
-const inputStyle: React.CSSProperties = {
-  background: 'var(--bg-surface)',
-  border: '1px solid var(--border-default)',
-  borderRadius: 'var(--radius-md)',
-  padding: '7px 10px',
-  fontSize: 12,
-  color: 'var(--text-primary)',
-  fontFamily: 'var(--font-mono)',
-  transition: 'border-color var(--transition-fast)',
-};
-
-const textareaStyle: React.CSSProperties = {
-  ...inputStyle,
-  resize: 'vertical',
-  minHeight: 54,
-  lineHeight: 1.5,
-};
-
-const hintStyle: React.CSSProperties = {
-  fontSize: 10,
-  color: 'var(--text-dimmed)',
-};
-
 const prRowStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
@@ -484,69 +335,23 @@ const prRowStyle: React.CSSProperties = {
   background: 'rgba(var(--tint-rgb), 0.04)',
 };
 
-const browseButtonStyle: React.CSSProperties = {
-  background: 'var(--bg-surface)',
-  border: '1px solid var(--border-default)',
-  borderRadius: 'var(--radius-md)',
-  padding: '7px 12px',
-  fontSize: 11,
-  color: 'var(--text-secondary)',
-  cursor: 'pointer',
-  fontFamily: 'var(--font-ui)',
-  transition: 'all var(--transition-fast)',
-  whiteSpace: 'nowrap',
-};
-
 const favoriteChipStyle: React.CSSProperties = {
-  background: 'var(--bg-surface)',
-  border: '1px solid var(--border-default)',
+  height: 22,
+  padding: '0 8px',
   borderRadius: 'var(--radius-sm)',
-  padding: '3px 8px',
-  fontSize: 10,
   fontFamily: 'var(--font-mono)',
-  cursor: 'pointer',
-  transition: 'all var(--transition-fast)',
+  fontSize: 10,
   maxWidth: '100%',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
 };
 
-const checkboxStyle: React.CSSProperties = {
-  width: 16,
-  height: 16,
-  borderRadius: 'var(--radius-sm)',
-  border: '1px solid var(--border-default)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  cursor: 'pointer',
-  transition: 'all var(--transition-fast)',
-  color: 'var(--btn-primary-text)',
-  flexShrink: 0,
-};
-
-const cancelButtonStyle: React.CSSProperties = {
-  padding: '7px 16px',
+const optionsGridStyle: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: '1fr 1fr',
+  gap: '10px 16px',
+  padding: '12px 14px',
   borderRadius: 'var(--radius-md)',
-  fontSize: 11,
-  color: 'var(--text-secondary)',
-  background: 'var(--bg-surface)',
-  border: '1px solid var(--border-default)',
-  cursor: 'pointer',
-  fontFamily: 'var(--font-ui)',
-  transition: 'all var(--transition-fast)',
-};
-
-const submitButtonStyle: React.CSSProperties = {
-  padding: '7px 20px',
-  borderRadius: 'var(--radius-md)',
-  fontSize: 11,
-  fontWeight: 600,
-  color: 'var(--btn-primary-text)',
-  background: 'var(--accent-primary)',
-  border: 'none',
-  cursor: 'pointer',
-  fontFamily: 'var(--font-ui)',
-  transition: 'all var(--transition-fast)',
+  background: 'rgba(var(--tint-rgb), 0.03)',
+  border: '1px solid var(--border-subtle)',
 };

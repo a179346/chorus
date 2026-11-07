@@ -39,7 +39,7 @@ interface PrRemoveButtonProps {
 export function PrRemoveButton({ pr, onRemove }: PrRemoveButtonProps): React.ReactElement {
   const label = `Remove ${prLabel(pr)}`;
   return (
-    <button type="button" style={iconButtonStyle} onClick={onRemove} title={label} aria-label={label}>
+    <button type="button" className="icon-btn" onClick={onRemove} title={label} aria-label={label}>
       <X size={12} />
     </button>
   );
@@ -73,10 +73,8 @@ export function PrUrlInput({ value, onChange, linked, onAdd, error, inputRef }: 
       <div style={{ display: 'flex', gap: 6 }}>
         <input
           ref={inputRef}
-          style={{
-            ...inputStyle,
-            borderColor: draft.kind === 'invalid' ? 'var(--status-error, #e53e3e)' : 'var(--border-default)',
-          }}
+          className="input"
+          style={{ flex: 1 }}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={(e) => {
@@ -87,26 +85,13 @@ export function PrUrlInput({ value, onChange, linked, onAdd, error, inputRef }: 
           placeholder="https://github.com/owner/repo/pull/123"
           aria-label="Pull request URL"
           aria-invalid={draft.kind === 'invalid'}
+          spellCheck={false}
         />
-        <button
-          type="button"
-          style={{ ...addButtonStyle, opacity: draft.kind === 'ok' ? 1 : 0.4 }}
-          disabled={draft.kind !== 'ok'}
-          onClick={add}
-        >
+        <button type="button" className="btn" disabled={draft.kind !== 'ok'} onClick={add}>
           Add
         </button>
       </div>
-      {message && (
-        <span
-          style={{
-            fontSize: 10,
-            color: draft.kind === 'duplicate' ? 'var(--text-dimmed)' : 'var(--status-error, #e53e3e)',
-          }}
-        >
-          {message}
-        </span>
-      )}
+      {message && <span className={draft.kind === 'duplicate' ? 'field-hint' : 'field-error'}>{message}</span>}
     </div>
   );
 }
@@ -131,46 +116,4 @@ const repoStyle: React.CSSProperties = {
 const numberStyle: React.CSSProperties = {
   color: 'var(--text-primary)',
   flexShrink: 0,
-};
-
-const inputStyle: React.CSSProperties = {
-  flex: 1,
-  minWidth: 0,
-  background: 'var(--bg-surface)',
-  border: '1px solid var(--border-default)',
-  borderRadius: 'var(--radius-md)',
-  padding: '7px 10px',
-  fontSize: 12,
-  color: 'var(--text-primary)',
-  fontFamily: 'var(--font-mono)',
-  transition: 'border-color var(--transition-fast)',
-};
-
-const addButtonStyle: React.CSSProperties = {
-  background: 'var(--bg-surface)',
-  border: '1px solid var(--border-default)',
-  borderRadius: 'var(--radius-md)',
-  padding: '7px 12px',
-  fontSize: 11,
-  color: 'var(--text-secondary)',
-  cursor: 'pointer',
-  fontFamily: 'var(--font-ui)',
-  transition: 'all var(--transition-fast)',
-  whiteSpace: 'nowrap',
-};
-
-export const iconButtonStyle: React.CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  width: 22,
-  height: 22,
-  flexShrink: 0,
-  padding: 0,
-  border: 'none',
-  borderRadius: 'var(--radius-sm)',
-  background: 'transparent',
-  color: 'var(--text-dimmed)',
-  cursor: 'pointer',
-  transition: 'color var(--transition-fast), background var(--transition-fast)',
 };

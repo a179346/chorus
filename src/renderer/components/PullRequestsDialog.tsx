@@ -4,8 +4,8 @@ import type { PrRef, Session } from '../../shared/types';
 import { prLabel, prUrl } from '../../shared/pr-ref';
 import { STAGE_ICON } from '../session-presentation';
 import { ipcErrorMessage } from '../ipc';
-import { useModalKeys } from '../use-modal-keys';
-import { PrIdentity, PrRemoveButton, PrUrlInput, iconButtonStyle, openPrInBrowser } from './PrLinks';
+import { PrIdentity, PrRemoveButton, PrUrlInput, openPrInBrowser } from './PrLinks';
+import { Dialog } from './Dialog';
 
 interface PullRequestsDialogProps {
   session: Session;
@@ -18,13 +18,10 @@ interface PullRequestsDialogProps {
 export function PullRequestsDialog({ session, onLink, onUnlink, onClose }: PullRequestsDialogProps): React.ReactElement {
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const dialogRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useModalKeys(dialogRef, onClose);
-
   useEffect(() => {
-    setTimeout(() => inputRef.current?.focus(), 50);
+    inputRef.current?.focus();
   }, []);
 
   const handleAdd = async (pr: PrRef) => {
@@ -47,105 +44,67 @@ export function PullRequestsDialog({ session, onLink, onUnlink, onClose }: PullR
   };
 
   return (
-    <div style={overlayStyle} onClick={onClose}>
-      <div
-        ref={dialogRef}
-        style={dialogStyle}
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Pull requests for ${session.name}`}
-      >
-        <div style={titleStyle}>
+    <Dialog
+      title={
+        <>
           Pull Requests
           <span style={{ color: 'var(--text-dimmed)', fontWeight: 400 }}> · {session.name}</span>
-        </div>
+        </>
+      }
+      label={`Pull requests for ${session.name}`}
+      onClose={onClose}
+      width={460}
+    >
+      {session.prs.length === 0 ? (
+        <p style={emptyStyle}>No pull requests linked yet. PRs Claude creates in this session are linked automatically.</p>
+      ) : (
+        <ul style={listStyle}>
+          {session.prs.map((pr) => {
+            const openLabel = `Open ${prLabel(pr)} on GitHub`;
+            return (
+              <li key={prLabel(pr)} style={rowStyle}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <PrIdentity pr={pr} stage={pr.stage} />
+                </div>
+                <span style={{ ...stageLabelStyle, color: STAGE_ICON[pr.stage].color }}>
+                  {STAGE_ICON[pr.stage].label}
+                </span>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={() => openPrInBrowser(pr)}
+                  title={openLabel}
+                  aria-label={openLabel}
+                >
+                  <ExternalLink size={12} />
+                </button>
+                <PrRemoveButton pr={pr} onRemove={() => void handleRemove(pr)} />
+              </li>
+            );
+          })}
+        </ul>
+      )}
 
-        {session.prs.length === 0 ? (
-          <p style={emptyStyle}>No pull requests linked yet. PRs Claude creates in this session are linked automatically.</p>
-        ) : (
-          <ul style={listStyle}>
-            {session.prs.map((pr) => {
-              const openLabel = `Open ${prLabel(pr)} on GitHub`;
-              return (
-                <li key={prLabel(pr)} style={rowStyle}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <PrIdentity pr={pr} stage={pr.stage} />
-                  </div>
-                  <span style={{ ...stageLabelStyle, color: STAGE_ICON[pr.stage].color }}>
-                    {STAGE_ICON[pr.stage].label}
-                  </span>
-                  <button
-                    type="button"
-                    style={iconButtonStyle}
-                    onClick={() => openPrInBrowser(pr)}
-                    title={openLabel}
-                    aria-label={openLabel}
-                  >
-                    <ExternalLink size={12} />
-                  </button>
-                  <PrRemoveButton pr={pr} onRemove={() => void handleRemove(pr)} />
-                </li>
-              );
-            })}
-          </ul>
-        )}
+      <PrUrlInput
+        inputRef={inputRef}
+        value={draft}
+        onChange={(value) => {
+          setDraft(value);
+          setError(null);
+        }}
+        linked={session.prs}
+        onAdd={(pr) => void handleAdd(pr)}
+        error={error}
+      />
 
-        <PrUrlInput
-          inputRef={inputRef}
-          value={draft}
-          onChange={(value) => {
-            setDraft(value);
-            setError(null);
-          }}
-          linked={session.prs}
-          onAdd={(pr) => void handleAdd(pr)}
-          error={error}
-        />
-
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 18 }}>
-          <button type="button" style={doneButtonStyle} onClick={onClose}>
-            Done
-          </button>
-        </div>
+      <div className="dialog-actions" style={{ marginTop: 18 }}>
+        <button type="button" className="btn btn-primary" onClick={onClose}>
+          Done
+        </button>
       </div>
-    </div>
+    </Dialog>
   );
 }
-
-const overlayStyle: React.CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  background: 'rgba(var(--shade-rgb), 0.6)',
-  backdropFilter: 'blur(4px)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  zIndex: 2000,
-  animation: 'fadeIn 150ms ease',
-};
-
-const dialogStyle: React.CSSProperties = {
-  background: 'var(--bg-elevated)',
-  border: '1px solid var(--border-default)',
-  borderRadius: 'var(--radius-lg)',
-  boxShadow: 'var(--shadow-lg)',
-  padding: 24,
-  width: 460,
-  maxWidth: '90vw',
-  animation: 'slideUp 200ms ease',
-};
-
-const titleStyle: React.CSSProperties = {
-  fontSize: 14,
-  fontWeight: 600,
-  color: 'var(--text-primary)',
-  marginBottom: 14,
-  letterSpacing: '0.02em',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-};
 
 const emptyStyle: React.CSSProperties = {
   fontSize: 11,
@@ -180,15 +139,3 @@ const stageLabelStyle: React.CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
-const doneButtonStyle: React.CSSProperties = {
-  padding: '7px 20px',
-  borderRadius: 'var(--radius-md)',
-  fontSize: 11,
-  fontWeight: 600,
-  color: 'var(--btn-primary-text)',
-  background: 'var(--accent-primary)',
-  border: 'none',
-  cursor: 'pointer',
-  fontFamily: 'var(--font-ui)',
-  transition: 'all var(--transition-fast)',
-};

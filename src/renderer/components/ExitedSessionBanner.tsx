@@ -1,8 +1,8 @@
 import React, { useEffect } from 'react';
 import { RotateCcw } from 'lucide-react';
 import type { Session } from '../../shared/types';
-import { statusColor } from '../session-presentation';
 import { terminals } from '../terminal-host';
+import { StatusDot } from './StatusDot';
 
 interface ExitedSessionBannerProps {
   session: Session;
@@ -36,7 +36,7 @@ export function ExitedSessionBanner({ session, error, onRestart }: ExitedSession
     <div style={bannerStyle} role="status">
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
         <span style={{ display: 'flex', alignItems: 'center', gap: 7, color: 'var(--text-secondary)' }}>
-          <span style={{ ...dotStyle, backgroundColor: statusColor(session.status) }} />
+          <StatusDot status={session.status} />
           {message}
         </span>
         {error && (
@@ -45,10 +45,10 @@ export function ExitedSessionBanner({ session, error, onRestart }: ExitedSession
           </span>
         )}
       </div>
-      <button style={restartButtonStyle} onClick={() => onRestart(session.id)} title="Restart Claude Code (⏎)">
+      <button type="button" className="btn btn-primary" onClick={() => onRestart(session.id)} title="Restart Claude Code (⏎)">
         <RotateCcw size={11} />
         Restart
-        <kbd style={kbdStyle}>⏎</kbd>
+        <span className="btn-kbd">⏎</span>
       </button>
     </div>
   );
@@ -71,35 +71,5 @@ const bannerStyle: React.CSSProperties = {
   boxShadow: 'var(--shadow-lg)',
   fontFamily: 'var(--font-ui)',
   fontSize: 12,
-  animation: 'slideUp 200ms ease',
-};
-
-const dotStyle: React.CSSProperties = {
-  width: 7,
-  height: 7,
-  borderRadius: '50%',
-  flexShrink: 0,
-};
-
-const restartButtonStyle: React.CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 6,
-  flexShrink: 0,
-  padding: '6px 10px',
-  borderRadius: 'var(--radius-md)',
-  fontSize: 11,
-  fontWeight: 600,
-  color: 'var(--text-primary)',
-  background: 'var(--bg-surface)',
-  border: '1px solid var(--border-default)',
-  cursor: 'pointer',
-  fontFamily: 'var(--font-ui)',
-  transition: 'all var(--transition-fast)',
-};
-
-const kbdStyle: React.CSSProperties = {
-  fontFamily: 'var(--font-ui)',
-  fontSize: 10,
-  color: 'var(--text-dimmed)',
+  animation: 'slideUp 200ms var(--ease-out)',
 };
