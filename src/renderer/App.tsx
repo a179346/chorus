@@ -26,6 +26,7 @@ export function App(): React.ReactElement {
   // ─── Session state (owned by the useSessions hook) ──
   const {
     sessions,
+    sessionsLoaded,
     activeSession,
     activeSessionId,
     activeSessionIdRef,
@@ -441,6 +442,7 @@ export function App(): React.ReactElement {
           {/* Session list */}
           <SessionList
             sessions={sessions}
+            loading={!sessionsLoaded}
             activeSessionId={activeSessionId}
             onSelectSession={handleSelectSession}
             onNewSession={() => setShowNewSession(true)}

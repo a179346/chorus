@@ -21,6 +21,8 @@ import { PrIdentity, openPrInBrowser } from './PrLinks';
 
 interface SessionListProps {
   sessions: Session[];
+  /** Saved sessions aren't back yet, so an empty list doesn't mean there are none. */
+  loading: boolean;
   activeSessionId: string | null;
   onSelectSession: (id: string) => void;
   onNewSession: () => void;
@@ -39,6 +41,7 @@ type ContextMenuState =
 
 export function SessionList({
   sessions,
+  loading,
   activeSessionId,
   onSelectSession,
   onNewSession,
@@ -212,7 +215,7 @@ export function SessionList({
 
       {/* Session cards */}
       <div style={listStyle}>
-        {sessions.length === 0 ? (
+        {loading ? null : sessions.length === 0 ? (
           <div style={emptyStyle}>
             <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>No sessions yet</span>
             <br />

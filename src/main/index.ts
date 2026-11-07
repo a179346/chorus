@@ -1,18 +1,20 @@
 import { app, BrowserWindow, Menu, ipcMain, dialog, Notification, shell } from "electron";
 import path from "node:path";
 import fs from "node:fs";
-import { execSync } from "node:child_process";
+import os from "node:os";
 import crypto from "node:crypto";
 import { IpcChannels, IpcErrorCodes } from "../shared/ipc";
 import type { IpcInvokeMap } from "../shared/ipc";
 import type { PersistedSession, PrRef, Session, SessionConfig } from "../shared/types";
 import { parsePrUrl } from "../shared/pr-ref";
+import { initialPromptArgs, unsupportedFlagError } from "../shared/claude-cli";
 import { SessionStore, fromPersisted } from "./session-store";
 import { SessionState } from "./session-state";
 import { StageMonitor } from "./stage-monitor";
 import { PtyManager } from "./pty-manager";
 import { HookServer } from "./hook-server";
 import { HookInstaller } from "./hook-installer";
+import { fallbackPath, readLoginShellEnv, resolveShellEnv } from "./shell-env";
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
@@ -20,26 +22,6 @@ declare const MAIN_WINDOW_VITE_NAME: string;
 // ─── App Name & Icon ────────────────────────────────────────
 // In dev mode, app.name defaults to "Electron". Set it explicitly.
 app.name = "Chorus";
-
-// Fix PATH for packaged app (macOS GUI apps don't inherit shell PATH)
-if (app.isPackaged) {
-  try {
-    const userShell = process.env.SHELL || "/bin/zsh";
-    const shellPath = execSync(`${userShell} -ilc 'printf "%s" "$PATH"'`, {
-      encoding: "utf8",
-      timeout: 5000,
-    }).trim();
-    if (shellPath) process.env.PATH = shellPath;
-  } catch {
-    // Fall back to appending common paths
-    process.env.PATH = [
-      process.env.PATH,
-      "/usr/local/bin",
-      "/opt/homebrew/bin",
-      `${process.env.HOME}/.local/bin`,
-    ].join(":");
-  }
-}
 
 // Enable remote debugging in dev mode for testing
 if (!app.isPackaged) {
@@ -139,6 +121,47 @@ ptyManager.setExitHandler((sessionId, exitCode) =>
   sessionState.handleClaudeExit(sessionId, exitCode),
 );
 
+// Saved sessions are restored once process.env holds the login-shell
+// environment. Until then the store is empty: whatever lists or spawns
+// sessions waits on sessionsReady, and quitting must not save over them.
+let sessionsRestored = false;
+let markSessionsReady: () => void = () => {};
+const sessionsReady = new Promise<void>((resolve) => {
+  markSessionsReady = resolve;
+});
+
+// ─── Shell Environment ──────────────────────────────────────
+
+/**
+ * Give every process Chorus spawns the user's login-shell environment. Only
+ * the packaged app needs this: `npm start` already inherits the terminal's.
+ */
+async function adoptLoginShellEnv(): Promise<void> {
+  const shell = process.env.SHELL || "/bin/zsh";
+  const env = await resolveShellEnv(() => readLoginShellEnv(shell), confirmShellEnvRetry);
+  if (env) {
+    Object.assign(process.env, env);
+  } else {
+    process.env.PATH = fallbackPath(process.env.PATH, os.homedir());
+  }
+}
+
+async function confirmShellEnvRetry(error: Error): Promise<boolean> {
+  const { response } = await dialog.showMessageBox({
+    type: "warning",
+    message: "Couldn't load your shell environment",
+    detail:
+      `${error.message}\n\n` +
+      "Sessions start once this is resolved. If you continue without it, " +
+      "they get a minimal PATH, so tools set up by your shell profile " +
+      "(nvm, asdf and the like) may be missing until you relaunch Chorus.",
+    buttons: ["Retry", "Continue"],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  return response === 0;
+}
+
 // ─── Helpers ────────────────────────────────────────────────
 
 class IpcHandlerError extends Error {
@@ -190,6 +213,8 @@ async function createSessionFromConfig(
   const cwd = validateCwd(config.cwd);
   const worktree = config.worktree || null;
   const prs = (config.prUrls ?? []).map(requirePrRef);
+  const flagError = unsupportedFlagError(config.flags);
+  if (flagError) throw ipcError(IpcErrorCodes.INVALID_FLAGS, flagError);
 
   const session: Session = {
     id,
@@ -218,15 +243,18 @@ async function createSessionFromConfig(
 
   // Use --session-id so Claude Code uses our ID (enables precise resume later)
   // If worktree specified, let Claude Code handle worktree creation via --worktree flag
-  const spawnFlags = [...config.flags, "--session-id", id, "--name", config.name];
+  const claudeArgs = [...config.flags, "--session-id", id, "--name", config.name];
   if (worktree && !worktreeDirExists) {
-    spawnFlags.push("--worktree", worktree);
+    claudeArgs.push("--worktree", worktree);
   }
+  // Only this first launch gets the prompt: it isn't part of session.flags,
+  // so a restart or restore resumes the conversation instead of resending it
+  claudeArgs.push(...initialPromptArgs(config.prompt));
 
   // Spawn PTYs (hooks must be on disk before claude starts)
   try {
     hookInstaller.ensureInstalled(spawnCwd);
-    ptyManager.spawn(id, spawnCwd, spawnFlags, cwd);
+    ptyManager.spawn(id, spawnCwd, claudeArgs, cwd);
   } catch (err) {
     throw ipcError(
       IpcErrorCodes.PTY_SPAWN_FAILED,
@@ -290,7 +318,8 @@ function restoreSessions(): void {
  * and hand it to the renderer. Failures surface as a native dialog because
  * this runs from the menu, outside any renderer request.
  */
-function reopenClosedSession(id?: string): void {
+async function reopenClosedSession(id?: string): Promise<void> {
+  await sessionsReady;
   const ps = id
     ? sessionStore.loadRecentlyClosed().find((s) => s.id === id)
     : sessionStore.loadRecentlyClosed()[0];
@@ -451,14 +480,14 @@ function createMenu(): void {
           label: "Reopen Closed Session",
           accelerator: "CmdOrCtrl+Shift+T",
           enabled: recentlyClosed.length > 0,
-          click: () => reopenClosedSession(),
+          click: () => void reopenClosedSession(),
         },
         {
           label: "Recently Closed",
           enabled: recentlyClosed.length > 0,
           submenu: recentlyClosed.map((ps) => ({
             label: `${ps.name} — ${path.basename(ps.cwd)}`,
-            click: () => reopenClosedSession(ps.id),
+            click: () => void reopenClosedSession(ps.id),
           })),
         },
       ],
@@ -577,6 +606,7 @@ const invokeHandlers: InvokeHandlers = {
   // --- Session management ---
 
   [IpcChannels.SESSION_CREATE]: async (config) => {
+    await sessionsReady;
     const session = await createSessionFromConfig(config);
     sessionState.setActiveSession(session.id);
     sessionStore.saveAppState({
@@ -591,7 +621,10 @@ const invokeHandlers: InvokeHandlers = {
     return session;
   },
 
-  [IpcChannels.SESSION_LIST]: () => sessionStore.getAllSessions(),
+  [IpcChannels.SESSION_LIST]: async () => {
+    await sessionsReady;
+    return sessionStore.getAllSessions();
+  },
 
   [IpcChannels.SESSION_GET]: ({ id }) => sessionStore.getSession(id),
 
@@ -765,26 +798,36 @@ app.whenReady().then(async () => {
   // Initialize active session from persisted state
   sessionState.setActiveSession(sessionStore.loadAppState().lastActiveSessionId);
 
+  // A slow shell profile must not hold up the window; sessions wait on it instead
+  const shellEnvAdopted = app.isPackaged ? adoptLoginShellEnv() : Promise.resolve();
+
   // Start hook server before spawning any sessions
   await hookServer.start();
 
   createMenu();
   registerIpcHandlers();
   createWindow();
-  restoreSessions();
-
-  stageMonitor.start();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
     }
   });
+
+  await shellEnvAdopted;
+  restoreSessions();
+  sessionsRestored = true;
+  markSessionsReady();
+
+  stageMonitor.start();
 });
 
 app.on("before-quit", () => {
-  sessionStore.persistSessions();
-  sessionStore.cleanupOrphanedSessionFiles();
+  // Saving the still-empty store would erase every saved session
+  if (sessionsRestored) {
+    sessionStore.persistSessions();
+    sessionStore.cleanupOrphanedSessionFiles();
+  }
   stageMonitor.stop();
   ptyManager.killAll();
   hookServer.stop();

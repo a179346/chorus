@@ -51,7 +51,21 @@ hook server: Claude process exits are reported through
 `sessionState.handleClaudeExit`. Only a session's *current* claude PTY
 reports its exit — one that was killed or swapped out by `restartClaude`
 stays silent — and PTYs whose process already exited are never signalled,
-since their PID may have been reused.
+since their PID may have been reused. Claude args are passed through
+unchanged; they are validated when a session is created (see claude CLI
+arguments below).
+
+### Shell environment (`shell-env.ts`)
+
+A packaged app opened from the Dock or at login gets launchd's minimal
+environment. `readLoginShellEnv` starts `$SHELL -ilc` asynchronously and
+captures its whole environment (after a sentinel, so rc-file output is
+ignored); `resolveShellEnv` retries through an injected prompt
+(`confirmRetry`) until it works or the user continues without it. The
+composition root merges the result into `process.env`, then restores saved
+sessions. Until then the `sessionsReady` promise holds back everything that
+lists or spawns sessions, and `before-quit` skips saving, because the store is
+still empty.
 
 ### index.ts — the composition root
 
@@ -74,6 +88,17 @@ derives from it:
 
 Adding a channel = extend the map, add the handler (compiler errors until you
 do), call `invoke`/`on`. No preload or `.d.ts` edits.
+
+## claude CLI arguments (`src/shared/claude-cli.ts`)
+
+The one place that knows claude's argument syntax: the flags a session can't
+take (`unsupportedFlagError` — Chorus's own `--session-id`/`--resume`/`--name`/
+`--worktree`, and flags that end the interactive session; the dialog checks it
+and main checks it again on create), shell-like parsing/formatting of the
+Additional Flags text, and `initialPromptArgs` — the first prompt goes after
+`--`, and a one-word prompt is padded so claude can't take it for a
+subcommand. The dialog's checkbox flags and its Additional Flags validation
+live in `src/renderer/session-flags.ts`.
 
 ## Renderer (`src/renderer/`)
 

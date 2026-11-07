@@ -58,6 +58,8 @@ export interface SessionConfig {
   notifyOnIdle?: boolean;
   /** GitHub PR URLs — links the session to each PR for stage tracking. */
   prUrls?: string[];
+  /** Sent as the first message when claude starts. Not kept: a relaunch resumes instead. */
+  prompt?: string;
 }
 
 // Fields the main process may push to the renderer over SESSION_STATE.
