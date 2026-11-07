@@ -17,7 +17,8 @@ export interface SessionStoreLike {
 export interface SessionStateEnvironment {
   broadcast(update: SessionStateUpdate): void;
   isWindowFocused(): boolean;
-  showNotification(title: string, body: string): void;
+  /** `sessionId` lets the shell bring that session forward when the notification is clicked. */
+  showNotification(sessionId: string, title: string, body: string): void;
   setUnreadCount(count: number): void;
 }
 
@@ -36,6 +37,11 @@ const PERSISTED_FIELDS: ReadonlySet<keyof Session> = new Set<keyof Session>([
   'stage',
   'stageUpdatedAt',
 ]);
+
+function notificationBody(update: HookUpdate): string {
+  if (update.status === 'waiting') return update.waitingReason ?? 'Session needs your input';
+  return 'Session is now Idle';
+}
 
 /**
  * The write path for session state. Mutations — hook events, stage changes,
@@ -114,8 +120,7 @@ export class SessionState {
     this.commit(sessionId, updates);
 
     if (shouldNotify) {
-      const statusLabel = update.status === 'idle' ? 'Idle' : 'Waiting for input';
-      this.env.showNotification(sessionName, `Session is now ${statusLabel}`);
+      this.env.showNotification(sessionId, sessionName, notificationBody(update));
     }
   }
 

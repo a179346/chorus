@@ -11,6 +11,27 @@ export interface NewSessionInput {
   prUrl: string;
 }
 
+/** New output you haven't seen, or Claude blocked until you respond. */
+function needsAttention(session: Session): boolean {
+  return session.unread || session.status === 'waiting';
+}
+
+/**
+ * The next session after the active one, in sidebar order and wrapping
+ * around, that needs attention. Never the active session itself.
+ */
+export function findNextNeedingAttention(
+  sessions: Session[],
+  activeId: string | null,
+): Session | null {
+  const start = sessions.findIndex((s) => s.id === activeId);
+  for (let step = 1; step <= sessions.length; step++) {
+    const candidate = sessions[(start + step) % sessions.length];
+    if (candidate.id !== activeId && needsAttention(candidate)) return candidate;
+  }
+  return null;
+}
+
 /**
  * The renderer's copy of session state. Loads the initial list, merges
  * SESSION_STATE pushes from main in one place (generically — any field the
@@ -49,6 +70,18 @@ export function useSessions() {
     void invoke(IpcChannels.APP_SAVE_STATE, { lastActiveSessionId: id });
   }, []);
 
+  // Sessions main brings forward (notification click) or launches itself (reopen)
+  useEffect(() => {
+    const cleanups = [
+      on(IpcChannels.SESSION_REVEAL, ({ id }) => selectSession(id)),
+      on(IpcChannels.SESSION_OPENED, (session) => {
+        setSessions((prev) => [...prev, session]);
+        selectSession(session.id);
+      }),
+    ];
+    return () => cleanups.forEach((c) => c());
+  }, [selectSession]);
+
   const createSession = useCallback(async (input: NewSessionInput): Promise<Session> => {
     const session = await invoke(IpcChannels.SESSION_CREATE, {
       name: input.name,
@@ -81,6 +114,12 @@ export function useSessions() {
       return filtered;
     });
   }, []);
+
+  // The new status comes back through the SESSION_STATE merge
+  const restartSession = useCallback(
+    (id: string): Promise<Session> => invoke(IpcChannels.SESSION_RESTART, { id }),
+    [],
+  );
 
   // notifyOnIdle and name changes come back through the SESSION_STATE merge
   const toggleNotify = useCallback((id: string) => {
@@ -117,6 +156,11 @@ export function useSessions() {
     [selectSession],
   );
 
+  const switchToNextNeedingAttention = useCallback(() => {
+    const target = findNextNeedingAttention(sessionsRef.current, activeSessionIdRef.current);
+    if (target) selectSession(target.id);
+  }, [selectSession]);
+
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null;
 
   return {
@@ -128,10 +172,12 @@ export function useSessions() {
     selectSession,
     createSession,
     endSession,
+    restartSession,
     toggleNotify,
     renameSession,
     reorderSessions,
     switchToIndex,
     switchRelative,
+    switchToNextNeedingAttention,
   };
 }

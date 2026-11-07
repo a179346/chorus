@@ -16,6 +16,10 @@ const CHORUS_DIR = path.join(os.homedir(), '.chorus');
 const SESSIONS_FILE = path.join(CHORUS_DIR, 'sessions.json');
 const STATE_FILE = path.join(CHORUS_DIR, 'state.json');
 const TOOLKIT_FILE = path.join(CHORUS_DIR, 'toolkit.json');
+const RECENTLY_CLOSED_FILE = path.join(CHORUS_DIR, 'recently-closed.json');
+
+/** How many ended sessions stay reopenable. */
+export const RECENTLY_CLOSED_LIMIT = 10;
 
 const DEFAULT_WINDOW_BOUNDS: WindowBounds = {
   x: 100,
@@ -235,6 +239,25 @@ export class SessionStore {
   private persistSessionIndex(): void {
     const activeSessions = this.getAllSessions().filter((s) => s.status !== 'ended');
     writeJson(SESSIONS_FILE, { sessionIds: activeSessions.map((s) => s.id) });
+  }
+
+  // ─── Recently closed ──────────────────────────────────────
+
+  /** Ended sessions that can be resumed, most recently closed first. */
+  loadRecentlyClosed(): PersistedSession[] {
+    return readJson<{ sessions: PersistedSession[] }>(RECENTLY_CLOSED_FILE, { sessions: [] }).sessions;
+  }
+
+  /** Remember an ended session so it can be reopened later. */
+  rememberClosed(session: Session): void {
+    const rest = this.loadRecentlyClosed().filter((ps) => ps.id !== session.id);
+    const sessions = [toPersisted(session), ...rest].slice(0, RECENTLY_CLOSED_LIMIT);
+    writeJson(RECENTLY_CLOSED_FILE, { sessions });
+  }
+
+  forgetClosed(id: string): void {
+    const sessions = this.loadRecentlyClosed().filter((ps) => ps.id !== id);
+    writeJson(RECENTLY_CLOSED_FILE, { sessions });
   }
 
   // ─── App State ────────────────────────────────────────────

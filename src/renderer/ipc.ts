@@ -20,3 +20,13 @@ export function on<C extends keyof IpcPushMap>(
 ): () => void {
   return window.chorusIpc.on(channel, callback as (payload: unknown) => void);
 }
+
+// Electron rethrows a main-process error as
+// "Error invoking remote method '<channel>': <ErrorName>: <message>".
+const REMOTE_ERROR_PREFIX = /^Error invoking remote method '[^']+': (?:[A-Za-z]*Error: )?/;
+
+/** The main process's own message for a rejected invoke, without Electron's wrapper. */
+export function ipcErrorMessage(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.replace(REMOTE_ERROR_PREFIX, '');
+}

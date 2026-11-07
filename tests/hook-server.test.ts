@@ -83,14 +83,60 @@ describe("HookServer", () => {
   // ─── Hook event mapping ────────────────────────────────
 
   describe("hook event -> status mapping", () => {
-    it("Notification -> waiting", async () => {
+    it("Notification (permission_prompt) -> waiting with Claude's message", async () => {
       await postHookEvent(server.getPort(), {
         session_id: "s1",
         hook_event_name: "Notification",
         cwd: "/tmp",
+        notification_type: "permission_prompt",
+        message: "Claude needs your permission to use Bash",
+      });
+      await vi.waitFor(() => expect(updates).toHaveLength(1));
+      expect(updates[0].update).toEqual({
+        status: "waiting",
+        waitingReason: "Claude needs your permission to use Bash",
+      });
+    });
+
+    it("Notification (elicitation_dialog) -> waiting", async () => {
+      await postHookEvent(server.getPort(), {
+        session_id: "s1",
+        hook_event_name: "Notification",
+        cwd: "/tmp",
+        notification_type: "elicitation_dialog",
       });
       await vi.waitFor(() => expect(updates).toHaveLength(1));
       expect(updates[0].update.status).toBe("waiting");
+    });
+
+    it.each(["idle_prompt", "auth_success", undefined])(
+      "ignores non-blocking Notification type %s",
+      async (notificationType) => {
+        await postHookEvent(server.getPort(), {
+          session_id: "s1",
+          hook_event_name: "Notification",
+          cwd: "/tmp",
+          notification_type: notificationType,
+        });
+        // A follow-up event proves the Notification was processed (and dropped)
+        await postHookEvent(server.getPort(), {
+          session_id: "s1",
+          hook_event_name: "PreToolUse",
+          cwd: "/tmp",
+        });
+        await vi.waitFor(() => expect(updates).toHaveLength(1));
+        expect(updates[0].update.status).toBe("generating");
+      },
+    );
+
+    it("PostToolUse -> generating", async () => {
+      await postHookEvent(server.getPort(), {
+        session_id: "s1",
+        hook_event_name: "PostToolUse",
+        cwd: "/tmp",
+      });
+      await vi.waitFor(() => expect(updates).toHaveLength(1));
+      expect(updates[0].update.status).toBe("generating");
     });
 
     it("UserPromptSubmit -> thinking", async () => {
@@ -140,7 +186,7 @@ describe("HookServer", () => {
     it("should ignore unknown hook events", async () => {
       await postHookEvent(server.getPort(), {
         session_id: "s1",
-        hook_event_name: "PostToolUse",
+        hook_event_name: "SubagentStop",
         cwd: "/tmp",
       });
       // Small wait to ensure nothing arrives

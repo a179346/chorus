@@ -34,6 +34,7 @@
 
   /* Status */
   --status-idle: #5ec9a0;
+  --status-waiting: #f97316;
   --status-thinking: #fbbf24;
   --status-generating: #7da8d8;
   --status-creating: #a78bfa;

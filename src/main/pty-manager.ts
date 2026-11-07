@@ -8,12 +8,33 @@ interface PtyPair {
   shell: pty.IPty;
 }
 
-/** Called when a claude PTY exits on its own (not via kill()). */
+/** Called when a claude PTY exits on its own (not via kill() or restartClaude()). */
 export type ClaudeExitHandler = (sessionId: string, exitCode: number) => void;
+
+const DEFAULT_COLS = 120;
+const DEFAULT_ROWS = 30;
+
+/** Only these valued flags keep their following argument; everything else must start with "-". */
+const VALUED_FLAGS = new Set(['--session-id', '--resume', '--worktree', '--name']);
+
+function sanitizeClaudeArgs(flags: string[]): string[] {
+  const args: string[] = [];
+  for (let i = 0; i < flags.length; i++) {
+    const f = flags[i];
+    if (f.startsWith('-')) {
+      args.push(f);
+      if (VALUED_FLAGS.has(f) && i + 1 < flags.length) {
+        args.push(flags[++i]);
+      }
+    }
+  }
+  return args;
+}
 
 export class PtyManager {
   private ptys: Map<string, PtyPair> = new Map();
-  private killedSessions: Set<string> = new Set();
+  /** PTYs whose process is gone: signalling them could hit an unrelated process that reused the PID. */
+  private exited = new WeakSet<pty.IPty>();
   private mainWindow: BrowserWindow | null = null;
   private exitHandler: ClaudeExitHandler | null = null;
 
@@ -34,67 +55,39 @@ export class PtyManager {
     flags: string[],
     shellCwd?: string,
   ): PtyPair {
-    const shell = process.env.SHELL ?? '/bin/zsh';
-    const defaultCols = 120;
-    const defaultRows = 30;
+    const claudePty = this.spawnClaude(sessionId, cwd, flags, DEFAULT_COLS, DEFAULT_ROWS);
 
-    // Build claude command args — only allow flags starting with -,
-    // plus value arguments that follow known valued flags
-    const valuedFlags = new Set(['--session-id', '--resume', '--worktree', '--name']);
-    const claudeArgs: string[] = [];
-    for (let i = 0; i < flags.length; i++) {
-      const f = flags[i];
-      if (f.startsWith('-')) {
-        claudeArgs.push(f);
-        if (valuedFlags.has(f) && i + 1 < flags.length) {
-          claudeArgs.push(flags[++i]);
-        }
-      }
-    }
-
-    // Spawn claude PTY
-    const claudePty = pty.spawn('claude', claudeArgs, {
+    // Shell uses the original cwd, not the worktree
+    const shellPty = pty.spawn(process.env.SHELL ?? '/bin/zsh', [], {
       name: 'xterm-256color',
-      cols: defaultCols,
-      rows: defaultRows,
-      cwd,
-      env: process.env as Record<string, string>,
-    });
-
-    // Spawn shell PTY (uses original cwd, not worktree)
-    const shellPty = pty.spawn(shell, [], {
-      name: 'xterm-256color',
-      cols: defaultCols,
-      rows: defaultRows,
+      cols: DEFAULT_COLS,
+      rows: DEFAULT_ROWS,
       cwd: shellCwd ?? cwd,
       env: process.env as Record<string, string>,
     });
-
-    const pair: PtyPair = { claude: claudePty, shell: shellPty };
-    this.ptys.set(sessionId, pair);
-    this.killedSessions.delete(sessionId);
-
-    // Forward claude PTY output to renderer
-    claudePty.onData((data: string) => {
-      this.sendToRenderer(IpcChannels.PTY_DATA, { sessionId, data });
-    });
-
-    claudePty.onExit(({ exitCode }) => {
-      // Don't report intentionally killed sessions
-      if (this.killedSessions.has(sessionId)) {
-        this.killedSessions.delete(sessionId);
-        return;
-      }
-
-      this.exitHandler?.(sessionId, exitCode);
-    });
-
-    // Forward shell PTY output to renderer
     shellPty.onData((data: string) => {
       this.sendToRenderer(IpcChannels.SHELL_DATA, { sessionId, data });
     });
+    shellPty.onExit(() => this.exited.add(shellPty));
 
+    const pair: PtyPair = { claude: claudePty, shell: shellPty };
+    this.ptys.set(sessionId, pair);
     return pair;
+  }
+
+  /**
+   * Replace a session's claude process with a fresh one, keeping its shell.
+   * A still-running claude is killed; the new one inherits its terminal size
+   * so the TUI draws at the right dimensions immediately.
+   */
+  restartClaude(sessionId: string, cwd: string, flags: string[]): void {
+    const pair = this.ptys.get(sessionId);
+    if (!pair) throw new Error(`No PTYs for session ${sessionId}`);
+
+    const previous = pair.claude;
+    const claude = this.spawnClaude(sessionId, cwd, flags, previous.cols, previous.rows);
+    this.ptys.set(sessionId, { claude, shell: pair.shell });
+    this.killGracefully(previous);
   }
 
   writeToClaude(sessionId: string, data: string): void {
@@ -130,27 +123,10 @@ export class PtyManager {
     const pair = this.ptys.get(sessionId);
     if (!pair) return;
 
-    // Mark as intentionally killed so onExit doesn't send spurious state updates
-    this.killedSessions.add(sessionId);
+    // Dropping the pair first makes its claude PTY non-current, so its exit goes unreported
     this.ptys.delete(sessionId);
-
-    const killPty = (p: pty.IPty): void => {
-      try {
-        p.kill('SIGTERM');
-      } catch {
-        return; // Already dead
-      }
-      setTimeout(() => {
-        try {
-          p.kill('SIGKILL');
-        } catch {
-          // Already dead — fine
-        }
-      }, 2000);
-    };
-
-    killPty(pair.claude);
-    killPty(pair.shell);
+    this.killGracefully(pair.claude);
+    this.killGracefully(pair.shell);
   }
 
   /** Kill all PTYs (used on app quit). */
@@ -162,6 +138,54 @@ export class PtyManager {
 
   has(sessionId: string): boolean {
     return this.ptys.has(sessionId);
+  }
+
+  private spawnClaude(
+    sessionId: string,
+    cwd: string,
+    flags: string[],
+    cols: number,
+    rows: number,
+  ): pty.IPty {
+    const claudePty = pty.spawn('claude', sanitizeClaudeArgs(flags), {
+      name: 'xterm-256color',
+      cols,
+      rows,
+      cwd,
+      env: process.env as Record<string, string>,
+    });
+
+    claudePty.onData((data: string) => {
+      this.sendToRenderer(IpcChannels.PTY_DATA, { sessionId, data });
+    });
+
+    claudePty.onExit(({ exitCode }) => {
+      this.exited.add(claudePty);
+      // Only the session's current claude reports exits; one that was killed
+      // or replaced by a restart is no longer current.
+      if (this.ptys.get(sessionId)?.claude !== claudePty) return;
+      this.exitHandler?.(sessionId, exitCode);
+    });
+
+    return claudePty;
+  }
+
+  /** SIGTERM, then SIGKILL after 2s if it is still running. */
+  private killGracefully(p: pty.IPty): void {
+    if (this.exited.has(p)) return;
+    try {
+      p.kill('SIGTERM');
+    } catch {
+      return; // Already dead
+    }
+    setTimeout(() => {
+      if (this.exited.has(p)) return;
+      try {
+        p.kill('SIGKILL');
+      } catch {
+        // Already dead — fine
+      }
+    }, 2000);
   }
 
   private sendToRenderer(channel: string, payload: PtyDataPayload): void {

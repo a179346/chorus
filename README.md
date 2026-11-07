@@ -31,15 +31,19 @@ Grab the latest build from the [GitHub Releases](https://github.com/a179346/chor
 
 ### Live session status
 
-Each session shows a color-coded indicator — idle, thinking, generating, waiting for input — updated in real time via Claude Code's hook system. Scan the sidebar and immediately see which sessions are working, which are done, and which need you.
+Each session shows a color-coded indicator — idle, thinking, generating, needs input — updated in real time via Claude Code's hook system. A session blocked on a permission prompt stands out from one that's simply done. Scan the sidebar and immediately see which sessions are working, which are done, and which need you.
 
 ### Unread indicators
 
-When a session finishes while you're focused on another one, it gets marked as unread. You always know which sessions have new output waiting for your attention.
+When a session finishes while you're focused on another one, it gets marked as unread. Press `⌘J` to jump to the next session that's unread or waiting on you.
 
 ### System notifications
 
-Switch away from Chorus entirely — read docs, review a PR, grab coffee — and get a native macOS notification the moment a session goes idle. A dock badge shows how many sessions need attention.
+Switch away from Chorus entirely — read docs, review a PR, grab coffee — and get a native macOS notification the moment a session goes idle or asks for permission (with Claude's own description of what it needs). Click the notification to jump straight to that session. A dock badge shows how many sessions need attention.
+
+### Restart and reopen
+
+If Claude Code exits, restart it in place — the conversation resumes. Closed a session by accident? `⌘⇧T` reopens it, and **File → Recently Closed** lists the last ten.
 
 ### Toolkit command panel
 

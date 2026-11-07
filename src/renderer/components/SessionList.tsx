@@ -15,7 +15,7 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Session } from '../../shared/types';
-import { STAGE_ICON, prUrl, statusColor, basename } from '../session-presentation';
+import { STAGE_ICON, prUrl, statusColor, statusLabel, basename, hasExited } from '../session-presentation';
 import { invoke, IpcChannels } from '../ipc';
 
 interface SessionListProps {
@@ -25,6 +25,7 @@ interface SessionListProps {
   onNewSession: () => void;
   onRenameSession: (id: string, newName: string) => void;
   onEndSession: (id: string) => void;
+  onRestartSession: (id: string) => void;
   onToggleNotify: (id: string) => void;
   onReorderSessions: (sessions: Session[]) => void;
 }
@@ -42,6 +43,7 @@ export function SessionList({
   onNewSession,
   onRenameSession,
   onEndSession,
+  onRestartSession,
   onToggleNotify,
   onReorderSessions,
 }: SessionListProps): React.ReactElement {
@@ -133,6 +135,9 @@ export function SessionList({
         case 'rename':
           if (sessionId) setEditingSessionId(sessionId);
           break;
+        case 'restart':
+          if (sessionId) onRestartSession(sessionId);
+          break;
         case 'end':
           if (sessionId) onEndSession(sessionId);
           break;
@@ -141,7 +146,7 @@ export function SessionList({
           break;
       }
     },
-    [contextMenu, onSelectSession, onEndSession, onNewSession]
+    [contextMenu, onSelectSession, onRestartSession, onEndSession, onNewSession]
   );
 
   const handleRenameCommit = useCallback(
@@ -236,6 +241,10 @@ export function SessionList({
           <span style={shortcutKeysStyle}><kbd style={kbdStyle}>⌘</kbd> <kbd style={kbdStyle}>[</kbd> <kbd style={kbdStyle}>]</kbd></span>
         </div>
         <div style={shortcutRowStyle}>
+          <span style={shortcutLabelStyle}>Needs attention</span>
+          <span style={shortcutKeysStyle}><kbd style={kbdStyle}>⌘</kbd> <kbd style={kbdStyle}>J</kbd></span>
+        </div>
+        <div style={shortcutRowStyle}>
           <span style={shortcutLabelStyle}>New</span>
           <span style={shortcutKeysStyle}><kbd style={kbdStyle}>⌘</kbd> <kbd style={kbdStyle}>T</kbd></span>
         </div>
@@ -248,6 +257,7 @@ export function SessionList({
           x={contextMenu.x}
           y={contextMenu.y}
           sessionId={contextMenu.sessionId}
+          canRestart={sessions.some((s) => s.id === contextMenu.sessionId && hasExited(s))}
           onAction={handleMenuAction}
         />
       )}
@@ -450,8 +460,8 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
             </span>
           )}
         </div>
-        <span style={{ fontSize: 10, color: statusColor(session.status), textTransform: 'capitalize', flexShrink: 0 }}>
-          {session.status}
+        <span style={{ fontSize: 10, color: statusColor(session.status), flexShrink: 0 }}>
+          {statusLabel(session.status)}
         </span>
       </div>
     </div>
@@ -465,13 +475,14 @@ interface ContextMenuProps {
   x: number;
   y: number;
   sessionId: string | null;
+  canRestart: boolean;
   onAction: (action: string) => void;
 }
 
-function ContextMenu({ menuRef, x, y, sessionId, onAction }: ContextMenuProps): React.ReactElement {
+function ContextMenu({ menuRef, x, y, sessionId, canRestart, onAction }: ContextMenuProps): React.ReactElement {
   // Clamp position so menu stays within viewport
   const menuWidth = 180;
-  const menuHeight = sessionId ? 150 : 36;
+  const menuHeight = sessionId ? (canRestart ? 182 : 150) : 36;
   const clampedX = Math.min(x, window.innerWidth - menuWidth - 8);
   const clampedY = Math.min(y, window.innerHeight - menuHeight - 8);
 
@@ -493,6 +504,11 @@ function ContextMenu({ menuRef, x, y, sessionId, onAction }: ContextMenuProps): 
           <div role="menuitem" tabIndex={0} style={menuItemStyle} onClick={() => onAction('rename')}>
             Rename Session
           </div>
+          {canRestart && (
+            <div role="menuitem" tabIndex={0} style={menuItemStyle} onClick={() => onAction('restart')}>
+              Restart Session
+            </div>
+          )}
           <div style={menuDividerStyle} />
           <div
             role="menuitem"

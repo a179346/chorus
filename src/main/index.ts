@@ -5,7 +5,7 @@ import { execSync } from "node:child_process";
 import crypto from "node:crypto";
 import { IpcChannels, IpcErrorCodes } from "../shared/ipc";
 import type { IpcInvokeMap } from "../shared/ipc";
-import type { PrRef, Session, SessionConfig } from "../shared/types";
+import type { PersistedSession, PrRef, Session, SessionConfig } from "../shared/types";
 import { parsePrUrl } from "../shared/pr-url";
 import { SessionStore, fromPersisted } from "./session-store";
 import { SessionState } from "./session-state";
@@ -67,6 +67,45 @@ if (!app.isPackaged) {
 const sessionStore = new SessionStore();
 let mainWindow: BrowserWindow | null = null;
 
+// One live notification per session. Holding the reference matters: a
+// garbage-collected Notification silently stops delivering its click event.
+const sessionNotifications = new Map<string, Notification>();
+
+function showSessionNotification(sessionId: string, title: string, body: string): void {
+  // A newer notification supersedes the session's previous one
+  sessionNotifications.get(sessionId)?.close();
+
+  const notification = new Notification({ title, body, silent: false });
+  const release = (): void => {
+    if (sessionNotifications.get(sessionId) === notification) {
+      sessionNotifications.delete(sessionId);
+    }
+  };
+  notification.on("click", () => {
+    release();
+    revealSession(sessionId);
+  });
+  notification.on("close", release);
+  sessionNotifications.set(sessionId, notification);
+  notification.show();
+}
+
+function dismissSessionNotification(sessionId: string): void {
+  sessionNotifications.get(sessionId)?.close();
+  sessionNotifications.delete(sessionId);
+}
+
+/** Bring the window forward and have the renderer switch to the session. */
+function revealSession(sessionId: string): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  if (sessionStore.getSession(sessionId)) {
+    mainWindow.webContents.send(IpcChannels.SESSION_REVEAL, { id: sessionId });
+  }
+}
+
 const sessionState = new SessionState(sessionStore, {
   broadcast: (update) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -75,9 +114,7 @@ const sessionState = new SessionState(sessionStore, {
   },
   isWindowFocused: () =>
     !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused(),
-  showNotification: (title, body) => {
-    new Notification({ title, body, silent: false }).show();
-  },
+  showNotification: showSessionNotification,
   setUnreadCount: (count) => {
     app.dock?.setBadge(count > 0 ? String(count) : "");
   },
@@ -176,9 +213,7 @@ async function createSessionFromConfig(
     stageUpdatedAt: null,
   };
 
-  const worktreeCwd = worktree
-    ? path.join(cwd, ".claude", "worktrees", worktree)
-    : cwd;
+  const worktreeCwd = sessionSpawnCwd(cwd, worktree);
 
   const worktreeDirExists = !!worktree && fs.existsSync(worktreeCwd);
 
@@ -212,29 +247,75 @@ async function createSessionFromConfig(
   return session;
 }
 
+/** Where a session's claude runs: inside its worktree when it has one. */
+function sessionSpawnCwd(cwd: string, worktree: string | null): string {
+  return worktree ? path.join(cwd, ".claude", "worktrees", worktree) : cwd;
+}
+
+/**
+ * Claude flags for launching an existing session again. Once the user has
+ * prompted it, Claude has a transcript to --resume; before that, reuse the
+ * session id so the session stays addressable by the same id.
+ */
+function relaunchFlags(
+  session: Pick<Session, "id" | "name" | "flags" | "hasUserInput">,
+): string[] {
+  return session.hasUserInput
+    ? [...session.flags, "--resume", session.id]
+    : [...session.flags, "--session-id", session.id, "--name", session.name];
+}
+
+/** Spawn a saved session's PTYs, resuming its conversation, and register it. */
+function resumePersistedSession(ps: PersistedSession): Session {
+  const cwd = validateCwd(ps.cwd);
+  const spawnCwd = validateCwd(sessionSpawnCwd(cwd, ps.worktree));
+  hookInstaller.ensureInstalled(spawnCwd);
+  ptyManager.spawn(ps.id, spawnCwd, relaunchFlags(ps), cwd);
+  const session = fromPersisted(ps, cwd);
+  sessionStore.addSession(session);
+  return session;
+}
+
 function restoreSessions(): void {
   const persisted = sessionStore.loadPersistedSessions().filter((ps) => ps.hasUserInput);
   for (const ps of persisted) {
-    const resolvedCwd = path.resolve(ps.cwd);
-    if (!fs.existsSync(resolvedCwd)) continue;
-
     try {
-      // Use --resume <id> to restore the exact Claude Code session
-      // For worktree sessions, resume from the worktree directory
-      const spawnCwd = ps.worktree
-        ? path.join(resolvedCwd, ".claude", "worktrees", ps.worktree)
-        : resolvedCwd;
-      if (!fs.existsSync(spawnCwd)) continue;
-
-      const resumeFlags = [...ps.flags, "--resume", ps.id];
-      hookInstaller.ensureInstalled(spawnCwd);
-      ptyManager.spawn(ps.id, spawnCwd, resumeFlags, resolvedCwd);
-      sessionStore.addSession(fromPersisted(ps, resolvedCwd));
+      resumePersistedSession(ps);
     } catch {
-      // Skip sessions that fail to restore
+      // Skip sessions that fail to restore (directory gone, spawn failure)
     }
   }
   sessionState.refreshUnreadBadge();
+}
+
+/**
+ * Reopen an ended session (the most recently closed one when no id is given)
+ * and hand it to the renderer. Failures surface as a native dialog because
+ * this runs from the menu, outside any renderer request.
+ */
+function reopenClosedSession(id?: string): void {
+  const ps = id
+    ? sessionStore.loadRecentlyClosed().find((s) => s.id === id)
+    : sessionStore.loadRecentlyClosed()[0];
+  if (!ps) return;
+
+  try {
+    const session = resumePersistedSession(ps);
+    sessionStore.forgetClosed(ps.id);
+    sessionStore.persistSessions();
+    mainWindow?.webContents.send(IpcChannels.SESSION_OPENED, session);
+  } catch (err) {
+    // A vanished directory never comes back; a spawn failure may be transient
+    if (err instanceof IpcHandlerError && err.code === IpcErrorCodes.INVALID_DIRECTORY) {
+      sessionStore.forgetClosed(ps.id);
+    }
+    void dialog.showMessageBox({
+      type: "error",
+      message: `Couldn't reopen "${ps.name}"`,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
+  createMenu();
 }
 
 // ─── Window ─────────────────────────────────────────────────
@@ -302,7 +383,9 @@ function createWindow(): void {
 
 // ─── Menu ───────────────────────────────────────────────────
 
+/** Builds and installs the app menu; call again whenever the recently-closed list changes. */
 function createMenu(): void {
+  const recentlyClosed = sessionStore.loadRecentlyClosed();
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: app.name,
@@ -366,6 +449,21 @@ function createMenu(): void {
             mainWindow?.webContents.send(IpcChannels.MENU_CLOSE_SESSION);
           },
         },
+        { type: "separator" },
+        {
+          label: "Reopen Closed Session",
+          accelerator: "CmdOrCtrl+Shift+T",
+          enabled: recentlyClosed.length > 0,
+          click: () => reopenClosedSession(),
+        },
+        {
+          label: "Recently Closed",
+          enabled: recentlyClosed.length > 0,
+          submenu: recentlyClosed.map((ps) => ({
+            label: `${ps.name} — ${path.basename(ps.cwd)}`,
+            click: () => reopenClosedSession(ps.id),
+          })),
+        },
       ],
     },
     {
@@ -393,6 +491,13 @@ function createMenu(): void {
           accelerator: "CmdOrCtrl+]",
           click: () => {
             mainWindow?.webContents.send(IpcChannels.MENU_NEXT_SESSION);
+          },
+        },
+        {
+          label: "Next Session Needing Attention",
+          accelerator: "CmdOrCtrl+J",
+          click: () => {
+            mainWindow?.webContents.send(IpcChannels.MENU_NEXT_NEEDING_ATTENTION);
           },
         },
       ],
@@ -492,13 +597,34 @@ const invokeHandlers: InvokeHandlers = {
   },
 
   [IpcChannels.SESSION_END]: ({ id }) => {
-    requireSession(id);
+    const session = requireSession(id);
     ptyManager.kill(id);
+    dismissSessionNotification(id);
+    // Only a prompted session has a transcript Claude can --resume
+    if (session.hasUserInput) {
+      sessionStore.rememberClosed({ ...session, unread: false });
+      createMenu();
+    }
     sessionStore.updateSession(id, { status: "ended" });
     stageMonitor.forget(id);
     sessionStore.removeSession(id);
     sessionStore.persistSessions();
     sessionState.refreshUnreadBadge();
+  },
+
+  [IpcChannels.SESSION_RESTART]: ({ id }) => {
+    const session = requireSession(id);
+    const spawnCwd = validateCwd(sessionSpawnCwd(session.cwd, session.worktree));
+    try {
+      hookInstaller.ensureInstalled(spawnCwd);
+      ptyManager.restartClaude(id, spawnCwd, relaunchFlags(session));
+    } catch (err) {
+      throw ipcError(
+        IpcErrorCodes.PTY_SPAWN_FAILED,
+        `Failed to restart Claude Code: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return sessionState.commit(id, { status: "creating" })!;
   },
 
   [IpcChannels.SESSION_SWITCH]: ({ id }) => {

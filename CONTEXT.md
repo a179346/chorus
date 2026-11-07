@@ -44,7 +44,10 @@ They share only the `HOOK_EVENTS` list.
 Owns the claude + shell PTY pair per session. Decoupled from Electron and the
 hook server: Claude process exits are reported through
 `setExitHandler(handler)`, which the composition root wires to
-`sessionState.handleClaudeExit`.
+`sessionState.handleClaudeExit`. Only a session's *current* claude PTY
+reports its exit — one that was killed or swapped out by `restartClaude`
+stays silent — and PTYs whose process already exited are never signalled,
+since their PID may have been reused.
 
 ### index.ts — the composition root
 

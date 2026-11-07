@@ -14,8 +14,11 @@ export const IpcChannels = {
   SESSION_SWITCH: 'session:switch',
   SESSION_TOGGLE_NOTIFY: 'session:toggle-notify',
   SESSION_REORDER: 'session:reorder',
+  SESSION_RESTART: 'session:restart',
   // Session state updates (push: main → renderer)
   SESSION_STATE: 'session:state',
+  SESSION_REVEAL: 'session:reveal',   // bring a session forward (notification click)
+  SESSION_OPENED: 'session:opened',   // a session main launched on its own (reopen)
 
   // PTY I/O — Claude Code terminal
   PTY_DATA: 'pty:data',       // push: main → renderer
@@ -51,6 +54,7 @@ export const IpcChannels = {
   MENU_SWITCH_SESSION: 'menu:switch-session',
   MENU_PREV_SESSION: 'menu:prev-session',
   MENU_NEXT_SESSION: 'menu:next-session',
+  MENU_NEXT_NEEDING_ATTENTION: 'menu:next-needing-attention',
   MENU_CLOSE_SESSION: 'menu:close-session',
   MENU_FIND: 'menu:find',
   MENU_FIND_NEXT: 'menu:find-next',
@@ -104,6 +108,7 @@ export interface IpcInvokeMap {
   [IpcChannels.SESSION_SWITCH]: { payload: SessionIdPayload; response: Session };
   [IpcChannels.SESSION_TOGGLE_NOTIFY]: { payload: SessionIdPayload; response: Session };
   [IpcChannels.SESSION_REORDER]: { payload: SessionReorderPayload; response: void };
+  [IpcChannels.SESSION_RESTART]: { payload: SessionIdPayload; response: Session };
   [IpcChannels.PTY_WRITE]: { payload: PtyWritePayload; response: void };
   [IpcChannels.PTY_RESIZE]: { payload: PtyResizePayload; response: void };
   [IpcChannels.SHELL_WRITE]: { payload: PtyWritePayload; response: void };
@@ -126,10 +131,13 @@ export interface IpcPushMap {
   [IpcChannels.PTY_DATA]: PtyDataPayload;
   [IpcChannels.SHELL_DATA]: PtyDataPayload;
   [IpcChannels.SESSION_STATE]: SessionStateUpdate;
+  [IpcChannels.SESSION_REVEAL]: SessionIdPayload;
+  [IpcChannels.SESSION_OPENED]: Session;
   [IpcChannels.MENU_NEW_SESSION]: void;
   [IpcChannels.MENU_SWITCH_SESSION]: SessionSwitchByIndexPayload;
   [IpcChannels.MENU_PREV_SESSION]: void;
   [IpcChannels.MENU_NEXT_SESSION]: void;
+  [IpcChannels.MENU_NEXT_NEEDING_ATTENTION]: void;
   [IpcChannels.MENU_CLOSE_SESSION]: void;
   [IpcChannels.MENU_FIND]: void;
   [IpcChannels.MENU_FIND_NEXT]: void;
