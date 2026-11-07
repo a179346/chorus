@@ -1,6 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { StageMonitor, deriveStage, type GhResult } from '../src/main/stage-monitor';
-import type { PrRef, Session } from '../src/shared/types';
+import type { LinkedPr, PrRef, Session } from '../src/shared/types';
+
+const PR1: PrRef = { owner: 'o', repo: 'r', number: 1 };
+const PR2: PrRef = { owner: 'o', repo: 'r', number: 2 };
+
+function linked(pr: PrRef, overrides: Partial<LinkedPr> = {}): LinkedPr {
+  return { ...pr, stage: 'unknown', stageUpdatedAt: null, ...overrides };
+}
+
+/** Let the limiter and any fire-and-forget lookups run. */
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 function makeSession(overrides: Partial<Session> = {}): Session {
   return {
@@ -18,9 +28,8 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     createdAt: 0,
     lastActiveAt: 0,
     hasUserInput: true,
-    pr: { owner: 'o', repo: 'r', number: 1 },
-    stage: 'no-pr',
-    stageUpdatedAt: null,
+    prs: [linked(PR1)],
+    unlinkedPrs: [],
     ...overrides,
   };
 }
@@ -46,9 +55,9 @@ describe('deriveStage', () => {
     expect(deriveStage({ state: 'CLOSED', isDraft: false, mergedAt: null })).toBe('closed');
   });
 
-  it('maps unknown state to no-pr', () => {
-    expect(deriveStage({})).toBe('no-pr');
-    expect(deriveStage({ state: 42 })).toBe('no-pr');
+  it('maps unrecognized state to unknown', () => {
+    expect(deriveStage({})).toBe('unknown');
+    expect(deriveStage({ state: 42 })).toBe('unknown');
   });
 
   it('is case-insensitive on state', () => {
@@ -61,10 +70,12 @@ describe('StageMonitor', () => {
   let commits: Array<{ sessionId: string; updates: Partial<Session> }>;
   let ghCalls: PrRef[];
   let ghResult: GhResult;
+  /** Per-PR overrides of ghResult, keyed by PR number. */
+  let ghResultByNumber: Map<number, GhResult>;
 
   const runGh = vi.fn(async (pr: PrRef): Promise<GhResult> => {
     ghCalls.push(pr);
-    return ghResult;
+    return ghResultByNumber.get(pr.number) ?? ghResult;
   });
 
   function makeMonitor(overrides: Partial<ConstructorParameters<typeof StageMonitor>[0]> = {}) {
@@ -81,11 +92,14 @@ describe('StageMonitor', () => {
     });
   }
 
+  const prsOf = (id: string) => sessions.get(id)!.prs;
+
   beforeEach(() => {
     sessions = new Map();
     commits = [];
     ghCalls = [];
     ghResult = { type: 'ok', stage: 'ready' };
+    ghResultByNumber = new Map();
     runGh.mockClear();
   });
 
@@ -93,103 +107,138 @@ describe('StageMonitor', () => {
     vi.useRealTimers();
   });
 
-  it('commits the new stage when it changed', async () => {
-    sessions.set('s1', makeSession());
-    const monitor = makeMonitor();
+  describe('refresh', () => {
+    it('commits the new stage when it changed', async () => {
+      sessions.set('s1', makeSession());
+      const monitor = makeMonitor();
 
-    await monitor.refresh('s1');
+      await monitor.refresh('s1');
 
-    expect(commits).toHaveLength(1);
-    expect(commits[0].sessionId).toBe('s1');
-    expect(commits[0].updates.stage).toBe('ready');
-    expect(commits[0].updates.stageUpdatedAt).toBeTypeOf('number');
-  });
+      expect(commits).toHaveLength(1);
+      expect(commits[0].sessionId).toBe('s1');
+      expect(commits[0].updates.prs).toEqual([
+        { ...PR1, stage: 'ready', stageUpdatedAt: expect.any(Number) },
+      ]);
+    });
 
-  it('does not commit when the stage is unchanged', async () => {
-    sessions.set('s1', makeSession({ stage: 'ready' }));
-    const monitor = makeMonitor();
+    it('does not commit when the stage is unchanged', async () => {
+      sessions.set('s1', makeSession({ prs: [linked(PR1, { stage: 'ready' })] }));
+      const monitor = makeMonitor();
 
-    await monitor.refresh('s1');
+      await monitor.refresh('s1');
 
-    expect(commits).toHaveLength(0);
-    // but the freshness timestamp is still bumped in memory
-    expect(sessions.get('s1')!.stageUpdatedAt).toBeTypeOf('number');
-  });
+      expect(commits).toHaveLength(0);
+      // but the freshness timestamp is still bumped in memory
+      expect(prsOf('s1')[0].stageUpdatedAt).toBeTypeOf('number');
+    });
 
-  it('clears the pr on not-found', async () => {
-    sessions.set('s1', makeSession({ stage: 'ready' }));
-    ghResult = { type: 'not-found' };
-    const monitor = makeMonitor();
+    it('looks up every linked PR and updates each one', async () => {
+      sessions.set('s1', makeSession({ prs: [linked(PR1), linked(PR2)] }));
+      ghResultByNumber.set(2, { type: 'ok', stage: 'merged' });
+      const monitor = makeMonitor();
 
-    await monitor.refresh('s1');
+      await monitor.refresh('s1');
 
-    expect(commits).toHaveLength(1);
-    expect(commits[0].updates.pr).toBeNull();
-    expect(commits[0].updates.stage).toBe('no-pr');
-  });
+      expect(ghCalls).toEqual([PR1, PR2]);
+      expect(prsOf('s1').map((pr) => [pr.number, pr.stage])).toEqual([
+        [1, 'ready'],
+        [2, 'merged'],
+      ]);
+    });
 
-  it('does nothing for sessions without a pr, ended sessions, or unknown ids', async () => {
-    sessions.set('no-pr', makeSession({ id: 'no-pr', pr: null }));
-    sessions.set('ended', makeSession({ id: 'ended', status: 'ended' }));
-    const monitor = makeMonitor();
+    it('unlinks only the PR GitHub no longer finds', async () => {
+      sessions.set('s1', makeSession({ prs: [linked(PR1, { stage: 'ready' }), linked(PR2, { stage: 'ready' })] }));
+      ghResultByNumber.set(1, { type: 'not-found' });
+      const monitor = makeMonitor();
 
-    await monitor.refresh('no-pr');
-    await monitor.refresh('ended');
-    await monitor.refresh('missing');
+      await monitor.refresh('s1');
 
-    expect(runGh).not.toHaveBeenCalled();
-    expect(commits).toHaveLength(0);
-  });
+      expect(commits).toHaveLength(1);
+      expect(prsOf('s1').map((pr) => pr.number)).toEqual([2]);
+      // Not remembered as unlinked: a later detection may link it again
+      expect(sessions.get('s1')!.unlinkedPrs).toEqual([]);
+    });
 
-  it('commits nothing on gh error', async () => {
-    sessions.set('s1', makeSession());
-    ghResult = { type: 'error' };
-    const monitor = makeMonitor();
+    it('does nothing for sessions without prs, ended sessions, or unknown ids', async () => {
+      sessions.set('no-pr', makeSession({ id: 'no-pr', prs: [] }));
+      sessions.set('ended', makeSession({ id: 'ended', status: 'ended' }));
+      const monitor = makeMonitor();
 
-    await monitor.refresh('s1');
+      await monitor.refresh('no-pr');
+      await monitor.refresh('ended');
+      await monitor.refresh('missing');
 
-    expect(commits).toHaveLength(0);
-  });
+      expect(runGh).not.toHaveBeenCalled();
+      expect(commits).toHaveLength(0);
+    });
 
-  it('backs off when gh is unavailable and retries after the window', async () => {
-    let now = 1_000_000;
-    sessions.set('s1', makeSession());
-    ghResult = { type: 'unavailable' };
-    const monitor = makeMonitor({ retryAfterMs: 60_000, now: () => now });
+    it('commits nothing on gh error', async () => {
+      sessions.set('s1', makeSession());
+      ghResult = { type: 'error' };
+      const monitor = makeMonitor();
 
-    await monitor.refresh('s1');
-    expect(runGh).toHaveBeenCalledTimes(1);
+      await monitor.refresh('s1');
 
-    // Within the backoff window: no new gh call
-    await monitor.refresh('s1');
-    expect(runGh).toHaveBeenCalledTimes(1);
+      expect(commits).toHaveLength(0);
+    });
 
-    // After the window: gh is retried
-    now += 60_001;
-    ghResult = { type: 'ok', stage: 'ready' };
-    await monitor.refresh('s1');
-    expect(runGh).toHaveBeenCalledTimes(2);
-    expect(commits).toHaveLength(1);
-  });
+    it('backs off when gh is unavailable and retries after the window', async () => {
+      let now = 1_000_000;
+      sessions.set('s1', makeSession());
+      ghResult = { type: 'unavailable' };
+      const monitor = makeMonitor({ retryAfterMs: 60_000, now: () => now });
 
-  it('dedupes concurrent refreshes for the same session', async () => {
-    sessions.set('s1', makeSession());
-    let release!: (r: GhResult) => void;
-    runGh.mockImplementationOnce(
-      () => new Promise<GhResult>((resolve) => { release = resolve; }),
-    );
-    const monitor = makeMonitor();
+      await monitor.refresh('s1');
+      expect(runGh).toHaveBeenCalledTimes(1);
 
-    const first = monitor.refresh('s1');
-    const second = monitor.refresh('s1');
-    expect(second).toBe(first);
+      // Within the backoff window: no new gh call
+      await monitor.refresh('s1');
+      expect(runGh).toHaveBeenCalledTimes(1);
 
-    // The concurrency limiter starts the gh call on a microtask; wait for it
-    // so `release` is assigned before we resolve.
-    await vi.waitFor(() => expect(runGh).toHaveBeenCalledTimes(1));
-    release({ type: 'ok', stage: 'ready' });
-    await first;
-    expect(runGh).toHaveBeenCalledTimes(1);
+      // After the window: gh is retried
+      now += 60_001;
+      ghResult = { type: 'ok', stage: 'ready' };
+      await monitor.refresh('s1');
+      expect(runGh).toHaveBeenCalledTimes(2);
+      expect(commits).toHaveLength(1);
+    });
+
+    it('dedupes concurrent lookups of the same PR', async () => {
+      sessions.set('s1', makeSession());
+      let release!: (r: GhResult) => void;
+      runGh.mockImplementationOnce(
+        () => new Promise<GhResult>((resolve) => { release = resolve; }),
+      );
+      const monitor = makeMonitor();
+
+      const first = monitor.refresh('s1');
+      const second = monitor.refresh('s1');
+
+      // The concurrency limiter starts the gh call on a microtask; wait for it
+      // so `release` is assigned before we resolve.
+      await vi.waitFor(() => expect(runGh).toHaveBeenCalledTimes(1));
+      release({ type: 'ok', stage: 'ready' });
+      await Promise.all([first, second]);
+      expect(runGh).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops the result for a PR unlinked while its lookup was in flight', async () => {
+      sessions.set('s1', makeSession());
+      let release!: (r: GhResult) => void;
+      runGh.mockImplementationOnce(
+        () => new Promise<GhResult>((resolve) => { release = resolve; }),
+      );
+      const monitor = makeMonitor();
+
+      const pending = monitor.refresh('s1');
+      await vi.waitFor(() => expect(runGh).toHaveBeenCalledTimes(1));
+      monitor.unlinkPr('s1', PR1);
+      release({ type: 'ok', stage: 'ready' });
+      await pending;
+
+      expect(prsOf('s1')).toEqual([]);
+      expect(commits).toHaveLength(1); // only the unlink
+    });
   });
 
   it('debounces scheduleRefresh', async () => {
@@ -220,36 +269,104 @@ describe('StageMonitor', () => {
     expect(runGh).not.toHaveBeenCalled();
   });
 
-  describe('handlePrDetected', () => {
-    it('commits a newly detected pr and refreshes', async () => {
-      sessions.set('s1', makeSession({ pr: null }));
-      const monitor = makeMonitor();
-
-      monitor.handlePrDetected('s1', { owner: 'o', repo: 'r', number: 7 });
-
-      expect(commits[0].updates.pr).toEqual({ owner: 'o', repo: 'r', number: 7 });
-      await vi.waitFor(() => expect(runGh).toHaveBeenCalled());
-    });
-
-    it('only refreshes when the same pr is detected again', async () => {
+  describe('handlePrsDetected', () => {
+    it('links newly detected PRs after the existing ones and looks them up', async () => {
       sessions.set('s1', makeSession());
       const monitor = makeMonitor();
 
-      monitor.handlePrDetected('s1', { owner: 'o', repo: 'r', number: 1 });
+      monitor.handlePrsDetected('s1', [PR1, PR2]);
 
-      await vi.waitFor(() => expect(runGh).toHaveBeenCalled());
-      // No pr commit — only the stage change from the refresh itself
-      expect(commits.every((c) => !('pr' in c.updates))).toBe(true);
+      expect(commits[0].updates.prs).toEqual([linked(PR1), linked(PR2)]);
+      await vi.waitFor(() => expect(ghCalls).toEqual([PR1, PR2]));
     });
 
-    it('ignores detection for ended sessions', () => {
-      sessions.set('s1', makeSession({ status: 'ended' }));
+    it('only refreshes when every detected PR is already linked', async () => {
+      sessions.set('s1', makeSession());
       const monitor = makeMonitor();
 
-      monitor.handlePrDetected('s1', { owner: 'o', repo: 'r', number: 1 });
+      monitor.handlePrsDetected('s1', [{ owner: 'O', repo: 'R', number: 1 }]);
+
+      await vi.waitFor(() => expect(runGh).toHaveBeenCalled());
+      // No link commit — only the stage change from the refresh itself
+      expect(prsOf('s1')).toHaveLength(1);
+      expect(commits.every((c) => c.updates.prs?.[0].stage === 'ready')).toBe(true);
+    });
+
+    it('skips PRs the user unlinked', async () => {
+      sessions.set('s1', makeSession({ prs: [], unlinkedPrs: [PR2] }));
+      const monitor = makeMonitor();
+
+      monitor.handlePrsDetected('s1', [PR2]);
+      await flush();
 
       expect(commits).toHaveLength(0);
       expect(runGh).not.toHaveBeenCalled();
+    });
+
+    it('ignores detection for ended sessions', async () => {
+      sessions.set('s1', makeSession({ status: 'ended', prs: [] }));
+      const monitor = makeMonitor();
+
+      monitor.handlePrsDetected('s1', [PR1]);
+      await flush();
+
+      expect(commits).toHaveLength(0);
+      expect(runGh).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('linkPrs', () => {
+    it('links a PR the user had unlinked and forgets the unlink', async () => {
+      sessions.set('s1', makeSession({ prs: [], unlinkedPrs: [PR2] }));
+      const monitor = makeMonitor();
+
+      monitor.linkPrs('s1', [PR2]);
+
+      expect(commits[0].updates).toEqual({ prs: [linked(PR2)], unlinkedPrs: [] });
+      await vi.waitFor(() => expect(ghCalls).toEqual([PR2]));
+    });
+
+    it('skips PRs already linked, including duplicates within the request', () => {
+      sessions.set('s1', makeSession());
+      const monitor = makeMonitor();
+
+      monitor.linkPrs('s1', [PR1, PR2, PR2]);
+
+      expect(commits[0].updates.prs).toEqual([linked(PR1), linked(PR2)]);
+    });
+
+    it('links on an exited session but leaves the lookup until it runs again', async () => {
+      sessions.set('s1', makeSession({ status: 'ended', prs: [] }));
+      const monitor = makeMonitor();
+
+      monitor.linkPrs('s1', [PR1]);
+      await flush();
+
+      expect(prsOf('s1')).toEqual([linked(PR1)]);
+      expect(runGh).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('unlinkPr', () => {
+    it('removes the PR and remembers it so detection will not link it again', async () => {
+      sessions.set('s1', makeSession({ prs: [linked(PR1), linked(PR2)] }));
+      const monitor = makeMonitor();
+
+      monitor.unlinkPr('s1', { owner: 'O', repo: 'r', number: 1 });
+      monitor.handlePrsDetected('s1', [PR1]);
+      await flush();
+
+      expect(prsOf('s1').map((pr) => pr.number)).toEqual([2]);
+      expect(sessions.get('s1')!.unlinkedPrs).toEqual([{ owner: 'O', repo: 'r', number: 1 }]);
+    });
+
+    it('does nothing for a PR that is not linked', () => {
+      sessions.set('s1', makeSession());
+      const monitor = makeMonitor();
+
+      monitor.unlinkPr('s1', PR2);
+
+      expect(commits).toHaveLength(0);
     });
   });
 });

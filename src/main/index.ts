@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import { IpcChannels, IpcErrorCodes } from "../shared/ipc";
 import type { IpcInvokeMap } from "../shared/ipc";
 import type { PersistedSession, PrRef, Session, SessionConfig } from "../shared/types";
-import { parsePrUrl } from "../shared/pr-url";
+import { parsePrUrl } from "../shared/pr-ref";
 import { SessionStore, fromPersisted } from "./session-store";
 import { SessionState } from "./session-state";
 import { StageMonitor } from "./stage-monitor";
@@ -128,7 +128,7 @@ const stageMonitor = new StageMonitor({
 
 const hookServer = new HookServer(
   (sessionId, update) => sessionState.applyHookUpdate(sessionId, update),
-  (sessionId, pr) => stageMonitor.handlePrDetected(sessionId, pr),
+  (sessionId, prs) => stageMonitor.handlePrsDetected(sessionId, prs),
   (sessionId) => sessionStore.getSession(sessionId)?.contextLimit ?? null,
 );
 
@@ -161,6 +161,14 @@ function requireSession(id: string): Session {
   return session;
 }
 
+function requirePrRef(url: string): PrRef {
+  const pr = parsePrUrl(url);
+  if (!pr) {
+    throw ipcError(IpcErrorCodes.INVALID_PR_URL, `Not a GitHub PR URL: ${url}`);
+  }
+  return pr;
+}
+
 function validateCwd(cwd: string): string {
   const resolved = path.resolve(cwd);
   if (!fs.existsSync(resolved)) {
@@ -181,17 +189,7 @@ async function createSessionFromConfig(
   const now = Date.now();
   const cwd = validateCwd(config.cwd);
   const worktree = config.worktree || null;
-
-  let pr: PrRef | null = null;
-  if (config.prUrl?.trim()) {
-    pr = parsePrUrl(config.prUrl);
-    if (!pr) {
-      throw ipcError(
-        IpcErrorCodes.INVALID_PR_URL,
-        `Not a GitHub PR URL: ${config.prUrl}`,
-      );
-    }
-  }
+  const prs = (config.prUrls ?? []).map(requirePrRef);
 
   const session: Session = {
     id,
@@ -208,9 +206,8 @@ async function createSessionFromConfig(
     createdAt: now,
     lastActiveAt: now,
     hasUserInput: false,
-    pr: null,
-    stage: "no-pr",
-    stageUpdatedAt: null,
+    prs: [],
+    unlinkedPrs: [],
   };
 
   const worktreeCwd = sessionSpawnCwd(cwd, worktree);
@@ -240,9 +237,9 @@ async function createSessionFromConfig(
   // Session stays in 'creating' status — the renderer / PTY output parser
   // will transition to 'idle' once the Claude prompt is detected.
   sessionStore.addSession(session);
-  if (pr) {
-    // Link the PR now (synchronously sets session.pr) and kick off a stage lookup
-    stageMonitor.handlePrDetected(id, pr);
+  if (prs.length > 0) {
+    // Links synchronously (sets session.prs) and kicks off the stage lookups
+    stageMonitor.linkPrs(id, prs);
   }
   return session;
 }
@@ -500,6 +497,13 @@ function createMenu(): void {
             mainWindow?.webContents.send(IpcChannels.MENU_NEXT_NEEDING_ATTENTION);
           },
         },
+        { type: "separator" as const },
+        {
+          label: "Pull Requests…",
+          click: () => {
+            mainWindow?.webContents.send(IpcChannels.MENU_PULL_REQUESTS);
+          },
+        },
       ],
     },
     {
@@ -625,6 +629,18 @@ const invokeHandlers: InvokeHandlers = {
       );
     }
     return sessionState.commit(id, { status: "creating" })!;
+  },
+
+  [IpcChannels.SESSION_LINK_PR]: ({ id, url }) => {
+    requireSession(id);
+    stageMonitor.linkPrs(id, [requirePrRef(url)]);
+    return requireSession(id);
+  },
+
+  [IpcChannels.SESSION_UNLINK_PR]: ({ id, pr }) => {
+    requireSession(id);
+    stageMonitor.unlinkPr(id, pr);
+    return requireSession(id);
   },
 
   [IpcChannels.SESSION_SWITCH]: ({ id }) => {

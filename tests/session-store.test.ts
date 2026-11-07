@@ -10,7 +10,7 @@ vi.mock('node:os', () => ({
   homedir: () => '/mock-home',
 }));
 
-const { SessionStore } = await import('../src/main/session-store');
+const { SessionStore, toPersisted, fromPersisted } = await import('../src/main/session-store');
 
 function makeSession(overrides: Partial<import('../src/shared/types').Session> = {}): import('../src/shared/types').Session {
   return {
@@ -427,5 +427,63 @@ describe('SessionStore', () => {
       const all = store.loadToolkitCommands();
       expect(all).toHaveLength(2);
     });
+  });
+});
+
+describe('toPersisted / fromPersisted', () => {
+  const base = {
+    id: 'p1',
+    name: 'Persisted',
+    cwd: '/tmp',
+    worktree: null,
+    flags: [],
+    notifyOnIdle: false,
+    unread: false,
+    model: null,
+    contextUsage: null,
+    contextLimit: null,
+    createdAt: 1,
+    lastActiveAt: 1,
+    hasUserInput: true,
+  };
+
+  it('round-trips linked and unlinked PRs', () => {
+    const prs = [
+      { owner: 'o', repo: 'r', number: 1, stage: 'merged' as const, stageUpdatedAt: 5 },
+      { owner: 'o', repo: 'r', number: 2, stage: 'ready' as const, stageUpdatedAt: 6 },
+    ];
+    const unlinkedPrs = [{ owner: 'o', repo: 'r', number: 3 }];
+    const session = fromPersisted({ ...base, prs, unlinkedPrs });
+
+    expect(session.prs).toEqual(prs);
+    expect(session.unlinkedPrs).toEqual(unlinkedPrs);
+    expect(toPersisted(session)).toMatchObject({ prs, unlinkedPrs });
+    expect(toPersisted(session)).not.toHaveProperty('pr');
+  });
+
+  it('migrates a file from before multiple PRs into a one-PR list', () => {
+    const legacy = JSON.parse(
+      JSON.stringify({ ...base, pr: { owner: 'o', repo: 'r', number: 7 }, stage: 'draft', stageUpdatedAt: 9 }),
+    );
+    const session = fromPersisted(legacy);
+
+    expect(session.prs).toEqual([{ owner: 'o', repo: 'r', number: 7, stage: 'draft', stageUpdatedAt: 9 }]);
+    expect(session.unlinkedPrs).toEqual([]);
+  });
+
+  it("migrates a legacy PR whose stage was never resolved ('no-pr') as unknown", () => {
+    const legacy = JSON.parse(
+      JSON.stringify({ ...base, pr: { owner: 'o', repo: 'r', number: 7 }, stage: 'no-pr', stageUpdatedAt: null }),
+    );
+
+    expect(fromPersisted(legacy).prs).toEqual([
+      { owner: 'o', repo: 'r', number: 7, stage: 'unknown', stageUpdatedAt: null },
+    ]);
+  });
+
+  it('migrates a legacy file without a PR to an empty list', () => {
+    const legacy = JSON.parse(JSON.stringify({ ...base, pr: null, stage: 'no-pr', stageUpdatedAt: null }));
+
+    expect(fromPersisted(legacy).prs).toEqual([]);
   });
 });

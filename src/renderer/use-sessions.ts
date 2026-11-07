@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { Session } from '../shared/types';
+import type { PrRef, Session } from '../shared/types';
 import { invoke, on, IpcChannels } from './ipc';
 
 export interface NewSessionInput {
@@ -8,7 +8,7 @@ export interface NewSessionInput {
   worktree: string;
   flags: string[];
   notifyOnIdle: boolean;
-  prUrl: string;
+  prUrls: string[];
 }
 
 /** New output you haven't seen, or Claude blocked until you respond. */
@@ -89,7 +89,7 @@ export function useSessions() {
       worktree: input.worktree || undefined,
       flags: input.flags,
       notifyOnIdle: input.notifyOnIdle,
-      prUrl: input.prUrl || undefined,
+      prUrls: input.prUrls,
     });
     setSessions((prev) => [...prev, session]);
     setActiveSessionId(session.id);
@@ -118,6 +118,17 @@ export function useSessions() {
   // The new status comes back through the SESSION_STATE merge
   const restartSession = useCallback(
     (id: string): Promise<Session> => invoke(IpcChannels.SESSION_RESTART, { id }),
+    [],
+  );
+
+  // The updated PR list comes back through the SESSION_STATE merge
+  const linkPr = useCallback(
+    (id: string, url: string): Promise<Session> => invoke(IpcChannels.SESSION_LINK_PR, { id, url }),
+    [],
+  );
+
+  const unlinkPr = useCallback(
+    (id: string, pr: PrRef): Promise<Session> => invoke(IpcChannels.SESSION_UNLINK_PR, { id, pr }),
     [],
   );
 
@@ -173,6 +184,8 @@ export function useSessions() {
     createSession,
     endSession,
     restartSession,
+    linkPr,
+    unlinkPr,
     toggleNotify,
     renameSession,
     reorderSessions,

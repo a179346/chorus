@@ -13,17 +13,21 @@ Commit updates the store, persists when a persisted field changed, broadcasts
 exactly the changed fields to the renderer, and refreshes the unread badge
 when `unread` changed. Higher-level entry points (`applyHookUpdate`,
 `handleClaudeExit`, `markRead`) encode the unread/notification policy and end
-in a commit. One deliberate exception: StageMonitor bumps `stageUpdatedAt` in
-memory when a poll finds no change, skipping persist/broadcast.
+in a commit. One deliberate exception: StageMonitor bumps a linked PR's
+`stageUpdatedAt` in memory when a poll finds no change, skipping
+persist/broadcast.
 
 If you need to change a session field, call `commit` — never
 `updateSession` + `persistSessions` + `webContents.send` by hand.
 
 ### StageMonitor — the PR stage engine (`stage-monitor.ts`)
 
-Watches sessions with a detected PR and keeps `stage`/`stageUpdatedAt`
-current. Owns debouncing, in-flight dedup, gh concurrency limiting, and
-backoff when gh is unavailable. The GitHub lookup is an injectable adapter
+Owns each session's linked PRs (`session.prs`, each with its own
+`stage`/`stageUpdatedAt`): links PRs found in the transcript
+(`handlePrsDetected`) or added by the user (`linkPrs`), unlinks them
+(`unlinkPr`, remembered in `session.unlinkedPrs` so transcript detection won't
+re-link them), and keeps every PR's stage current. Owns debouncing, per-PR
+in-flight dedup, gh concurrency limiting, and backoff when gh is unavailable. The GitHub lookup is an injectable adapter
 (`GhRunner`; prod default `runGhPrView` spawns `gh pr view`), and the clock is
 injectable — so the whole engine is unit-testable without gh or real timers.
 Writes go through the SessionState commit seam.
@@ -85,10 +89,12 @@ adapter that mounts a container and calls `terminals.attach`.
 
 Owns the renderer's session list and active-session state: subscribes to
 `SESSION_STATE` pushes, and exposes the session verbs (create, end, switch,
-rename, reorder, toggle notify). `App.tsx` keeps only UI state.
+rename, reorder, toggle notify, link/unlink PR). `App.tsx` keeps only UI state.
 
 ### session-presentation (`session-presentation.ts`)
 
 The one place session data is turned into visuals/labels: status colors,
-pulsing statuses, stage icons, PR URLs, path/model shortening. Components
-import from here instead of hand-rolling.
+pulsing statuses, stage icons (and the summary stage for a session's PRs),
+path/model shortening. Components import from here instead of hand-rolling.
+PR URL parsing/formatting and PR identity (`samePr`) live in
+`src/shared/pr-ref.ts`, shared with main.

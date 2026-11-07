@@ -4,6 +4,9 @@ import os from 'node:os';
 import type {
   Session,
   PersistedSession,
+  LinkedPr,
+  PrRef,
+  PrStage,
   AppState,
   NewSessionDefaults,
   TerminalSettings,
@@ -107,14 +110,30 @@ export function toPersisted(s: Session): PersistedSession {
     createdAt: s.createdAt,
     lastActiveAt: s.lastActiveAt,
     hasUserInput: s.hasUserInput,
-    pr: s.pr,
-    stage: s.stage,
-    stageUpdatedAt: s.stageUpdatedAt,
+    prs: s.prs,
+    unlinkedPrs: s.unlinkedPrs,
   };
 }
 
+/** How a session's PR was stored before sessions could link several. */
+interface LegacyPrFields {
+  pr?: PrRef | null;
+  stage?: Exclude<PrStage, 'unknown'> | 'no-pr';
+  stageUpdatedAt?: number | null;
+}
+
+function linkedPrsFromDisk(ps: PersistedSession & LegacyPrFields): LinkedPr[] {
+  if (ps.prs) return ps.prs;
+  if (!ps.pr) return [];
+  const stage = ps.stage && ps.stage !== 'no-pr' ? ps.stage : 'unknown';
+  return [{ ...ps.pr, stage, stageUpdatedAt: ps.stageUpdatedAt ?? null }];
+}
+
 /** Rebuild a runtime Session from disk. `cwd` may be re-resolved by the caller. */
-export function fromPersisted(ps: PersistedSession, cwd: string = ps.cwd): Session {
+export function fromPersisted(
+  ps: PersistedSession & LegacyPrFields,
+  cwd: string = ps.cwd,
+): Session {
   return {
     id: ps.id,
     name: ps.name,
@@ -130,9 +149,8 @@ export function fromPersisted(ps: PersistedSession, cwd: string = ps.cwd): Sessi
     createdAt: ps.createdAt,
     lastActiveAt: ps.lastActiveAt,
     hasUserInput: ps.hasUserInput,
-    pr: ps.pr ?? null,
-    stage: ps.stage ?? 'no-pr',
-    stageUpdatedAt: ps.stageUpdatedAt ?? null,
+    prs: linkedPrsFromDisk(ps),
+    unlinkedPrs: ps.unlinkedPrs ?? [],
   };
 }
 

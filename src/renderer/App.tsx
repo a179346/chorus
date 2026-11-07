@@ -10,6 +10,7 @@ import { SearchBar } from './components/SearchBar';
 import { NewSessionDialog } from './components/NewSessionDialog';
 import { PreferencesDialog } from './components/PreferencesDialog';
 import { ExitedSessionBanner } from './components/ExitedSessionBanner';
+import { PullRequestsDialog } from './components/PullRequestsDialog';
 import { applyThemeCss, getTheme, DEFAULT_THEME_ID } from './themes';
 import { terminals } from './terminal-host';
 import { useSessions, type NewSessionInput } from './use-sessions';
@@ -33,6 +34,8 @@ export function App(): React.ReactElement {
     createSession,
     endSession,
     restartSession,
+    linkPr,
+    unlinkPr,
     toggleNotify,
     renameSession,
     reorderSessions,
@@ -50,6 +53,7 @@ export function App(): React.ReactElement {
   const [claudeFontSize, setClaudeFontSize] = useState(DEFAULT_FONT_SIZE);
   const [shellFontSize, setShellFontSize] = useState(DEFAULT_FONT_SIZE);
   const [endSessionConfirm, setEndSessionConfirm] = useState<string | null>(null);
+  const [prDialogSessionId, setPrDialogSessionId] = useState<string | null>(null);
   const [restartError, setRestartError] = useState<{ sessionId: string; message: string } | null>(null);
   const restartingRef = useRef<Set<string>>(new Set());
   const [currentTheme, setCurrentTheme] = useState(DEFAULT_THEME_ID);
@@ -130,6 +134,10 @@ export function App(): React.ReactElement {
       on(IpcChannels.MENU_CLOSE_SESSION, () => {
         const currentId = activeSessionIdRef.current;
         if (currentId) setEndSessionConfirm(currentId);
+      }),
+      on(IpcChannels.MENU_PULL_REQUESTS, () => {
+        const currentId = activeSessionIdRef.current;
+        if (currentId) setPrDialogSessionId(currentId);
       }),
       on(IpcChannels.MENU_FIND, () => {
         const currentId = activeSessionIdRef.current;
@@ -225,6 +233,9 @@ export function App(): React.ReactElement {
       setEndSessionConfirm(null);
     }
   }, [endSessionConfirm, handleEndSession]);
+
+  const closePrDialog = useCallback(() => setPrDialogSessionId(null), []);
+  const prDialogSession = sessions.find((s) => s.id === prDialogSessionId) ?? null;
 
   const handleToolkitExecute = useCallback(
     (commandId: string) => {
@@ -438,6 +449,7 @@ export function App(): React.ReactElement {
             onRestartSession={handleRestartSession}
             onToggleNotify={toggleNotify}
             onReorderSessions={reorderSessions}
+            onManagePrs={setPrDialogSessionId}
           />
 
           {/* Toolkit */}
@@ -469,6 +481,16 @@ export function App(): React.ReactElement {
         onSave={handleSavePreferences}
         onPreviewTheme={handlePreviewTheme}
       />
+
+      {/* Linked pull requests dialog */}
+      {prDialogSession && (
+        <PullRequestsDialog
+          session={prDialogSession}
+          onLink={(url) => linkPr(prDialogSession.id, url)}
+          onUnlink={(pr) => unlinkPr(prDialogSession.id, pr)}
+          onClose={closePrDialog}
+        />
+      )}
 
       {/* End session confirmation dialog */}
       {endSessionConfirm && (

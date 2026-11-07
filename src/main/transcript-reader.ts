@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import type { PrRef } from '../shared/types';
+import { samePr } from '../shared/pr-ref';
 
 /**
  * Default context window — every current Claude model ships with at least 200k.
@@ -196,23 +197,23 @@ function extractLastPrUrl(text: string): PrRef | null {
 }
 
 /**
- * Scan the tail of a Claude Code transcript for the most recent successful
- * `gh pr create` (or `mcp__github__create_pull_request`) tool call and return
- * the PR ref parsed from its tool_result.
+ * Scan the tail of a Claude Code transcript for successful `gh pr create` (or
+ * `mcp__github__create_pull_request`) tool calls and return the PR ref parsed
+ * from each one's tool_result, oldest first and without duplicates.
  *
  * Anchors on the create-PR tool_use itself (matched via tool_use_id) so that
  * `gh pr list` / `gh pr view <other>` URLs in the same window cannot pollute
  * the result.
  *
- * Returns null on any error (missing file, IO failure, malformed JSONL, no
+ * Returns [] on any error (missing file, IO failure, malformed JSONL, no
  * matching create call). Never throws.
  */
-export async function extractPrFromCreateCall(
+export async function extractPrsFromCreateCalls(
   transcriptPath: string,
   tailLines = 200,
-): Promise<PrRef | null> {
+): Promise<PrRef[]> {
   try {
-    if (!fs.existsSync(transcriptPath)) return null;
+    if (!fs.existsSync(transcriptPath)) return [];
 
     // readTailLines returns reverse order (newest first); flip to chronological
     const reversed = readTailLines(transcriptPath, tailLines, 0);
@@ -246,16 +247,14 @@ export async function extractPrFromCreateCall(
       }
     }
 
-    // Walk create ids latest-first, return first one with a matching PR URL
-    for (let i = createPrIds.length - 1; i >= 0; i--) {
-      const text = resultByToolUseId.get(createPrIds[i]);
-      if (!text) continue;
-      const ref = extractLastPrUrl(text);
-      if (ref) return ref;
+    const prs: PrRef[] = [];
+    for (const id of createPrIds) {
+      const text = resultByToolUseId.get(id);
+      const ref = text ? extractLastPrUrl(text) : null;
+      if (ref && !prs.some((pr) => samePr(pr, ref))) prs.push(ref);
     }
-
-    return null;
+    return prs;
   } catch {
-    return null;
+    return [];
   }
 }

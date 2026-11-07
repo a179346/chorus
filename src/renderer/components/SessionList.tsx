@@ -14,9 +14,10 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import type { Session } from '../../shared/types';
-import { STAGE_ICON, prUrl, statusColor, statusLabel, basename, hasExited } from '../session-presentation';
-import { invoke, IpcChannels } from '../ipc';
+import type { LinkedPr, Session } from '../../shared/types';
+import { prLabel } from '../../shared/pr-ref';
+import { STAGE_ICON, prTooltip, summaryStage, statusColor, statusLabel, basename, hasExited } from '../session-presentation';
+import { PrIdentity, openPrInBrowser } from './PrLinks';
 
 interface SessionListProps {
   sessions: Session[];
@@ -28,13 +29,13 @@ interface SessionListProps {
   onRestartSession: (id: string) => void;
   onToggleNotify: (id: string) => void;
   onReorderSessions: (sessions: Session[]) => void;
+  onManagePrs: (id: string) => void;
 }
 
-interface ContextMenuState {
-  x: number;
-  y: number;
-  sessionId: string | null;
-}
+/** The open menu: a right-click context menu, or the list of a session's PRs. */
+type ContextMenuState =
+  | { kind: 'session'; x: number; y: number; sessionId: string | null }
+  | { kind: 'prs'; x: number; y: number; sessionId: string };
 
 export function SessionList({
   sessions,
@@ -46,6 +47,7 @@ export function SessionList({
   onRestartSession,
   onToggleNotify,
   onReorderSessions,
+  onManagePrs,
 }: SessionListProps): React.ReactElement {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
@@ -75,10 +77,29 @@ export function SessionList({
   const handleContextMenu = useCallback(
     (e: React.MouseEvent, sessionId: string | null) => {
       e.preventDefault();
-      setContextMenu({ x: e.clientX, y: e.clientY, sessionId });
+      setContextMenu({ kind: 'session', x: e.clientX, y: e.clientY, sessionId });
     },
     []
   );
+
+  // One PR opens directly; several open a menu to pick from
+  const handlePrSummaryClick = useCallback(
+    (e: React.MouseEvent<HTMLElement>, session: Session) => {
+      e.stopPropagation();
+      if (session.prs.length === 1) {
+        openPrInBrowser(session.prs[0]);
+        return;
+      }
+      const rect = e.currentTarget.getBoundingClientRect();
+      setContextMenu({ kind: 'prs', x: rect.left, y: rect.bottom + 4, sessionId: session.id });
+    },
+    []
+  );
+
+  const handleOpenPr = useCallback((pr: LinkedPr) => {
+    setContextMenu(null);
+    openPrInBrowser(pr);
+  }, []);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -138,6 +159,9 @@ export function SessionList({
         case 'restart':
           if (sessionId) onRestartSession(sessionId);
           break;
+        case 'prs':
+          if (sessionId) onManagePrs(sessionId);
+          break;
         case 'end':
           if (sessionId) onEndSession(sessionId);
           break;
@@ -146,8 +170,10 @@ export function SessionList({
           break;
       }
     },
-    [contextMenu, onSelectSession, onRestartSession, onEndSession, onNewSession]
+    [contextMenu, onSelectSession, onRestartSession, onManagePrs, onEndSession, onNewSession]
   );
+
+  const menuSession = contextMenu && sessions.find((s) => s.id === contextMenu.sessionId);
 
   const handleRenameCommit = useCallback(
     (id: string, newName: string) => {
@@ -223,6 +249,7 @@ export function SessionList({
                   onRenameCommit={(newName) => handleRenameCommit(session.id, newName)}
                   onRenameCancel={handleRenameCancel}
                   onToggleNotify={() => onToggleNotify(session.id)}
+                  onPrSummaryClick={(e) => handlePrSummaryClick(e, session)}
                 />
               ))}
             </SortableContext>
@@ -251,14 +278,26 @@ export function SessionList({
       </div>
 
       {/* Context menu */}
-      {contextMenu && (
+      {contextMenu?.kind === 'session' && (
         <ContextMenu
           menuRef={menuRef}
           x={contextMenu.x}
           y={contextMenu.y}
           sessionId={contextMenu.sessionId}
-          canRestart={sessions.some((s) => s.id === contextMenu.sessionId && hasExited(s))}
+          canRestart={!!menuSession && hasExited(menuSession)}
           onAction={handleMenuAction}
+        />
+      )}
+
+      {/* PR list (from a card's PR summary) */}
+      {contextMenu?.kind === 'prs' && menuSession && (
+        <PrListMenu
+          menuRef={menuRef}
+          x={contextMenu.x}
+          y={contextMenu.y}
+          prs={menuSession.prs}
+          onOpen={handleOpenPr}
+          onManage={() => handleMenuAction('prs')}
         />
       )}
     </div>
@@ -274,6 +313,7 @@ interface SessionCardProps {
   onRenameCommit: (newName: string) => void;
   onRenameCancel: () => void;
   onToggleNotify: () => void;
+  onPrSummaryClick: (e: React.MouseEvent<HTMLElement>) => void;
 }
 
 function SortableSessionCard(props: SessionCardProps): React.ReactElement {
@@ -301,7 +341,7 @@ function SortableSessionCard(props: SessionCardProps): React.ReactElement {
   );
 }
 
-function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onRenameCommit, onRenameCancel, onToggleNotify }: SessionCardProps): React.ReactElement {
+function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onRenameCommit, onRenameCancel, onToggleNotify, onPrSummaryClick }: SessionCardProps): React.ReactElement {
   const [hovered, setHovered] = useState(false);
   const [editValue, setEditValue] = useState(session.name);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -365,32 +405,7 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
           />
         ) : (
           <span style={{ display: 'flex', alignItems: 'center', gap: 5, overflow: 'hidden', minWidth: 0 }}>
-            {session.stage !== 'no-pr' && STAGE_ICON[session.stage] && (() => {
-              const { Icon, color, background, tooltip } = STAGE_ICON[session.stage];
-              const clickable = session.pr != null;
-              return (
-                <span
-                  title={tooltip}
-                  onClick={clickable ? (e) => {
-                    e.stopPropagation();
-                    void invoke(IpcChannels.SHELL_OPEN_EXTERNAL, { url: prUrl(session.pr!) });
-                  } : undefined}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    flexShrink: 0,
-                    color,
-                    background,
-                    borderRadius: 'var(--radius-sm)',
-                    padding: '2px 3px',
-                    cursor: clickable ? 'pointer' : undefined,
-                  }}
-                >
-                  <Icon size={13} />
-                </span>
-              );
-            })()}
+            <PrSummaryChip prs={session.prs} onClick={onPrSummaryClick} />
             {session.unread ? (
               <span
                 title="Unread"
@@ -482,7 +497,7 @@ interface ContextMenuProps {
 function ContextMenu({ menuRef, x, y, sessionId, canRestart, onAction }: ContextMenuProps): React.ReactElement {
   // Clamp position so menu stays within viewport
   const menuWidth = 180;
-  const menuHeight = sessionId ? (canRestart ? 182 : 150) : 36;
+  const menuHeight = sessionId ? (canRestart ? 214 : 182) : 36;
   const clampedX = Math.min(x, window.innerWidth - menuWidth - 8);
   const clampedY = Math.min(y, window.innerHeight - menuHeight - 8);
 
@@ -509,6 +524,9 @@ function ContextMenu({ menuRef, x, y, sessionId, canRestart, onAction }: Context
               Restart Session
             </div>
           )}
+          <div role="menuitem" tabIndex={0} style={menuItemStyle} onClick={() => onAction('prs')}>
+            Pull Requests…
+          </div>
           <div style={menuDividerStyle} />
           <div
             role="menuitem"
@@ -524,6 +542,74 @@ function ContextMenu({ menuRef, x, y, sessionId, canRestart, onAction }: Context
           New Session
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── PR summary + list ─────────────────────────────────
+
+interface PrSummaryChipProps {
+  prs: LinkedPr[];
+  onClick: (e: React.MouseEvent<HTMLElement>) => void;
+}
+
+/** One icon for all of a session's PRs, plus a count when there are several. */
+function PrSummaryChip({ prs, onClick }: PrSummaryChipProps): React.ReactElement | null {
+  const stage = summaryStage(prs);
+  if (!stage) return null;
+  const { Icon, color, background } = STAGE_ICON[stage];
+  const title = prs.length === 1 ? prTooltip(prs[0]) : `${prs.length} pull requests`;
+  return (
+    <span title={title} onClick={onClick} style={{ ...prSummaryChipStyle, color, background }}>
+      <Icon size={13} />
+      {prs.length > 1 && <span style={{ fontSize: 10, lineHeight: 1 }}>{prs.length}</span>}
+    </span>
+  );
+}
+
+interface PrListMenuProps {
+  menuRef: React.RefObject<HTMLDivElement | null>;
+  x: number;
+  y: number;
+  prs: LinkedPr[];
+  onOpen: (pr: LinkedPr) => void;
+  onManage: () => void;
+}
+
+function PrListMenu({ menuRef, x, y, prs, onOpen, onManage }: PrListMenuProps): React.ReactElement {
+  const menuWidth = 240;
+  const menuHeight = prs.length * 30 + 48;
+  const clampedX = Math.min(x, window.innerWidth - menuWidth - 8);
+  const clampedY = Math.min(y, window.innerHeight - menuHeight - 8);
+
+  return (
+    <div
+      ref={menuRef}
+      role="menu"
+      aria-label="Pull requests"
+      style={{
+        ...contextMenuStyle,
+        width: menuWidth,
+        left: Math.max(4, clampedX),
+        top: Math.max(4, clampedY),
+      }}
+    >
+      {prs.map((pr) => (
+        <div
+          key={prLabel(pr)}
+          role="menuitem"
+          tabIndex={0}
+          title={prTooltip(pr)}
+          style={menuItemStyle}
+          onClick={() => onOpen(pr)}
+        >
+          <PrIdentity pr={pr} stage={pr.stage} />
+        </div>
+      ))}
+      <div style={menuDividerStyle} />
+      <div role="menuitem" tabIndex={0} style={menuItemStyle} onClick={onManage}>
+        Manage Pull Requests…
+      </div>
     </div>
   );
 }
@@ -640,6 +726,16 @@ const cardStyle: React.CSSProperties = {
   transition: 'background var(--transition-fast), border-color var(--transition-fast)',
   margin: '0 6px',
   borderRadius: 'var(--radius-md)',
+};
+
+const prSummaryChipStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 3,
+  flexShrink: 0,
+  borderRadius: 'var(--radius-sm)',
+  padding: '2px 3px',
+  cursor: 'pointer',
 };
 
 const cardTagStyle: React.CSSProperties = {

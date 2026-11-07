@@ -1,7 +1,7 @@
 import http from 'node:http';
 
 import type { PrRef, SessionStatus } from '../shared/types';
-import { extractPrFromCreateCall, readTranscriptMetadata } from './transcript-reader';
+import { extractPrsFromCreateCalls, readTranscriptMetadata } from './transcript-reader';
 
 export interface HookEvent {
   session_id: string;
@@ -55,7 +55,7 @@ export interface HookUpdate {
 }
 
 export type HookStatusCallback = (sessionId: string, update: HookUpdate) => void;
-export type PrDetectedCallback = (sessionId: string, pr: PrRef) => void;
+export type PrsDetectedCallback = (sessionId: string, prs: PrRef[]) => void;
 /** Returns the previously detected context limit for a session, or null. */
 export type GetContextLimitCallback = (sessionId: string) => number | null;
 
@@ -63,14 +63,14 @@ export class HookServer {
   private server: http.Server | null = null;
   private port = 0;
   private callback: HookStatusCallback;
-  private prCallback: PrDetectedCallback | null = null;
+  private prCallback: PrsDetectedCallback | null = null;
   private getContextLimit: GetContextLimitCallback | null = null;
   /** Maps session ID -> transcript path. */
   private transcriptPaths: Map<string, string> = new Map();
 
   constructor(
     callback: HookStatusCallback,
-    prCallback?: PrDetectedCallback,
+    prCallback?: PrsDetectedCallback,
     getContextLimit?: GetContextLimitCallback,
   ) {
     this.callback = callback;
@@ -167,10 +167,10 @@ export class HookServer {
           .then(() =>
             Promise.all([
               readTranscriptMetadata(transcriptPath, prevLimit),
-              extractPrFromCreateCall(transcriptPath),
+              extractPrsFromCreateCalls(transcriptPath),
             ]),
           )
-          .then(([meta, pr]) => {
+          .then(([meta, prs]) => {
             if (meta.model || meta.contextUsage !== null || meta.contextLimit !== null) {
               this.callback(sessionId, {
                 status,
@@ -179,8 +179,8 @@ export class HookServer {
                 contextLimit: meta.contextLimit ?? undefined,
               });
             }
-            if (pr && this.prCallback) {
-              this.prCallback(sessionId, pr);
+            if (prs.length > 0 && this.prCallback) {
+              this.prCallback(sessionId, prs);
             }
           })
           .catch(() => {
