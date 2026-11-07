@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { ToolkitCommand } from '../shared/types';
 import { SplitPane } from './components/SplitPane';
 import { StatusBar } from './components/StatusBar';
-import { ShellPanel } from './components/ShellPanel';
+import { ShellPanel, SHELL_HEADER_HEIGHT } from './components/ShellPanel';
 import { SessionList } from './components/SessionList';
 import { ToolkitPanel } from './components/ToolkitPanel';
 import { TerminalView } from './components/TerminalView';
@@ -11,6 +11,10 @@ import { NewSessionDialog } from './components/NewSessionDialog';
 import { PreferencesDialog } from './components/PreferencesDialog';
 import { ExitedSessionBanner } from './components/ExitedSessionBanner';
 import { PullRequestsDialog } from './components/PullRequestsDialog';
+import { ConfirmDialog } from './components/Dialog';
+import { WelcomeScreen } from './components/WelcomeScreen';
+import { CommandPalette } from './components/CommandPalette';
+import { buildPaletteItems } from './palette-items';
 import { applyThemeCss, getTheme, DEFAULT_THEME_ID } from './themes';
 import { terminals } from './terminal-host';
 import { useSessions, type NewSessionInput } from './use-sessions';
@@ -54,6 +58,8 @@ export function App(): React.ReactElement {
   const [claudeFontSize, setClaudeFontSize] = useState(DEFAULT_FONT_SIZE);
   const [shellFontSize, setShellFontSize] = useState(DEFAULT_FONT_SIZE);
   const [endSessionConfirm, setEndSessionConfirm] = useState<string | null>(null);
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [prDialogSessionId, setPrDialogSessionId] = useState<string | null>(null);
   const [restartError, setRestartError] = useState<{ sessionId: string; message: string } | null>(null);
   const restartingRef = useRef<Set<string>>(new Set());
@@ -124,6 +130,19 @@ export function App(): React.ReactElement {
     });
   }, [terminalFontFamily, claudeFontSize, shellFontSize]);
 
+  // Searches the focused terminal: the shell when it has focus, else Claude's
+  const openFind = useCallback(() => {
+    const currentId = activeSessionIdRef.current;
+    if (!currentId) return;
+    const k = ++searchKeyRef.current;
+    const focused = terminals.focused();
+    if (focused && focused.sessionId === currentId && focused.kind === 'shell') {
+      setShellSearch({ sessionId: focused.sessionId, key: k });
+    } else {
+      setPtySearch({ sessionId: currentId, key: k });
+    }
+  }, [activeSessionIdRef]);
+
   // ─── Menu event listeners ──────────────────────────
   useEffect(() => {
     const cleanups = [
@@ -140,21 +159,18 @@ export function App(): React.ReactElement {
         const currentId = activeSessionIdRef.current;
         if (currentId) setPrDialogSessionId(currentId);
       }),
-      on(IpcChannels.MENU_FIND, () => {
-        const currentId = activeSessionIdRef.current;
-        if (!currentId) return;
-        const k = ++searchKeyRef.current;
-        const focused = terminals.focused();
-        if (focused && focused.sessionId === currentId && focused.kind === 'shell') {
-          setShellSearch({ sessionId: focused.sessionId, key: k });
-        } else {
-          setPtySearch({ sessionId: currentId, key: k });
-        }
-      }),
+      on(IpcChannels.MENU_FIND, openFind),
       on(IpcChannels.MENU_PREFERENCES, () => setShowPreferences(true)),
+      on(IpcChannels.MENU_COMMAND_PALETTE, () => {
+        setPaletteOpen((open) => {
+          if (open) return false;
+          // Over another dialog, Escape would close both; let that one finish first
+          return !document.querySelector('[aria-modal="true"]');
+        });
+      }),
     ];
     return () => cleanups.forEach((c) => c());
-  }, [switchToIndex, switchRelative, switchToNextNeedingAttention]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [switchToIndex, switchRelative, switchToNextNeedingAttention, openFind]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Persist panel sizes (debounced) ────────────────
   const savePanelSizes = useCallback(
@@ -228,12 +244,36 @@ export function App(): React.ReactElement {
     []
   );
 
+  /** After renaming, put the keyboard back in Claude — unless focus already went somewhere else. */
+  const refocusTerminalIfIdle = useCallback(() => {
+    requestAnimationFrame(() => {
+      const sid = activeSessionIdRef.current;
+      if (sid && document.activeElement === document.body) terminals.focus('pty', sid);
+    });
+  }, [activeSessionIdRef]);
+
+  const handleRenameSession = useCallback(
+    (id: string, name: string) => {
+      renameSession(id, name);
+      setRenamingSessionId(null);
+      refocusTerminalIfIdle();
+    },
+    [renameSession, refocusTerminalIfIdle]
+  );
+
+  const handleCancelRename = useCallback(() => {
+    setRenamingSessionId(null);
+    refocusTerminalIfIdle();
+  }, [refocusTerminalIfIdle]);
+
   const handleConfirmEndSession = useCallback(() => {
     if (endSessionConfirm) {
       void handleEndSession(endSessionConfirm);
       setEndSessionConfirm(null);
     }
   }, [endSessionConfirm, handleEndSession]);
+
+  const sessionToEnd = sessions.find((s) => s.id === endSessionConfirm) ?? null;
 
   const closePrDialog = useCallback(() => setPrDialogSessionId(null), []);
   const prDialogSession = sessions.find((s) => s.id === prDialogSessionId) ?? null;
@@ -339,36 +379,6 @@ export function App(): React.ReactElement {
   // ─── Render ─────────────────────────────────────────
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      {/* Global keyframe animations */}
-      <style>{`
-        @keyframes statusPulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.35; }
-        }
-        @keyframes fadeIn {
-          from { opacity: 0; }
-          to { opacity: 1; }
-        }
-        @keyframes slideUp {
-          from { opacity: 0; transform: translateY(8px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        @keyframes slideDown {
-          from { opacity: 0; transform: translateY(-8px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        /* Context menu item hover + focus */
-        [role="menuitem"]:hover,
-        [role="menuitem"]:focus {
-          background: var(--bg-hover);
-          outline: none;
-        }
-        /* Divider hover highlight */
-        [data-divider] {
-          background: rgba(var(--tint-rgb), 0.14) !important;
-        }
-      `}</style>
-
       {/* Main layout: left/right split */}
       <SplitPane
         direction="horizontal"
@@ -382,52 +392,56 @@ export function App(): React.ReactElement {
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', position: 'relative' }}>
           <StatusBar session={activeSession} />
 
-          <SplitPane
-            direction="vertical"
-            initialSize={shellCollapsed ? 28 : shellHeight}
-            minPrimary={28}
-            minSecondary={200}
-            maxPrimaryRatio={0.6}
-            primaryIndex={1}
-            onResize={handleShellResize}
-            collapsed={shellCollapsed}
-            collapsedSize={28}
-          >
-            {/* Claude Code terminal */}
-            <div style={{ width: '100%', height: '100%', background: 'var(--bg-terminal)', position: 'relative' }}>
-              {ptySearch && (
-                <SearchBar
-                  key={ptySearch.key}
-                  type="pty"
-                  sessionId={ptySearch.sessionId}
-                  onClose={() => setPtySearch(null)}
-                />
-              )}
-              <TerminalView sessionId={activeSessionId} type="pty" fontFamily={terminalFontFamily} fontSize={claudeFontSize} />
-              {activeSession && hasExited(activeSession) && (
-                <ExitedSessionBanner
-                  session={activeSession}
-                  error={restartError?.sessionId === activeSession.id ? restartError.message : null}
-                  onRestart={handleRestartSession}
-                />
-              )}
-            </div>
-
-            {/* Shell terminal (collapsible) */}
-            <ShellPanel collapsed={shellCollapsed} onToggle={handleShellToggle}>
-              <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-                {shellSearch && (
+          {sessionsLoaded && sessions.length === 0 ? (
+            <WelcomeScreen onNewSession={() => setShowNewSession(true)} />
+          ) : (
+            <SplitPane
+              direction="vertical"
+              initialSize={shellCollapsed ? SHELL_HEADER_HEIGHT : shellHeight}
+              minPrimary={SHELL_HEADER_HEIGHT}
+              minSecondary={200}
+              maxPrimaryRatio={0.6}
+              primaryIndex={1}
+              onResize={handleShellResize}
+              collapsed={shellCollapsed}
+              collapsedSize={SHELL_HEADER_HEIGHT}
+            >
+              {/* Claude Code terminal */}
+              <div style={{ width: '100%', height: '100%', background: 'var(--bg-terminal)', position: 'relative' }}>
+                {ptySearch && (
                   <SearchBar
-                    key={shellSearch.key}
-                    type="shell"
-                    sessionId={shellSearch.sessionId}
-                    onClose={() => setShellSearch(null)}
+                    key={ptySearch.key}
+                    type="pty"
+                    sessionId={ptySearch.sessionId}
+                    onClose={() => setPtySearch(null)}
                   />
                 )}
-                <TerminalView sessionId={activeSessionId} type="shell" visible={!shellCollapsed} fontFamily={terminalFontFamily} fontSize={shellFontSize} />
+                <TerminalView sessionId={activeSessionId} type="pty" fontFamily={terminalFontFamily} fontSize={claudeFontSize} />
+                {activeSession && hasExited(activeSession) && (
+                  <ExitedSessionBanner
+                    session={activeSession}
+                    error={restartError?.sessionId === activeSession.id ? restartError.message : null}
+                    onRestart={handleRestartSession}
+                  />
+                )}
               </div>
-            </ShellPanel>
-          </SplitPane>
+
+              {/* Shell terminal (collapsible) */}
+              <ShellPanel collapsed={shellCollapsed} onToggle={handleShellToggle}>
+                <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+                  {shellSearch && (
+                    <SearchBar
+                      key={shellSearch.key}
+                      type="shell"
+                      sessionId={shellSearch.sessionId}
+                      onClose={() => setShellSearch(null)}
+                    />
+                  )}
+                  <TerminalView sessionId={activeSessionId} type="shell" visible={!shellCollapsed} fontFamily={terminalFontFamily} fontSize={shellFontSize} />
+                </div>
+              </ShellPanel>
+            </SplitPane>
+          )}
         </div>
 
         {/* RIGHT PANE: sessions + toolkit */}
@@ -444,14 +458,18 @@ export function App(): React.ReactElement {
             sessions={sessions}
             loading={!sessionsLoaded}
             activeSessionId={activeSessionId}
+            renamingSessionId={renamingSessionId}
             onSelectSession={handleSelectSession}
             onNewSession={() => setShowNewSession(true)}
-            onRenameSession={renameSession}
+            onStartRename={setRenamingSessionId}
+            onRenameSession={handleRenameSession}
+            onCancelRename={handleCancelRename}
             onEndSession={requestEndSession}
             onRestartSession={handleRestartSession}
             onToggleNotify={toggleNotify}
             onReorderSessions={reorderSessions}
             onManagePrs={setPrDialogSessionId}
+            onJumpToAttention={switchToNextNeedingAttention}
           />
 
           {/* Toolkit */}
@@ -495,105 +513,49 @@ export function App(): React.ReactElement {
       )}
 
       {/* End session confirmation dialog */}
-      {endSessionConfirm && (
-        <EndSessionConfirmDialog
-          sessionName={sessions.find((s) => s.id === endSessionConfirm)?.name ?? 'this session'}
+      {sessionToEnd && (
+        <ConfirmDialog
+          title="End Session"
+          message={
+            <>
+              End <strong>{sessionToEnd.name}</strong>? This stops its Claude Code process and removes it from the list.{' '}
+              {sessionToEnd.hasUserInput
+                ? 'You can bring it back with ⌘⇧T.'
+                : "It has no conversation yet, so it can't be reopened."}
+            </>
+          }
+          confirmLabel="End Session"
           onConfirm={handleConfirmEndSession}
           onCancel={() => setEndSessionConfirm(null)}
+        />
+      )}
+
+      {paletteOpen && (
+        <CommandPalette
+          items={buildPaletteItems({
+            sessions,
+            activeSession,
+            toolkitCommands,
+            shellCollapsed,
+            actions: {
+              selectSession: handleSelectSession,
+              newSession: () => setShowNewSession(true),
+              nextNeedingAttention: switchToNextNeedingAttention,
+              renameSession: setRenamingSessionId,
+              toggleNotify,
+              managePrs: setPrDialogSessionId,
+              restartSession: (id) => void handleRestartSession(id),
+              findInTerminal: openFind,
+              endSession: requestEndSession,
+              toggleShell: handleShellToggle,
+              openPreferences: () => setShowPreferences(true),
+              runToolkitCommand: handleToolkitExecute,
+            },
+          })}
+          onClose={() => setPaletteOpen(false)}
         />
       )}
 
     </div>
   );
 }
-
-// ─── End Session Confirmation Dialog ─────────────────────
-
-function EndSessionConfirmDialog({
-  sessionName,
-  onConfirm,
-  onCancel,
-}: {
-  sessionName: string;
-  onConfirm: () => void;
-  onCancel: () => void;
-}): React.ReactElement {
-  const endBtnRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    setTimeout(() => endBtnRef.current?.focus(), 50);
-  }, []);
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel();
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [onCancel]);
-
-  return (
-    <div style={confirmOverlayStyle} onClick={onCancel}>
-      <div style={confirmDialogStyle} onClick={(e) => e.stopPropagation()} role="alertdialog" aria-modal="true" aria-label="End session">
-        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 12, letterSpacing: '0.02em' }}>
-          End Session
-        </div>
-        <p style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6, margin: '0 0 18px' }}>
-          End session <strong style={{ color: 'var(--text-primary)' }}>{sessionName}</strong>? This will terminate the Claude Code process and remove the session.
-        </p>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <button style={confirmCancelBtnStyle} onClick={onCancel}>Cancel</button>
-          <button ref={endBtnRef} style={confirmEndBtnStyle} onClick={onConfirm}>End Session</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const confirmOverlayStyle: React.CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  background: 'rgba(var(--shade-rgb), 0.6)',
-  backdropFilter: 'blur(4px)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  zIndex: 2000,
-  animation: 'fadeIn 150ms ease',
-};
-
-const confirmDialogStyle: React.CSSProperties = {
-  background: 'var(--bg-elevated)',
-  border: '1px solid var(--border-default)',
-  borderRadius: 'var(--radius-lg)',
-  boxShadow: 'var(--shadow-lg)',
-  padding: 24,
-  width: 380,
-  maxWidth: '90vw',
-  animation: 'slideUp 200ms ease',
-};
-
-const confirmCancelBtnStyle: React.CSSProperties = {
-  padding: '7px 16px',
-  borderRadius: 'var(--radius-md)',
-  fontSize: 11,
-  color: 'var(--text-secondary)',
-  background: 'var(--bg-surface)',
-  border: '1px solid var(--border-default)',
-  cursor: 'pointer',
-  fontFamily: 'var(--font-ui)',
-  transition: 'all var(--transition-fast)',
-};
-
-const confirmEndBtnStyle: React.CSSProperties = {
-  padding: '7px 20px',
-  borderRadius: 'var(--radius-md)',
-  fontSize: 11,
-  fontWeight: 600,
-  color: '#fff',
-  background: 'var(--accent-red)',
-  border: 'none',
-  cursor: 'pointer',
-  fontFamily: 'var(--font-ui)',
-  transition: 'all var(--transition-fast)',
-};

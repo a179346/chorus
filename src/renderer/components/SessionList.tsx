@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import { GitBranch, Bell, BellOff } from 'lucide-react';
+import { GitBranch, Bell, BellOff, Plus, ArrowRight, Pencil, GitPullRequest, RotateCcw, X } from 'lucide-react';
 import {
   DndContext,
   closestCenter,
@@ -17,44 +17,61 @@ import { CSS } from '@dnd-kit/utilities';
 import type { LinkedPr, Session } from '../../shared/types';
 import { prLabel } from '../../shared/pr-ref';
 import { STAGE_ICON, prTooltip, summaryStage, statusColor, statusLabel, basename, hasExited } from '../session-presentation';
+import { countNeedingAttention } from '../use-sessions';
+import { useCommandHeld } from '../use-command-held';
 import { PrIdentity, openPrInBrowser } from './PrLinks';
+import { Menu, MenuItem, MenuDivider } from './Menu';
+import { StatusDot } from './StatusDot';
+import { Keys } from './Kbd';
 
 interface SessionListProps {
   sessions: Session[];
   /** Saved sessions aren't back yet, so an empty list doesn't mean there are none. */
   loading: boolean;
   activeSessionId: string | null;
+  /** The session whose name is being edited in place, if any. */
+  renamingSessionId: string | null;
   onSelectSession: (id: string) => void;
   onNewSession: () => void;
+  onStartRename: (id: string) => void;
   onRenameSession: (id: string, newName: string) => void;
+  onCancelRename: () => void;
   onEndSession: (id: string) => void;
   onRestartSession: (id: string) => void;
   onToggleNotify: (id: string) => void;
   onReorderSessions: (sessions: Session[]) => void;
   onManagePrs: (id: string) => void;
+  onJumpToAttention: () => void;
 }
 
 /** The open menu: a right-click context menu, or the list of a session's PRs. */
-type ContextMenuState =
+type MenuState =
   | { kind: 'session'; x: number; y: number; sessionId: string | null }
   | { kind: 'prs'; x: number; y: number; sessionId: string };
+
+/** ⌘1–⌘9 reach the first nine sessions. */
+const INDEXED_SESSIONS = 9;
 
 export function SessionList({
   sessions,
   loading,
   activeSessionId,
+  renamingSessionId,
   onSelectSession,
   onNewSession,
+  onStartRename,
   onRenameSession,
+  onCancelRename,
   onEndSession,
   onRestartSession,
   onToggleNotify,
   onReorderSessions,
   onManagePrs,
+  onJumpToAttention,
 }: SessionListProps): React.ReactElement {
-  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const commandHeld = useCommandHeld();
+  const attentionCount = countNeedingAttention(sessions, activeSessionId);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -77,13 +94,10 @@ export function SessionList({
     [sessions, onReorderSessions],
   );
 
-  const handleContextMenu = useCallback(
-    (e: React.MouseEvent, sessionId: string | null) => {
-      e.preventDefault();
-      setContextMenu({ kind: 'session', x: e.clientX, y: e.clientY, sessionId });
-    },
-    []
-  );
+  const openSessionMenu = useCallback((e: React.MouseEvent, sessionId: string | null) => {
+    e.preventDefault();
+    setMenu({ kind: 'session', x: e.clientX, y: e.clientY, sessionId });
+  }, []);
 
   // One PR opens directly; several open a menu to pick from
   const handlePrSummaryClick = useCallback(
@@ -94,122 +108,54 @@ export function SessionList({
         return;
       }
       const rect = e.currentTarget.getBoundingClientRect();
-      setContextMenu({ kind: 'prs', x: rect.left, y: rect.bottom + 4, sessionId: session.id });
+      setMenu({ kind: 'prs', x: rect.left, y: rect.bottom + 4, sessionId: session.id });
     },
     []
   );
 
-  const handleOpenPr = useCallback((pr: LinkedPr) => {
-    setContextMenu(null);
-    openPrInBrowser(pr);
+  const closeMenu = useCallback(() => setMenu(null), []);
+
+  /** Close the menu, then act — so a dialog the action opens isn't fighting the menu for focus. */
+  const runFromMenu = useCallback((action: () => void) => {
+    setMenu(null);
+    action();
   }, []);
 
-  useEffect(() => {
-    if (!contextMenu) return;
-    const handleClick = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setContextMenu(null);
-      }
-    };
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setContextMenu(null);
-        return;
-      }
-      if (!menuRef.current) return;
-      const items = menuRef.current.querySelectorAll<HTMLElement>('[role="menuitem"]');
-      if (items.length === 0) return;
-      const focused = document.activeElement as HTMLElement;
-      const currentIdx = Array.from(items).indexOf(focused);
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        const next = currentIdx < items.length - 1 ? currentIdx + 1 : 0;
-        items[next].focus();
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        const prev = currentIdx > 0 ? currentIdx - 1 : items.length - 1;
-        items[prev].focus();
-      } else if (e.key === 'Enter' && currentIdx >= 0) {
-        e.preventDefault();
-        items[currentIdx].click();
-      }
-    };
-    window.addEventListener('mousedown', handleClick);
-    window.addEventListener('keydown', handleKeyDown);
-    // Focus first menu item
-    requestAnimationFrame(() => {
-      const first = menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]');
-      first?.focus();
-    });
-    return () => {
-      window.removeEventListener('mousedown', handleClick);
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [contextMenu]);
-
-  const handleMenuAction = useCallback(
-    (action: string) => {
-      if (!contextMenu) return;
-      const { sessionId } = contextMenu;
-      setContextMenu(null);
-      switch (action) {
-        case 'switch':
-          if (sessionId) onSelectSession(sessionId);
-          break;
-        case 'rename':
-          if (sessionId) setEditingSessionId(sessionId);
-          break;
-        case 'restart':
-          if (sessionId) onRestartSession(sessionId);
-          break;
-        case 'prs':
-          if (sessionId) onManagePrs(sessionId);
-          break;
-        case 'end':
-          if (sessionId) onEndSession(sessionId);
-          break;
-        case 'new':
-          onNewSession();
-          break;
-      }
-    },
-    [contextMenu, onSelectSession, onRestartSession, onManagePrs, onEndSession, onNewSession]
-  );
-
-  const menuSession = contextMenu && sessions.find((s) => s.id === contextMenu.sessionId);
-
-  const handleRenameCommit = useCallback(
-    (id: string, newName: string) => {
-      onRenameSession(id, newName);
-      setEditingSessionId(null);
-    },
-    [onRenameSession]
-  );
-
-  const handleRenameCancel = useCallback(() => {
-    setEditingSessionId(null);
-  }, []);
+  const menuSession = menu ? sessions.find((s) => s.id === menu.sessionId) ?? null : null;
 
   return (
     <div
       style={containerStyle}
       onContextMenu={(e) => {
         // Only show "New Session" menu when right-clicking empty area (not on a card)
-        if (e.target === e.currentTarget || !(e.target as HTMLElement).closest('[data-session-card]')) {
-          handleContextMenu(e, null);
+        if (!(e.target instanceof Element && e.target.closest('[data-session-card]'))) {
+          openSessionMenu(e, null);
         }
       }}
     >
       {/* Header */}
-      <div style={headerBarStyle}>
-        <span style={headerTitleStyle}>Sessions</span>
+      <div className="panel-header">
+        <span className="panel-title">Sessions</span>
+        {sessions.length > 0 && <span style={countStyle}>{sessions.length}</span>}
+        {attentionCount > 0 && (
+          <button
+            type="button"
+            style={attentionPillStyle}
+            onClick={onJumpToAttention}
+            title="Jump to the next session needing attention (⌘J)"
+          >
+            {attentionCount} need{attentionCount === 1 ? 's' : ''} you
+          </button>
+        )}
         <button
-          style={newSessionButtonStyle}
+          type="button"
+          className="icon-btn"
+          style={{ marginLeft: 'auto' }}
           onClick={onNewSession}
           title="New Session (⌘T)"
           aria-label="New Session"
         >
-          +
+          <Plus size={14} />
         </button>
       </div>
 
@@ -217,40 +163,25 @@ export function SessionList({
       <div style={listStyle}>
         {loading ? null : sessions.length === 0 ? (
           <div style={emptyStyle}>
-            <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>No sessions yet</span>
-            <br />
-            <span
-              style={{ color: 'var(--accent-blue)', cursor: 'pointer' }}
-              onClick={onNewSession}
-            >
-              New Session
-            </span>
-            <span style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 2,
-              marginTop: 4,
-              color: 'var(--text-secondary)',
-              fontSize: 11,
-            }}>
-              <kbd style={kbdStyle}>⌘</kbd>
-              <span style={{ color: 'var(--text-dimmed)', fontSize: 10 }}>+</span>
-              <kbd style={kbdStyle}>T</kbd>
+            <span>No sessions yet</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <Keys keys={['⌘', 'T']} /> to start one
             </span>
           </div>
         ) : (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={sessionIds} strategy={verticalListSortingStrategy}>
-              {sessions.map((session) => (
+              {sessions.map((session, index) => (
                 <SortableSessionCard
                   key={session.id}
                   session={session}
+                  shortcutIndex={commandHeld && index < INDEXED_SESSIONS ? index + 1 : null}
                   isActive={session.id === activeSessionId}
-                  isEditing={session.id === editingSessionId}
+                  isEditing={session.id === renamingSessionId}
                   onClick={() => onSelectSession(session.id)}
-                  onContextMenu={(e) => handleContextMenu(e, session.id)}
-                  onRenameCommit={(newName) => handleRenameCommit(session.id, newName)}
-                  onRenameCancel={handleRenameCancel}
+                  onContextMenu={(e) => openSessionMenu(e, session.id)}
+                  onRenameCommit={(newName) => onRenameSession(session.id, newName)}
+                  onRenameCancel={onCancelRename}
                   onToggleNotify={() => onToggleNotify(session.id)}
                   onPrSummaryClick={(e) => handlePrSummaryClick(e, session)}
                 />
@@ -260,55 +191,110 @@ export function SessionList({
         )}
       </div>
 
-      {/* Keyboard shortcuts */}
-      <div style={shortcutsStyle}>
-        <div style={shortcutRowStyle}>
-          <span style={shortcutLabelStyle}>Switch</span>
-          <span style={shortcutKeysStyle}><kbd style={kbdStyle}>⌘</kbd> <kbd style={kbdStyle}>1</kbd>–<kbd style={kbdStyle}>9</kbd></span>
-        </div>
-        <div style={shortcutRowStyle}>
-          <span style={shortcutLabelStyle}>Prev / Next</span>
-          <span style={shortcutKeysStyle}><kbd style={kbdStyle}>⌘</kbd> <kbd style={kbdStyle}>[</kbd> <kbd style={kbdStyle}>]</kbd></span>
-        </div>
-        <div style={shortcutRowStyle}>
-          <span style={shortcutLabelStyle}>Needs attention</span>
-          <span style={shortcutKeysStyle}><kbd style={kbdStyle}>⌘</kbd> <kbd style={kbdStyle}>J</kbd></span>
-        </div>
-        <div style={shortcutRowStyle}>
-          <span style={shortcutLabelStyle}>New</span>
-          <span style={shortcutKeysStyle}><kbd style={kbdStyle}>⌘</kbd> <kbd style={kbdStyle}>T</kbd></span>
-        </div>
-      </div>
+      {/* Holding ⌘ reveals the shortcuts the badges hint at */}
+      {commandHeld && sessions.length > 0 && <ShortcutSheet />}
 
-      {/* Context menu */}
-      {contextMenu?.kind === 'session' && (
-        <ContextMenu
-          menuRef={menuRef}
-          x={contextMenu.x}
-          y={contextMenu.y}
-          sessionId={contextMenu.sessionId}
-          canRestart={!!menuSession && hasExited(menuSession)}
-          onAction={handleMenuAction}
-        />
+      {menu?.kind === 'session' && (
+        <Menu x={menu.x} y={menu.y} onClose={closeMenu}>
+          {menuSession ? (
+            <SessionMenuItems
+              session={menuSession}
+              isActive={menuSession.id === activeSessionId}
+              run={runFromMenu}
+              onSelect={onSelectSession}
+              onRename={onStartRename}
+              onToggleNotify={onToggleNotify}
+              onManagePrs={onManagePrs}
+              onRestart={onRestartSession}
+              onEnd={onEndSession}
+            />
+          ) : (
+            <MenuItem icon={<Plus size={13} />} shortcut="⌘T" onSelect={() => runFromMenu(onNewSession)}>
+              New Session
+            </MenuItem>
+          )}
+        </Menu>
       )}
 
-      {/* PR list (from a card's PR summary) */}
-      {contextMenu?.kind === 'prs' && menuSession && (
-        <PrListMenu
-          menuRef={menuRef}
-          x={contextMenu.x}
-          y={contextMenu.y}
-          prs={menuSession.prs}
-          onOpen={handleOpenPr}
-          onManage={() => handleMenuAction('prs')}
-        />
+      {menu?.kind === 'prs' && menuSession && (
+        <Menu x={menu.x} y={menu.y} width={260} label="Pull requests" onClose={closeMenu}>
+          {menuSession.prs.map((pr) => (
+            <MenuItem key={prLabel(pr)} title={prTooltip(pr)} onSelect={() => runFromMenu(() => openPrInBrowser(pr))}>
+              <PrIdentity pr={pr} stage={pr.stage} />
+            </MenuItem>
+          ))}
+          <MenuDivider />
+          <MenuItem onSelect={() => runFromMenu(() => onManagePrs(menuSession.id))}>Manage Pull Requests…</MenuItem>
+        </Menu>
       )}
     </div>
   );
 }
 
+// ─── Session context menu ─────────────────────────────────
+
+interface SessionMenuItemsProps {
+  session: Session;
+  isActive: boolean;
+  run: (action: () => void) => void;
+  onSelect: (id: string) => void;
+  onRename: (id: string) => void;
+  onToggleNotify: (id: string) => void;
+  onManagePrs: (id: string) => void;
+  onRestart: (id: string) => void;
+  onEnd: (id: string) => void;
+}
+
+function SessionMenuItems({
+  session,
+  isActive,
+  run,
+  onSelect,
+  onRename,
+  onToggleNotify,
+  onManagePrs,
+  onRestart,
+  onEnd,
+}: SessionMenuItemsProps): React.ReactElement {
+  const { id } = session;
+  return (
+    <>
+      {!isActive && (
+        <MenuItem icon={<ArrowRight size={13} />} onSelect={() => run(() => onSelect(id))}>
+          Switch to Session
+        </MenuItem>
+      )}
+      <MenuItem icon={<Pencil size={13} />} onSelect={() => run(() => onRename(id))}>
+        Rename…
+      </MenuItem>
+      <MenuItem
+        icon={session.notifyOnIdle ? <BellOff size={13} /> : <Bell size={13} />}
+        onSelect={() => run(() => onToggleNotify(id))}
+      >
+        {session.notifyOnIdle ? 'Turn Off Notifications' : 'Turn On Notifications'}
+      </MenuItem>
+      <MenuItem icon={<GitPullRequest size={13} />} onSelect={() => run(() => onManagePrs(id))}>
+        Pull Requests…
+      </MenuItem>
+      {hasExited(session) && (
+        <MenuItem icon={<RotateCcw size={13} />} onSelect={() => run(() => onRestart(id))}>
+          Restart Claude Code
+        </MenuItem>
+      )}
+      <MenuDivider />
+      <MenuItem icon={<X size={13} />} shortcut={isActive ? '⌘W' : undefined} danger onSelect={() => run(() => onEnd(id))}>
+        End Session…
+      </MenuItem>
+    </>
+  );
+}
+
+// ─── Session card ─────────────────────────────────────────
+
 interface SessionCardProps {
   session: Session;
+  /** The ⌘-number to show while ⌘ is held, or null. */
+  shortcutIndex: number | null;
   isActive: boolean;
   isEditing: boolean;
   onClick: () => void;
@@ -332,33 +318,57 @@ function SortableSessionCard(props: SessionCardProps): React.ReactElement {
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
-    opacity: isDragging ? 0.5 : 1,
-    position: 'relative' as const,
+    opacity: isDragging ? 0.6 : 1,
+    position: 'relative',
     zIndex: isDragging ? 1 : 0,
+    margin: '0 6px',
+    borderRadius: 'var(--radius-md)',
   };
 
   return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      aria-label={`${props.session.name} — ${statusLabel(props.session.status)}`}
+      onKeyDown={(e) => {
+        // Only keys aimed at the card itself, not the rename field or bell inside it
+        if (e.target !== e.currentTarget || props.isEditing) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          props.onClick();
+        }
+      }}
+    >
       <SessionCard {...props} />
     </div>
   );
 }
 
-function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onRenameCommit, onRenameCancel, onToggleNotify, onPrSummaryClick }: SessionCardProps): React.ReactElement {
-  const [hovered, setHovered] = useState(false);
+function SessionCard({
+  session,
+  shortcutIndex,
+  isActive,
+  isEditing,
+  onClick,
+  onContextMenu,
+  onRenameCommit,
+  onRenameCancel,
+  onToggleNotify,
+  onPrSummaryClick,
+}: SessionCardProps): React.ReactElement {
   const [editValue, setEditValue] = useState(session.name);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Focus input when entering edit mode
   useEffect(() => {
-    if (isEditing) {
-      setEditValue(session.name);
-      // Use rAF to ensure the input is rendered before focusing
-      requestAnimationFrame(() => {
-        inputRef.current?.focus();
-        inputRef.current?.select();
-      });
-    }
+    if (!isEditing) return;
+    setEditValue(session.name);
+    // rAF: the input mounts in this same commit
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
   }, [isEditing, session.name]);
 
   const commitRename = () => {
@@ -373,28 +383,27 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
   return (
     <div
       data-session-card
-      style={{
-        ...cardStyle,
-        background: isActive ? 'var(--bg-active)' : hovered ? 'var(--bg-hover)' : 'transparent',
-        borderLeft: isActive ? '2px solid var(--accent-primary)' : '2px solid transparent',
-      }}
+      className="session-card"
+      data-active={isActive}
       onClick={isEditing ? undefined : onClick}
       onContextMenu={(e) => {
         e.stopPropagation();
         if (!isEditing) onContextMenu(e);
       }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
     >
-      {/* Row 1: name + bell */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+      {/* Row 1: status · name · unread — index · PRs · bell */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 20 }}>
+        <StatusDot status={session.status} />
         {isEditing ? (
           <input
             ref={inputRef}
+            className="input"
             style={inlineEditStyle}
             value={editValue}
+            aria-label="Session name"
             onChange={(e) => setEditValue(e.target.value)}
             onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing) return;
               if (e.key === 'Enter') {
                 e.preventDefault();
                 commitRename();
@@ -407,74 +416,50 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
-          <span style={{ display: 'flex', alignItems: 'center', gap: 5, overflow: 'hidden', minWidth: 0 }}>
-            <PrSummaryChip prs={session.prs} onClick={onPrSummaryClick} />
-            {session.unread ? (
-              <span
-                title="Unread"
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  backgroundColor: 'var(--accent-blue)',
-                  flexShrink: 0,
-                }}
-              />
-            ) : !session.hasUserInput ? (
-              <span
-                title="No user input yet — session won't be persisted"
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  backgroundColor: 'var(--text-dimmed)',
-                  flexShrink: 0,
-                }}
-              />
-            ) : null}
-            <span style={{
-              fontWeight: session.unread ? 600 : 500,
-              fontSize: 12,
-              color: session.unread ? 'var(--text-accent)' : 'var(--text-primary)',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              transition: 'color var(--transition-fast)',
-            }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}>
+            <span
+              title={session.hasUserInput ? undefined : "No input yet — this session won't be restored after a restart"}
+              style={{
+                ...nameStyle,
+                fontWeight: session.unread ? 600 : 500,
+                fontStyle: session.hasUserInput ? 'normal' : 'italic',
+                color: session.hasUserInput || session.unread ? 'var(--text-primary)' : 'var(--text-secondary)',
+              }}
+            >
               {session.name}
             </span>
+            {session.unread && <span title="Unread" style={unreadDotStyle} />}
           </span>
         )}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-          <span
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleNotify();
-            }}
-            title={session.notifyOnIdle ? 'Notifications on — click to disable' : 'Notifications off — click to enable'}
-            style={{
-              cursor: 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              color: session.notifyOnIdle ? 'var(--accent-blue)' : 'var(--text-dimmed)',
-              opacity: session.notifyOnIdle ? 1 : 0.4,
-              transition: 'color var(--transition-fast), opacity var(--transition-fast)',
-            }}
-          >
-            {session.notifyOnIdle ? <Bell size={11} /> : <BellOff size={11} />}
-          </span>
-        </div>
+        {shortcutIndex !== null && (
+          <kbd className="kbd session-index">⌘{shortcutIndex}</kbd>
+        )}
+        <PrSummaryChip prs={session.prs} onClick={onPrSummaryClick} />
+        <button
+          type="button"
+          className="icon-btn notify-toggle"
+          data-on={session.notifyOnIdle}
+          style={{ width: 20, height: 20, color: session.notifyOnIdle ? 'var(--accent-primary)' : undefined }}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleNotify();
+          }}
+          title={session.notifyOnIdle ? 'Notifications on — click to turn off' : 'Notifications off — click to turn on'}
+          aria-label={session.notifyOnIdle ? 'Turn off notifications' : 'Turn on notifications'}
+          aria-pressed={session.notifyOnIdle}
+        >
+          {session.notifyOnIdle ? <Bell size={11} /> : <BellOff size={11} />}
+        </button>
       </div>
 
-      {/* Row 2: cwd + worktree (left) — status (right) */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
+      {/* Row 2: directory · worktree — status, aligned under the name */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 1, paddingLeft: 15 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0, overflow: 'hidden' }}>
-          <span style={{ fontSize: 10, color: 'var(--text-dimmed)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
-            {basename(session.cwd)}
-          </span>
+          <span style={metaStyle} title={session.cwd}>{basename(session.cwd)}</span>
           {session.worktree && (
-            <span style={{ ...cardTagStyle, flexShrink: 0, background: 'none', padding: 0 }}>
-              <GitBranch size={10} style={{ color: 'var(--accent-blue)' }} /> {session.worktree}
+            <span style={{ ...metaStyle, display: 'inline-flex', alignItems: 'center', gap: 3, flexShrink: 0 }}>
+              <GitBranch size={10} style={{ color: 'var(--accent-primary)' }} />
+              {session.worktree}
             </span>
           )}
         </div>
@@ -486,70 +471,30 @@ function SessionCard({ session, isActive, isEditing, onClick, onContextMenu, onR
   );
 }
 
-// ─── Context Menu (viewport-clamped, keyboard-navigable) ───
+// ─── ⌘-held shortcut sheet ───────────────────────────────
 
-interface ContextMenuProps {
-  menuRef: React.RefObject<HTMLDivElement | null>;
-  x: number;
-  y: number;
-  sessionId: string | null;
-  canRestart: boolean;
-  onAction: (action: string) => void;
-}
+const SHEET_SHORTCUTS: { keys: string[]; label: string }[] = [
+  { keys: ['⌘', '1–9'], label: 'Switch session' },
+  { keys: ['⌘', '[', ']'], label: 'Previous / next' },
+  { keys: ['⌘', 'J'], label: 'Next needing attention' },
+  { keys: ['⌘', 'K'], label: 'Command palette' },
+  { keys: ['⌘', 'T'], label: 'New session' },
+];
 
-function ContextMenu({ menuRef, x, y, sessionId, canRestart, onAction }: ContextMenuProps): React.ReactElement {
-  // Clamp position so menu stays within viewport
-  const menuWidth = 180;
-  const menuHeight = sessionId ? (canRestart ? 214 : 182) : 36;
-  const clampedX = Math.min(x, window.innerWidth - menuWidth - 8);
-  const clampedY = Math.min(y, window.innerHeight - menuHeight - 8);
-
+function ShortcutSheet(): React.ReactElement {
   return (
-    <div
-      ref={menuRef}
-      role="menu"
-      style={{
-        ...contextMenuStyle,
-        left: Math.max(4, clampedX),
-        top: Math.max(4, clampedY),
-      }}
-    >
-      {sessionId ? (
-        <>
-          <div role="menuitem" tabIndex={0} style={menuItemStyle} onClick={() => onAction('switch')}>
-            Switch to Session
-          </div>
-          <div role="menuitem" tabIndex={0} style={menuItemStyle} onClick={() => onAction('rename')}>
-            Rename Session
-          </div>
-          {canRestart && (
-            <div role="menuitem" tabIndex={0} style={menuItemStyle} onClick={() => onAction('restart')}>
-              Restart Session
-            </div>
-          )}
-          <div role="menuitem" tabIndex={0} style={menuItemStyle} onClick={() => onAction('prs')}>
-            Pull Requests…
-          </div>
-          <div style={menuDividerStyle} />
-          <div
-            role="menuitem"
-            tabIndex={0}
-            style={{ ...menuItemStyle, color: 'var(--accent-red)' }}
-            onClick={() => onAction('end')}
-          >
-            End Session & Remove
-          </div>
-        </>
-      ) : (
-        <div role="menuitem" tabIndex={0} style={menuItemStyle} onClick={() => onAction('new')}>
-          New Session
+    <div style={sheetStyle} aria-hidden="true">
+      {SHEET_SHORTCUTS.map(({ keys, label }) => (
+        <div key={label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span style={{ color: 'var(--text-secondary)' }}>{label}</span>
+          <Keys keys={keys} />
         </div>
-      )}
+      ))}
     </div>
   );
 }
 
-// ─── PR summary + list ─────────────────────────────────
+// ─── PR summary chip ─────────────────────────────────────
 
 interface PrSummaryChipProps {
   prs: LinkedPr[];
@@ -563,61 +508,17 @@ function PrSummaryChip({ prs, onClick }: PrSummaryChipProps): React.ReactElement
   const { Icon, color, background } = STAGE_ICON[stage];
   const title = prs.length === 1 ? prTooltip(prs[0]) : `${prs.length} pull requests`;
   return (
-    <span title={title} onClick={onClick} style={{ ...prSummaryChipStyle, color, background }}>
-      <Icon size={13} />
+    <button type="button" title={title} aria-label={title} onClick={onClick} style={{ ...prSummaryChipStyle, color, background }}>
+      <Icon size={12} />
       {prs.length > 1 && <span style={{ fontSize: 10, lineHeight: 1 }}>{prs.length}</span>}
-    </span>
+    </button>
   );
 }
 
-interface PrListMenuProps {
-  menuRef: React.RefObject<HTMLDivElement | null>;
-  x: number;
-  y: number;
-  prs: LinkedPr[];
-  onOpen: (pr: LinkedPr) => void;
-  onManage: () => void;
-}
-
-function PrListMenu({ menuRef, x, y, prs, onOpen, onManage }: PrListMenuProps): React.ReactElement {
-  const menuWidth = 240;
-  const menuHeight = prs.length * 30 + 48;
-  const clampedX = Math.min(x, window.innerWidth - menuWidth - 8);
-  const clampedY = Math.min(y, window.innerHeight - menuHeight - 8);
-
-  return (
-    <div
-      ref={menuRef}
-      role="menu"
-      aria-label="Pull requests"
-      style={{
-        ...contextMenuStyle,
-        width: menuWidth,
-        left: Math.max(4, clampedX),
-        top: Math.max(4, clampedY),
-      }}
-    >
-      {prs.map((pr) => (
-        <div
-          key={prLabel(pr)}
-          role="menuitem"
-          tabIndex={0}
-          title={prTooltip(pr)}
-          style={menuItemStyle}
-          onClick={() => onOpen(pr)}
-        >
-          <PrIdentity pr={pr} stage={pr.stage} />
-        </div>
-      ))}
-      <div style={menuDividerStyle} />
-      <div role="menuitem" tabIndex={0} style={menuItemStyle} onClick={onManage}>
-        Manage Pull Requests…
-      </div>
-    </div>
-  );
-}
+// ─── Styles ──────────────────────────────────────────────
 
 const containerStyle: React.CSSProperties = {
+  position: 'relative',
   display: 'flex',
   flexDirection: 'column',
   height: '100%',
@@ -625,38 +526,22 @@ const containerStyle: React.CSSProperties = {
   background: 'var(--bg-panel)',
 };
 
-const headerBarStyle: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  padding: '8px 14px',
-  borderBottom: '1px solid var(--border-subtle)',
-  flexShrink: 0,
-};
-
-const newSessionButtonStyle: React.CSSProperties = {
-  marginLeft: 'auto',
-  width: 22,
-  height: 22,
-  borderRadius: 'var(--radius-sm)',
-  border: 'none',
-  background: 'transparent',
+const countStyle: React.CSSProperties = {
+  fontSize: 10,
   color: 'var(--text-dimmed)',
-  fontSize: 16,
-  lineHeight: 1,
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  cursor: 'pointer',
-  transition: 'color var(--transition-fast)',
+  fontVariantNumeric: 'tabular-nums',
 };
 
-const headerTitleStyle: React.CSSProperties = {
-  fontSize: 11,
+const attentionPillStyle: React.CSSProperties = {
+  padding: '1px 7px',
+  borderRadius: 999,
+  background: 'rgba(var(--accent-rgb), 0.16)',
+  color: 'var(--accent-primary)',
+  fontSize: 10,
   fontWeight: 600,
-  color: 'var(--text-dimmed)',
-  letterSpacing: '0.06em',
-  textTransform: 'uppercase',
+  lineHeight: '16px',
+  whiteSpace: 'nowrap',
+  animation: 'fadeIn 150ms ease',
 };
 
 const listStyle: React.CSSProperties = {
@@ -664,8 +549,8 @@ const listStyle: React.CSSProperties = {
   flexDirection: 'column',
   flex: 1,
   overflowY: 'auto',
-  padding: '4px 0',
-  gap: 1,
+  padding: '6px 0',
+  gap: 2,
 };
 
 const emptyStyle: React.CSSProperties = {
@@ -673,62 +558,44 @@ const emptyStyle: React.CSSProperties = {
   flexDirection: 'column',
   alignItems: 'center',
   justifyContent: 'center',
+  gap: 8,
   flex: 1,
   color: 'var(--text-dimmed)',
   fontSize: 11,
-  lineHeight: 1.8,
 };
 
-const kbdStyle: React.CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  minWidth: 18,
-  height: 18,
-  padding: '0 4px',
-  fontSize: 10,
-  fontFamily: 'var(--font-ui)',
-  color: 'var(--text-secondary)',
-  background: 'var(--bg-surface)',
-  border: '1px solid var(--border-default)',
-  borderRadius: 'var(--radius-sm)',
+const nameStyle: React.CSSProperties = {
+  fontSize: 12,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  transition: 'color var(--transition-fast)',
 };
 
-const shortcutsStyle: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 3,
-  padding: '8px 16px',
-  borderTop: '1px solid var(--border-subtle)',
+const unreadDotStyle: React.CSSProperties = {
+  width: 6,
+  height: 6,
+  borderRadius: '50%',
+  background: 'var(--accent-primary)',
+  boxShadow: '0 0 6px rgba(var(--accent-rgb), 0.6)',
   flexShrink: 0,
-  opacity: 0.6,
 };
 
-const shortcutRowStyle: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-};
-
-const shortcutLabelStyle: React.CSSProperties = {
+const metaStyle: React.CSSProperties = {
   fontSize: 10,
   color: 'var(--text-dimmed)',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  minWidth: 0,
 };
 
-const shortcutKeysStyle: React.CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 3,
-  fontSize: 10,
-  color: 'var(--text-dimmed)',
-};
-
-const cardStyle: React.CSSProperties = {
-  padding: '10px 12px',
-  cursor: 'pointer',
-  transition: 'background var(--transition-fast), border-color var(--transition-fast)',
-  margin: '0 6px',
-  borderRadius: 'var(--radius-md)',
+const inlineEditStyle: React.CSSProperties = {
+  flex: 1,
+  padding: '1px 6px',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 12,
+  fontWeight: 500,
 };
 
 const prSummaryChipStyle: React.CSSProperties = {
@@ -736,56 +603,25 @@ const prSummaryChipStyle: React.CSSProperties = {
   alignItems: 'center',
   gap: 3,
   flexShrink: 0,
-  borderRadius: 'var(--radius-sm)',
-  padding: '2px 3px',
-  cursor: 'pointer',
-};
-
-const cardTagStyle: React.CSSProperties = {
-  fontSize: 10,
-  color: 'var(--text-dimmed)',
-  background: 'rgba(var(--tint-rgb), 0.06)',
-  borderRadius: 'var(--radius-sm)',
-  padding: '1px 5px',
-  lineHeight: '16px',
-  whiteSpace: 'nowrap',
-};
-
-const inlineEditStyle: React.CSSProperties = {
-  fontWeight: 600,
-  fontSize: 11,
-  color: 'var(--text-primary)',
-  background: 'var(--bg-surface)',
-  border: '1px solid var(--accent-blue)',
+  height: 18,
   borderRadius: 'var(--radius-sm)',
   padding: '0 4px',
-  outline: 'none',
-  fontFamily: 'var(--font-ui)',
-  width: '100%',
-  minWidth: 0,
 };
 
-const contextMenuStyle: React.CSSProperties = {
-  position: 'fixed',
-  zIndex: 1000,
-  background: 'var(--bg-elevated)',
+const sheetStyle: React.CSSProperties = {
+  position: 'absolute',
+  left: 8,
+  right: 8,
+  bottom: 8,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 6,
+  padding: '10px 12px',
   border: '1px solid var(--border-default)',
-  borderRadius: 'var(--radius-md)',
-  boxShadow: 'var(--shadow-lg)',
-  padding: '4px 0',
-  minWidth: 160,
-};
-
-const menuItemStyle: React.CSSProperties = {
-  padding: '6px 14px',
+  borderRadius: 'var(--radius-lg)',
+  background: 'var(--bg-elevated)',
+  boxShadow: 'var(--shadow-md)',
   fontSize: 11,
-  cursor: 'pointer',
-  color: 'var(--text-primary)',
-  transition: 'background var(--transition-fast)',
-};
-
-const menuDividerStyle: React.CSSProperties = {
-  height: 1,
-  background: 'var(--border-subtle)',
-  margin: '4px 0',
+  animation: 'slideUp 150ms var(--ease-out)',
+  pointerEvents: 'none',
 };

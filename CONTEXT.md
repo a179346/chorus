@@ -123,3 +123,19 @@ pulsing statuses, stage icons (and the summary stage for a session's PRs),
 path/model shortening. Components import from here instead of hand-rolling.
 PR URL parsing/formatting and PR identity (`samePr`) live in
 `src/shared/pr-ref.ts`, shared with main.
+
+### UI primitives (`ui.css` + `components/{Dialog,Menu,Checkbox,Kbd,StatusDot}.tsx`)
+
+Anything with a hover, focus, or pressed state is a class in `ui.css`
+(`btn`, `icon-btn`, `input`, `field-*`, `menu-item`, `kbd`, …), because inline
+styles can't express pseudo-classes; layout stays inline. Modals go through
+`Dialog` / `ConfirmDialog` (backdrop, Escape, focus trap) and floating menus
+through `Menu` (viewport clamping, arrow keys), instead of each component
+re-rolling them.
+
+### Command palette (`components/CommandPalette.tsx`, `palette-items.tsx`, `palette-match.ts`)
+
+`palette-match` is the pure ranking (prefix > word start > substring >
+scattered letters; groups keep their order). `palette-items` builds the
+sessions / actions / toolkit list from App state, so a new action is one
+entry there.

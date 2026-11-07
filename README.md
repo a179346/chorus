@@ -37,6 +37,10 @@ Each session shows a color-coded indicator — idle, thinking, generating, needs
 
 When a session finishes while you're focused on another one, it gets marked as unread. Press `⌘J` to jump to the next session that's unread or waiting on you.
 
+### Keyboard first
+
+Press `⌘K` for the command palette: type a few letters to jump to any session, or run an action — rename, pull requests, notifications, toolkit commands — without reaching for the mouse. Hold `⌘` to see each session's `⌘1`–`⌘9` shortcut right in the sidebar.
+
 ### System notifications
 
 Switch away from Chorus entirely — read docs, review a PR, grab coffee — and get a native macOS notification the moment a session goes idle or asks for permission (with Claude's own description of what it needs). Click the notification to jump straight to that session. A dock badge shows how many sessions need attention.
