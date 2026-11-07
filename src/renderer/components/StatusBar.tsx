@@ -1,8 +1,9 @@
 import React from 'react';
 import { GitBranch } from 'lucide-react';
 import type { Session } from '../../shared/types';
-import { STAGE_ICON, prUrl, statusColor, statusLabel, PULSING_STATUSES, shortenPath, shortenModel } from '../session-presentation';
-import { invoke, IpcChannels } from '../ipc';
+import { prLabel } from '../../shared/pr-ref';
+import { STAGE_ICON, prTooltip, statusColor, statusLabel, PULSING_STATUSES, shortenPath, shortenModel } from '../session-presentation';
+import { openPrInBrowser } from './PrLinks';
 
 interface StatusBarProps {
   session: Session | null;
@@ -64,27 +65,20 @@ export function StatusBar({ session }: StatusBarProps): React.ReactElement {
             {session.worktree}
           </span>
         )}
-        {session.stage !== 'no-pr' && STAGE_ICON[session.stage] && (() => {
-          const { Icon, color, background, tooltip } = STAGE_ICON[session.stage];
-          const clickable = session.pr != null;
+        {session.prs.map((pr) => {
+          const { Icon, color, background } = STAGE_ICON[pr.stage];
           return (
             <span
-              title={tooltip}
-              onClick={clickable ? () => {
-                void invoke(IpcChannels.SHELL_OPEN_EXTERNAL, { url: prUrl(session.pr!) });
-              } : undefined}
-              style={{
-                ...tagStyle,
-                background,
-                color,
-                padding: '3px 5px',
-                cursor: clickable ? 'pointer' : undefined,
-              }}
+              key={prLabel(pr)}
+              title={prTooltip(pr)}
+              onClick={() => openPrInBrowser(pr)}
+              style={{ ...tagStyle, ...prTagStyle, background, color }}
             >
-              <Icon size={13} />
+              <Icon size={12} />
+              #{pr.number}
             </span>
           );
-        })()}
+        })}
       </div>
 
       {/* Right — Model + Context */}
@@ -168,6 +162,15 @@ const tagStyle: React.CSSProperties = {
   whiteSpace: 'nowrap',
   // @ts-expect-error Electron-specific
   WebkitAppRegion: 'no-drag',
+};
+
+const prTagStyle: React.CSSProperties = {
+  gap: 3,
+  padding: '2px 6px',
+  fontFamily: 'var(--font-mono)',
+  fontSize: 10,
+  cursor: 'pointer',
+  flexShrink: 0,
 };
 
 const separatorDotStyle: React.CSSProperties = {

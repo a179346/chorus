@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   DndContext,
   closestCenter,
@@ -9,21 +9,27 @@ import {
 } from '@dnd-kit/core';
 import { SortableContext, rectSortingStrategy, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import type { PrRef } from '../../shared/types';
+import { prLabel, prUrl } from '../../shared/pr-ref';
 import { invoke, IpcChannels } from '../ipc';
-import { parsePrUrl } from '../../shared/pr-url';
 import { basename } from '../session-presentation';
+import { readPrDraft } from '../pr-draft';
+import { useModalKeys } from '../use-modal-keys';
+import type { NewSessionInput } from '../use-sessions';
+import { PrIdentity, PrRemoveButton, PrUrlInput } from './PrLinks';
 
 interface NewSessionDialogProps {
   open: boolean;
   onClose: () => void;
-  onSubmit: (config: { name: string; cwd: string; worktree: string; flags: string[]; notifyOnIdle: boolean; prUrl: string }) => void;
+  onSubmit: (config: NewSessionInput) => void;
 }
 
 export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogProps): React.ReactElement | null {
   const [name, setName] = useState('');
   const [cwd, setCwd] = useState('');
   const [worktree, setWorktree] = useState('');
-  const [prUrl, setPrUrl] = useState('');
+  const [prs, setPrs] = useState<PrRef[]>([]);
+  const [prDraft, setPrDraft] = useState('');
   const [favorites, setFavorites] = useState<string[]>([]);
   const [autoMode, setAutoMode] = useState(false);
   const [skipPermissions, setSkipPermissions] = useState(false);
@@ -46,39 +52,14 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
     });
     setName('');
     setWorktree('');
-    setPrUrl('');
+    setPrs([]);
+    setPrDraft('');
     setTimeout(() => nameRef.current?.focus(), 50);
   }, [open]);
 
   const dialogRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-        return;
-      }
-      // Focus trap: keep Tab cycling within dialog
-      if (e.key === 'Tab' && dialogRef.current) {
-        const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
-          'input, button, [tabindex]:not([tabindex="-1"])'
-        );
-        if (focusable.length === 0) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first.focus();
-        }
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [open, onClose]);
+  useModalKeys(dialogRef, onClose, open);
 
   const handleSelectDir = useCallback(async () => {
     const dir = await invoke(IpcChannels.DIALOG_SELECT_DIRECTORY);
@@ -119,8 +100,9 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
     [favorites, saveFavorites],
   );
 
-  const prUrlInvalid = prUrl.trim() !== '' && parsePrUrl(prUrl) === null;
-  const canSubmit = !!name.trim() && !!cwd.trim() && !prUrlInvalid;
+  // A URL still sitting in the field counts as added when the form is submitted
+  const pendingPr = useMemo(() => readPrDraft(prDraft, prs), [prDraft, prs]);
+  const canSubmit = !!name.trim() && !!cwd.trim() && pendingPr.kind !== 'invalid';
 
   const handleSubmit = useCallback(
     (e: React.FormEvent) => {
@@ -130,9 +112,17 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
       if (autoMode) flags.push('--enable-auto-mode');
       if (skipPermissions) flags.push('--dangerously-skip-permissions');
       flags.push(chrome ? '--chrome' : '--no-chrome');
-      onSubmit({ name: name.trim(), cwd: cwd.trim(), worktree: worktree.trim(), flags, notifyOnIdle, prUrl: prUrl.trim() });
+      const allPrs = pendingPr.kind === 'ok' ? [...prs, pendingPr.pr] : prs;
+      onSubmit({
+        name: name.trim(),
+        cwd: cwd.trim(),
+        worktree: worktree.trim(),
+        flags,
+        notifyOnIdle,
+        prUrls: allPrs.map(prUrl),
+      });
     },
-    [canSubmit, name, cwd, worktree, autoMode, skipPermissions, chrome, notifyOnIdle, prUrl, onSubmit]
+    [canSubmit, name, cwd, worktree, autoMode, skipPermissions, chrome, notifyOnIdle, prs, pendingPr, onSubmit]
   );
 
   if (!open) return null;
@@ -211,23 +201,26 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
             />
           </div>
 
-          {/* PR URL */}
+          {/* Pull requests */}
           <div style={fieldStyle}>
-            <label style={labelStyle}>Pull Request URL <span style={{ color: 'var(--text-dimmed)', fontWeight: 400 }}>(optional)</span></label>
-            <input
-              style={{
-                ...inputStyle,
-                borderColor: prUrlInvalid ? 'var(--status-error, #e53e3e)' : 'var(--border-default)',
+            <label style={labelStyle}>Pull Requests <span style={{ color: 'var(--text-dimmed)', fontWeight: 400 }}>(optional)</span></label>
+            {prs.map((pr) => (
+              <div key={prLabel(pr)} style={prRowStyle}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <PrIdentity pr={pr} />
+                </div>
+                <PrRemoveButton pr={pr} onRemove={() => setPrs(prs.filter((p) => p !== pr))} />
+              </div>
+            ))}
+            <PrUrlInput
+              value={prDraft}
+              onChange={setPrDraft}
+              linked={prs}
+              onAdd={(pr) => {
+                setPrs([...prs, pr]);
+                setPrDraft('');
               }}
-              value={prUrl}
-              onChange={(e) => setPrUrl(e.target.value)}
-              placeholder="https://github.com/owner/repo/pull/123"
             />
-            {prUrlInvalid && (
-              <span style={{ fontSize: 10, color: 'var(--status-error, #e53e3e)' }}>
-                Expected a GitHub PR URL like https://github.com/owner/repo/pull/123
-              </span>
-            )}
           </div>
 
           {/* Flags */}
@@ -418,6 +411,15 @@ const inputStyle: React.CSSProperties = {
   color: 'var(--text-primary)',
   fontFamily: 'var(--font-mono)',
   transition: 'border-color var(--transition-fast)',
+};
+
+const prRowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '3px 4px 3px 8px',
+  borderRadius: 'var(--radius-md)',
+  background: 'rgba(var(--tint-rgb), 0.04)',
 };
 
 const browseButtonStyle: React.CSSProperties = {

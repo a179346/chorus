@@ -18,9 +18,8 @@ function makeSession(id: string, overrides: Partial<Session> = {}): Session {
     createdAt: 0,
     lastActiveAt: 0,
     hasUserInput: true,
-    pr: null,
-    stage: 'no-pr',
-    stageUpdatedAt: null,
+    prs: [],
+    unlinkedPrs: [],
     ...overrides,
   };
 }

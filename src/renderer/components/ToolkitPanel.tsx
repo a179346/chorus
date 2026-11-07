@@ -14,6 +14,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import type { ToolkitCommand } from '../../shared/types';
+import { useModalKeys } from '../use-modal-keys';
 
 interface ToolkitPanelProps {
   commands: ToolkitCommand[];
@@ -284,27 +285,7 @@ function CommandFormDialog({ initial, onSubmit, onClose }: CommandFormDialogProp
     setTimeout(() => labelRef.current?.focus(), 50);
   }, []);
 
-  // Focus trap + Escape
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { onClose(); return; }
-      if (e.key === 'Tab' && dialogRef.current) {
-        const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
-          'input, select, button, [tabindex]:not([tabindex="-1"])'
-        );
-        if (focusable.length === 0) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault(); last.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault(); first.focus();
-        }
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [onClose]);
+  useModalKeys(dialogRef, onClose);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();

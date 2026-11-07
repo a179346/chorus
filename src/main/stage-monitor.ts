@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import pLimit from 'p-limit';
-import type { PrRef, Session, SessionStage } from '../shared/types';
+import type { LinkedPr, PrRef, PrStage, Session } from '../shared/types';
+import { samePr } from '../shared/pr-ref';
 
 const GH_TIMEOUT_MS = 10_000;
 const GH_RETRY_AFTER_MS = 5 * 60 * 1000;
@@ -8,7 +9,7 @@ const STAGE_DEBOUNCE_MS = 1000;
 const STAGE_POLL_INTERVAL_MS = 60_000;
 
 export type GhResult =
-  | { type: 'ok'; stage: SessionStage }
+  | { type: 'ok'; stage: PrStage }
   | { type: 'not-found' }
   | { type: 'unavailable' }
   | { type: 'error' };
@@ -20,14 +21,14 @@ export function deriveStage(json: {
   state?: unknown;
   isDraft?: unknown;
   mergedAt?: unknown;
-}): SessionStage {
+}): PrStage {
   const state = typeof json.state === 'string' ? json.state.toUpperCase() : '';
   const isDraft = json.isDraft === true;
   const merged = json.mergedAt !== null && json.mergedAt !== undefined && json.mergedAt !== '';
   if (state === 'MERGED' || merged) return 'merged';
   if (state === 'CLOSED') return 'closed';
   if (state === 'OPEN') return isDraft ? 'draft' : 'ready';
-  return 'no-pr';
+  return 'unknown';
 }
 
 /** Default GhRunner: spawn `gh pr view` and decode its JSON. */
@@ -120,12 +121,27 @@ export interface StageMonitorOptions {
   now?: () => number;
 }
 
+/** Strip a LinkedPr (or anything PrRef-shaped off the wire) down to its identity. */
+function toPrRef(pr: PrRef): PrRef {
+  return { owner: pr.owner, repo: pr.repo, number: pr.number };
+}
+
+function inFlightPrefix(sessionId: string): string {
+  return `${sessionId}\0`;
+}
+
+/** Lowercased PR part so it matches samePr's case-insensitivity. */
+function inFlightKey(sessionId: string, pr: PrRef): string {
+  return inFlightPrefix(sessionId) + `${pr.owner}/${pr.repo}#${pr.number}`.toLowerCase();
+}
+
 /**
- * Watches sessions with a detected PR and keeps their stage current:
- * debounces bursts, dedupes in-flight lookups, limits gh concurrency, and
- * backs off when gh is unavailable. Stage changes are committed through the
- * session-state seam; when a poll finds no change, only the in-memory
- * freshness timestamp is bumped — no persist, no broadcast.
+ * Owns the PRs linked to each session: links them (detected in the transcript
+ * or added by the user), unlinks them, and keeps each one's stage current —
+ * debouncing bursts, deduping in-flight lookups, limiting gh concurrency, and
+ * backing off when gh is unavailable. Changes are committed through the
+ * session-state seam; when a poll finds a PR's stage unchanged, only its
+ * in-memory freshness timestamp is bumped — no persist, no broadcast.
  */
 export class StageMonitor {
   private readonly getSession: (id: string) => Session | null;
@@ -138,6 +154,7 @@ export class StageMonitor {
   private readonly now: () => number;
   private readonly limit: ReturnType<typeof pLimit>;
 
+  /** Keyed by session + PR (see inFlightKey). */
   private readonly inFlight = new Map<string, Promise<void>>();
   private readonly debouncers = new Map<string, ReturnType<typeof setTimeout>>();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -156,54 +173,11 @@ export class StageMonitor {
     this.limit = pLimit(opts.concurrency ?? 4);
   }
 
+  /** Look up the stage of every PR linked to the session. */
   refresh(sessionId: string): Promise<void> {
     const session = this.getSession(sessionId);
-    if (!session || !session.pr || session.status === 'ended') return Promise.resolve();
-
-    const existing = this.inFlight.get(sessionId);
-    if (existing) return existing;
-
-    if (!this.ghAvailable && this.now() < this.ghUnavailableUntil) return Promise.resolve();
-
-    const promise = this.limit(async () => {
-      const s = this.getSession(sessionId);
-      if (!s || !s.pr || s.status === 'ended') return;
-
-      const result = await this.runGh(s.pr);
-
-      const after = this.getSession(sessionId);
-      if (!after || after.status === 'ended') return;
-
-      if (result.type === 'unavailable') {
-        this.ghAvailable = false;
-        this.ghUnavailableUntil = this.now() + this.retryAfterMs;
-        return;
-      }
-      if (result.type === 'error') return;
-
-      this.ghAvailable = true;
-      const ts = this.now();
-
-      if (result.type === 'not-found') {
-        if (after.pr !== null || after.stage !== 'no-pr') {
-          this.commit(sessionId, { pr: null, stage: 'no-pr', stageUpdatedAt: ts });
-        } else {
-          after.stageUpdatedAt = ts;
-        }
-        return;
-      }
-
-      if (after.stage !== result.stage) {
-        this.commit(sessionId, { stage: result.stage, stageUpdatedAt: ts });
-      } else {
-        after.stageUpdatedAt = ts;
-      }
-    }).finally(() => {
-      this.inFlight.delete(sessionId);
-    });
-
-    this.inFlight.set(sessionId, promise);
-    return promise;
+    if (!session || session.status === 'ended') return Promise.resolve();
+    return this.refreshPrs(sessionId, session.prs);
   }
 
   scheduleRefresh(sessionId: string | null): void {
@@ -220,31 +194,41 @@ export class StageMonitor {
   }
 
   refreshAll(): void {
-    for (const s of this.getAllSessions()) {
-      if (s.pr && s.status !== 'ended') void this.refresh(s.id);
-    }
+    for (const s of this.getAllSessions()) void this.refresh(s.id);
   }
 
-  handlePrDetected(sessionId: string, pr: PrRef): void {
+  /** PRs Claude created, found in the transcript. PRs the user unlinked stay unlinked. */
+  handlePrsDetected(sessionId: string, prs: PrRef[]): void {
     const session = this.getSession(sessionId);
     if (!session || session.status === 'ended') return;
-    const current = session.pr;
-    if (
-      current &&
-      current.owner === pr.owner &&
-      current.repo === pr.repo &&
-      current.number === pr.number
-    ) {
-      void this.refresh(sessionId);
-      return;
-    }
-    this.commit(sessionId, { pr });
-    void this.refresh(sessionId);
+    const wanted = prs.filter((pr) => !session.unlinkedPrs.some((u) => samePr(u, pr)));
+    this.link(session, wanted, session.unlinkedPrs);
+  }
+
+  /** PRs the user linked by hand; linking undoes an earlier unlink. */
+  linkPrs(sessionId: string, prs: PrRef[]): void {
+    const session = this.getSession(sessionId);
+    if (!session) return;
+    const unlinkedPrs = session.unlinkedPrs.filter((u) => !prs.some((pr) => samePr(u, pr)));
+    this.link(session, prs, unlinkedPrs);
+  }
+
+  /** Stop tracking a PR, and remember it so transcript detection won't link it again. */
+  unlinkPr(sessionId: string, pr: PrRef): void {
+    const session = this.getSession(sessionId);
+    if (!session) return;
+    const prs = session.prs.filter((p) => !samePr(p, pr));
+    if (prs.length === session.prs.length) return;
+    const unlinkedPrs = [...session.unlinkedPrs.filter((u) => !samePr(u, pr)), toPrRef(pr)];
+    this.commit(sessionId, { prs, unlinkedPrs });
   }
 
   /** Drop any pending work for a session (called when it ends). */
   forget(sessionId: string): void {
-    this.inFlight.delete(sessionId);
+    const prefix = inFlightPrefix(sessionId);
+    for (const key of this.inFlight.keys()) {
+      if (key.startsWith(prefix)) this.inFlight.delete(key);
+    }
     const t = this.debouncers.get(sessionId);
     if (t) {
       clearTimeout(t);
@@ -266,5 +250,86 @@ export class StageMonitor {
     for (const t of this.debouncers.values()) clearTimeout(t);
     this.debouncers.clear();
     this.inFlight.clear();
+  }
+
+  /** Append the PRs not linked yet, commit any change, and look all of them up. */
+  private link(session: Session, prs: PrRef[], unlinkedPrs: PrRef[]): void {
+    const linked: LinkedPr[] = [...session.prs];
+    for (const pr of prs) {
+      if (linked.some((p) => samePr(p, pr))) continue;
+      linked.push({ ...toPrRef(pr), stage: 'unknown', stageUpdatedAt: null });
+    }
+
+    const updates: Partial<Session> = {};
+    if (linked.length !== session.prs.length) updates.prs = linked;
+    if (unlinkedPrs.length !== session.unlinkedPrs.length) updates.unlinkedPrs = unlinkedPrs;
+    if (Object.keys(updates).length > 0) this.commit(session.id, updates);
+
+    void this.refreshPrs(session.id, prs);
+  }
+
+  private async refreshPrs(sessionId: string, prs: PrRef[]): Promise<void> {
+    await Promise.all(prs.map((pr) => this.refreshPr(sessionId, pr)));
+  }
+
+  private refreshPr(sessionId: string, pr: PrRef): Promise<void> {
+    const key = inFlightKey(sessionId, pr);
+    const existing = this.inFlight.get(key);
+    if (existing) return existing;
+
+    if (!this.ghAvailable && this.now() < this.ghUnavailableUntil) return Promise.resolve();
+
+    const promise = this.limit(async () => {
+      if (!this.findLinked(sessionId, pr)) return;
+      const result = await this.runGh(toPrRef(pr));
+      this.applyGhResult(sessionId, pr, result);
+    }).finally(() => {
+      this.inFlight.delete(key);
+    });
+
+    this.inFlight.set(key, promise);
+    return promise;
+  }
+
+  private applyGhResult(sessionId: string, pr: PrRef, result: GhResult): void {
+    if (result.type === 'unavailable') {
+      this.ghAvailable = false;
+      this.ghUnavailableUntil = this.now() + this.retryAfterMs;
+      return;
+    }
+    if (result.type === 'error') return;
+    this.ghAvailable = true;
+
+    // Re-read: the session may have ended, or the PR been unlinked, mid-lookup
+    const found = this.findLinked(sessionId, pr);
+    if (!found) return;
+    const { session, entry } = found;
+
+    if (result.type === 'not-found') {
+      this.commit(sessionId, { prs: session.prs.filter((p) => p !== entry) });
+      return;
+    }
+
+    const ts = this.now();
+    if (entry.stage === result.stage) {
+      entry.stageUpdatedAt = ts;
+      return;
+    }
+    this.commit(sessionId, {
+      prs: session.prs.map((p) =>
+        p === entry ? { ...p, stage: result.stage, stageUpdatedAt: ts } : p,
+      ),
+    });
+  }
+
+  /** The live session and its entry for this PR, unless the session ended or the PR is unlinked. */
+  private findLinked(
+    sessionId: string,
+    pr: PrRef,
+  ): { session: Session; entry: LinkedPr } | null {
+    const session = this.getSession(sessionId);
+    if (!session || session.status === 'ended') return null;
+    const entry = session.prs.find((p) => samePr(p, pr));
+    return entry ? { session, entry } : null;
   }
 }

@@ -15,6 +15,8 @@ export const IpcChannels = {
   SESSION_TOGGLE_NOTIFY: 'session:toggle-notify',
   SESSION_REORDER: 'session:reorder',
   SESSION_RESTART: 'session:restart',
+  SESSION_LINK_PR: 'session:link-pr',
+  SESSION_UNLINK_PR: 'session:unlink-pr',
   // Session state updates (push: main → renderer)
   SESSION_STATE: 'session:state',
   SESSION_REVEAL: 'session:reveal',   // bring a session forward (notification click)
@@ -56,6 +58,7 @@ export const IpcChannels = {
   MENU_NEXT_SESSION: 'menu:next-session',
   MENU_NEXT_NEEDING_ATTENTION: 'menu:next-needing-attention',
   MENU_CLOSE_SESSION: 'menu:close-session',
+  MENU_PULL_REQUESTS: 'menu:pull-requests',
   MENU_FIND: 'menu:find',
   MENU_FIND_NEXT: 'menu:find-next',
   MENU_FIND_PREVIOUS: 'menu:find-previous',
@@ -84,6 +87,8 @@ import type {
   SessionConfig,
   SessionIdPayload,
   SessionRenamePayload,
+  SessionLinkPrPayload,
+  SessionUnlinkPrPayload,
   SessionReorderPayload,
   SessionStateUpdate,
   PtyDataPayload,
@@ -109,6 +114,8 @@ export interface IpcInvokeMap {
   [IpcChannels.SESSION_TOGGLE_NOTIFY]: { payload: SessionIdPayload; response: Session };
   [IpcChannels.SESSION_REORDER]: { payload: SessionReorderPayload; response: void };
   [IpcChannels.SESSION_RESTART]: { payload: SessionIdPayload; response: Session };
+  [IpcChannels.SESSION_LINK_PR]: { payload: SessionLinkPrPayload; response: Session };
+  [IpcChannels.SESSION_UNLINK_PR]: { payload: SessionUnlinkPrPayload; response: Session };
   [IpcChannels.PTY_WRITE]: { payload: PtyWritePayload; response: void };
   [IpcChannels.PTY_RESIZE]: { payload: PtyResizePayload; response: void };
   [IpcChannels.SHELL_WRITE]: { payload: PtyWritePayload; response: void };
@@ -139,6 +146,7 @@ export interface IpcPushMap {
   [IpcChannels.MENU_NEXT_SESSION]: void;
   [IpcChannels.MENU_NEXT_NEEDING_ATTENTION]: void;
   [IpcChannels.MENU_CLOSE_SESSION]: void;
+  [IpcChannels.MENU_PULL_REQUESTS]: void;
   [IpcChannels.MENU_FIND]: void;
   [IpcChannels.MENU_FIND_NEXT]: void;
   [IpcChannels.MENU_FIND_PREVIOUS]: void;

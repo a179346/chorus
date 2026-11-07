@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import http from "node:http";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { HookServer, type HookEvent, type HookUpdate } from "../src/main/hook-server";
+import type { PrRef } from "../src/shared/types";
 
 function postHookEvent(
   port: number,
@@ -233,5 +237,68 @@ describe("HookServer", () => {
       expect(updates[0]).toMatchObject({ sessionId: "s1", update: { status: "thinking" } });
       expect(updates[1]).toMatchObject({ sessionId: "s2", update: { status: "idle" } });
     });
+  });
+});
+
+describe("HookServer PR detection", () => {
+  let server: HookServer;
+  let dir: string;
+  let detected: Array<{ sessionId: string; prs: PrRef[] }>;
+
+  /** A transcript in which Claude ran `gh pr create` once per PR number. */
+  function writeTranscript(prNumbers: number[]): string {
+    const lines = prNumbers.flatMap((n) => [
+      { type: "assistant", message: { content: [{ type: "tool_use", id: `c${n}`, name: "Bash", input: { command: "gh pr create" } }] } },
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: `c${n}`, content: `https://github.com/o/r/pull/${n}` }] } },
+    ]);
+    const file = path.join(dir, "transcript.jsonl");
+    fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+    return file;
+  }
+
+  beforeEach(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "chorus-hook-"));
+    detected = [];
+    server = new HookServer(
+      () => {},
+      (sessionId, prs) => detected.push({ sessionId, prs }),
+    );
+    await server.start();
+  });
+
+  afterEach(() => {
+    server.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("reports every PR created in the transcript on Stop", async () => {
+    await postHookEvent(server.getPort(), {
+      session_id: "s1",
+      hook_event_name: "Stop",
+      cwd: "/tmp",
+      transcript_path: writeTranscript([1, 2]),
+    });
+
+    await vi.waitFor(() => expect(detected).toHaveLength(1), { timeout: 2000 });
+    expect(detected[0]).toEqual({
+      sessionId: "s1",
+      prs: [
+        { owner: "o", repo: "r", number: 1 },
+        { owner: "o", repo: "r", number: 2 },
+      ],
+    });
+  });
+
+  it("stays quiet when the transcript created no PR", async () => {
+    await postHookEvent(server.getPort(), {
+      session_id: "s1",
+      hook_event_name: "Stop",
+      cwd: "/tmp",
+      transcript_path: writeTranscript([]),
+    });
+
+    // The server waits 500ms for Claude to flush the transcript before reading it
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(detected).toEqual([]);
   });
 });

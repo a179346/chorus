@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { extractPrFromCreateCall, readTranscriptMetadata } from "../src/main/transcript-reader";
+import { extractPrsFromCreateCalls, readTranscriptMetadata } from "../src/main/transcript-reader";
 
 function makeTempTranscript(lines: object[]): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chorus-transcript-"));
@@ -19,15 +19,15 @@ function rmFile(file: string): void {
   }
 }
 
-describe("extractPrFromCreateCall", () => {
+describe("extractPrsFromCreateCalls", () => {
   let file: string;
 
   afterEach(() => {
     if (file) rmFile(file);
   });
 
-  it("returns null when transcript file does not exist", async () => {
-    expect(await extractPrFromCreateCall("/nonexistent/path.jsonl")).toBeNull();
+  it("returns [] when transcript file does not exist", async () => {
+    expect(await extractPrsFromCreateCalls("/nonexistent/path.jsonl")).toEqual([]);
   });
 
   it("matches plain `gh pr create` Bash command", async () => {
@@ -54,11 +54,9 @@ describe("extractPrFromCreateCall", () => {
       },
     ]);
 
-    expect(await extractPrFromCreateCall(file)).toEqual({
-      owner: "myorg",
-      repo: "myrepo",
-      number: 42,
-    });
+    expect(await extractPrsFromCreateCalls(file)).toEqual([
+      { owner: "myorg", repo: "myrepo", number: 42 },
+    ]);
   });
 
   it("matches chained `cd worktree && gh pr create`", async () => {
@@ -86,7 +84,7 @@ describe("extractPrFromCreateCall", () => {
       },
     ]);
 
-    expect(await extractPrFromCreateCall(file)).toEqual({ owner: "o", repo: "r", number: 7 });
+    expect(await extractPrsFromCreateCalls(file)).toEqual([{ owner: "o", repo: "r", number: 7 }]);
   });
 
   it("handles tool_result content as array of blocks", async () => {
@@ -114,7 +112,7 @@ describe("extractPrFromCreateCall", () => {
       },
     ]);
 
-    expect(await extractPrFromCreateCall(file)).toEqual({ owner: "foo", repo: "bar", number: 99 });
+    expect(await extractPrsFromCreateCalls(file)).toEqual([{ owner: "foo", repo: "bar", number: 99 }]);
   });
 
   it("ignores `gh pr list` / `gh pr view <other>` noise", async () => {
@@ -158,7 +156,7 @@ describe("extractPrFromCreateCall", () => {
       },
     ]);
 
-    expect(await extractPrFromCreateCall(file)).toBeNull();
+    expect(await extractPrsFromCreateCalls(file)).toEqual([]);
   });
 
   it("picks the create-PR result even when noise URLs are nearby", async () => {
@@ -197,10 +195,10 @@ describe("extractPrFromCreateCall", () => {
       },
     ]);
 
-    expect(await extractPrFromCreateCall(file)).toEqual({ owner: "x", repo: "y", number: 300 });
+    expect(await extractPrsFromCreateCalls(file)).toEqual([{ owner: "x", repo: "y", number: 300 }]);
   });
 
-  it("takes the latest of multiple successful create attempts", async () => {
+  it("returns every successfully created PR, oldest first", async () => {
     file = makeTempTranscript([
       {
         type: "assistant",
@@ -228,10 +226,13 @@ describe("extractPrFromCreateCall", () => {
       },
     ]);
 
-    expect(await extractPrFromCreateCall(file)).toEqual({ owner: "o", repo: "r", number: 2 });
+    expect(await extractPrsFromCreateCalls(file)).toEqual([
+      { owner: "o", repo: "r", number: 1 },
+      { owner: "o", repo: "r", number: 2 },
+    ]);
   });
 
-  it("falls back to earlier create when latest create has no URL (failed)", async () => {
+  it("skips a create attempt whose result has no URL (failed)", async () => {
     file = makeTempTranscript([
       {
         type: "assistant",
@@ -259,7 +260,7 @@ describe("extractPrFromCreateCall", () => {
       },
     ]);
 
-    expect(await extractPrFromCreateCall(file)).toEqual({ owner: "o", repo: "r", number: 7 });
+    expect(await extractPrsFromCreateCalls(file)).toEqual([{ owner: "o", repo: "r", number: 7 }]);
   });
 
   it("matches mcp__github__create_pull_request tool name", async () => {
@@ -287,7 +288,7 @@ describe("extractPrFromCreateCall", () => {
       },
     ]);
 
-    expect(await extractPrFromCreateCall(file)).toEqual({ owner: "o", repo: "r", number: 55 });
+    expect(await extractPrsFromCreateCalls(file)).toEqual([{ owner: "o", repo: "r", number: 55 }]);
   });
 
   it("handles multiple tool_use in same JSONL line", async () => {
@@ -313,18 +314,55 @@ describe("extractPrFromCreateCall", () => {
       },
     ]);
 
-    expect(await extractPrFromCreateCall(file)).toEqual({ owner: "o", repo: "r", number: 9 });
+    expect(await extractPrsFromCreateCalls(file)).toEqual([{ owner: "o", repo: "r", number: 9 }]);
   });
 
-  it("returns null for malformed JSONL lines", async () => {
+  it("lists a PR once when several create calls report it", async () => {
+    file = makeTempTranscript([
+      {
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", id: "c1", name: "Bash", input: { command: "gh pr create" } }],
+        },
+      },
+      {
+        type: "user",
+        message: {
+          content: [{ type: "tool_result", tool_use_id: "c1", content: "https://github.com/o/r/pull/4" }],
+        },
+      },
+      {
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", id: "c2", name: "Bash", input: { command: "gh pr create" } }],
+        },
+      },
+      {
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "c2",
+              content: "a pull request for branch \"feat\" into branch \"main\" already exists:\nhttps://github.com/O/R/pull/4",
+            },
+          ],
+        },
+      },
+    ]);
+
+    expect(await extractPrsFromCreateCalls(file)).toEqual([{ owner: "o", repo: "r", number: 4 }]);
+  });
+
+  it("returns [] for malformed JSONL lines", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chorus-transcript-"));
     file = path.join(dir, "transcript.jsonl");
     fs.writeFileSync(file, "{not valid json\n{also bad\n");
 
-    expect(await extractPrFromCreateCall(file)).toBeNull();
+    expect(await extractPrsFromCreateCalls(file)).toEqual([]);
   });
 
-  it("returns null when no PR create call is found", async () => {
+  it("returns [] when no PR create call is found", async () => {
     file = makeTempTranscript([
       {
         type: "assistant",
@@ -334,7 +372,7 @@ describe("extractPrFromCreateCall", () => {
       },
     ]);
 
-    expect(await extractPrFromCreateCall(file)).toBeNull();
+    expect(await extractPrsFromCreateCalls(file)).toEqual([]);
   });
 
   it("does not match `gh pr ready` or other gh subcommands", async () => {
@@ -357,7 +395,7 @@ describe("extractPrFromCreateCall", () => {
       },
     ]);
 
-    expect(await extractPrFromCreateCall(file)).toBeNull();
+    expect(await extractPrsFromCreateCalls(file)).toEqual([]);
   });
 });
 

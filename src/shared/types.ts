@@ -9,8 +9,9 @@ export type SessionStatus =
   | 'error'
   | 'ended';
 
-export type SessionStage =
-  | 'no-pr'
+/** A linked PR's state on GitHub; 'unknown' until a lookup succeeds. */
+export type PrStage =
+  | 'unknown'
   | 'draft'
   | 'ready'
   | 'merged'
@@ -20,6 +21,12 @@ export interface PrRef {
   owner: string;
   repo: string;
   number: number;
+}
+
+/** A PR linked to a session, with its last known stage. */
+export interface LinkedPr extends PrRef {
+  stage: PrStage;
+  stageUpdatedAt: number | null;
 }
 
 export interface Session {
@@ -37,9 +44,10 @@ export interface Session {
   createdAt: number;
   lastActiveAt: number;
   hasUserInput: boolean;
-  pr: PrRef | null;
-  stage: SessionStage;
-  stageUpdatedAt: number | null;
+  /** In the order they were linked. */
+  prs: LinkedPr[];
+  /** PRs the user unlinked; transcript detection must not link them again. */
+  unlinkedPrs: PrRef[];
 }
 
 export interface SessionConfig {
@@ -48,8 +56,8 @@ export interface SessionConfig {
   worktree?: string;
   flags: string[];
   notifyOnIdle?: boolean;
-  /** GitHub PR URL — links the session to the PR for stage tracking. */
-  prUrl?: string;
+  /** GitHub PR URLs — links the session to each PR for stage tracking. */
+  prUrls?: string[];
 }
 
 // Fields the main process may push to the renderer over SESSION_STATE.
@@ -64,9 +72,7 @@ export const SESSION_SYNC_FIELDS = [
   'unread',
   'name',
   'notifyOnIdle',
-  'pr',
-  'stage',
-  'stageUpdatedAt',
+  'prs',
 ] as const satisfies readonly (keyof Session)[];
 
 export type SessionSyncField = (typeof SESSION_SYNC_FIELDS)[number];
@@ -91,9 +97,8 @@ export interface PersistedSession {
   createdAt: number;
   lastActiveAt: number;
   hasUserInput: boolean;
-  pr: PrRef | null;
-  stage: SessionStage;
-  stageUpdatedAt: number | null;
+  prs: LinkedPr[];
+  unlinkedPrs: PrRef[];
 }
 
 // ─── Toolkit ─────────────────────────────────────────────
@@ -171,6 +176,16 @@ export interface SessionIdPayload {
 export interface SessionRenamePayload {
   id: string;
   name: string;
+}
+
+export interface SessionLinkPrPayload {
+  id: string;
+  url: string;
+}
+
+export interface SessionUnlinkPrPayload {
+  id: string;
+  pr: PrRef;
 }
 
 export interface SessionSwitchByIndexPayload {

@@ -33,9 +33,8 @@ const PERSISTED_FIELDS: ReadonlySet<keyof Session> = new Set<keyof Session>([
   'contextUsage',
   'contextLimit',
   'hasUserInput',
-  'pr',
-  'stage',
-  'stageUpdatedAt',
+  'prs',
+  'unlinkedPrs',
 ]);
 
 function notificationBody(update: HookUpdate): string {
@@ -48,8 +47,8 @@ function notificationBody(update: HookUpdate): string {
  * renames, PTY exits, read-marking — go through commit(), which updates the
  * store, persists when a persisted field changed, and broadcasts exactly the
  * changed fields to the renderer. One deliberate exception: StageMonitor
- * bumps stageUpdatedAt in memory when a poll finds no change, skipping the
- * persist/broadcast a commit would cause.
+ * bumps a linked PR's stageUpdatedAt in memory when a poll finds no change,
+ * skipping the persist/broadcast a commit would cause.
  */
 export class SessionState {
   private activeId: string | null = null;

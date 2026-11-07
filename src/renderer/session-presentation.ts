@@ -1,10 +1,12 @@
 import {
+  GitPullRequest,
   GitPullRequestDraft,
   GitPullRequestArrow,
   GitMerge,
   GitPullRequestClosed,
 } from 'lucide-react';
-import type { PrRef, Session, SessionStage, SessionStatus } from '../shared/types';
+import type { LinkedPr, PrStage, Session, SessionStatus } from '../shared/types';
+import { prLabel } from '../shared/pr-ref';
 
 // How a session presents itself anywhere in the UI: status colours, stage
 // icons, and the shortening helpers. One lookup, N components.
@@ -64,38 +66,57 @@ export function basename(path: string): string {
 
 // ─── PR stage ────────────────────────────────────────────
 
-export function prUrl(pr: PrRef): string {
-  return `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`;
-}
-
-export const STAGE_ICON: Record<Exclude<SessionStage, 'no-pr'>, {
+export const STAGE_ICON: Record<PrStage, {
   Icon: typeof GitPullRequestArrow;
   color: string;
   background: string;
-  tooltip: string;
+  label: string;
 }> = {
+  unknown: {
+    Icon: GitPullRequest,
+    color: 'var(--text-dimmed)',
+    background: 'rgba(var(--tint-rgb), 0.08)',
+    label: 'Status unknown',
+  },
   draft: {
     Icon: GitPullRequestDraft,
     color: 'var(--text-secondary)',
     background: 'rgba(var(--tint-rgb), 0.08)',
-    tooltip: 'Draft PR',
+    label: 'Draft',
   },
   ready: {
     Icon: GitPullRequestArrow,
     color: 'var(--accent-green)',
     background: 'rgba(var(--accent-rgb), 0.22)',
-    tooltip: 'PR ready for review',
+    label: 'Ready for review',
   },
   merged: {
     Icon: GitMerge,
     color: '#a78bfa',
     background: 'rgba(var(--tint-rgb), 0.08)',
-    tooltip: 'PR merged',
+    label: 'Merged',
   },
   closed: {
     Icon: GitPullRequestClosed,
     color: 'var(--accent-red)',
     background: 'rgba(var(--tint-rgb), 0.08)',
-    tooltip: 'PR closed',
+    label: 'Closed',
   },
 };
+
+/** "owner/repo#12 · Ready for review" */
+export function prTooltip(pr: LinkedPr): string {
+  return `${prLabel(pr)} · ${STAGE_ICON[pr.stage].label}`;
+}
+
+// Open PRs lead: they still need something from you. 'unknown' only shows
+// when no PR has resolved yet.
+const STAGE_PRIORITY: readonly PrStage[] = ['ready', 'draft', 'merged', 'closed', 'unknown'];
+
+/** The single stage that stands for a session's PRs where there is room for one icon. */
+export function summaryStage(prs: readonly LinkedPr[]): PrStage | null {
+  for (const stage of STAGE_PRIORITY) {
+    if (prs.some((pr) => pr.stage === stage)) return stage;
+  }
+  return null;
+}

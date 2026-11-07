@@ -18,9 +18,8 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     createdAt: 0,
     lastActiveAt: 0,
     hasUserInput: false,
-    pr: null,
-    stage: 'no-pr',
-    stageUpdatedAt: null,
+    prs: [],
+    unlinkedPrs: [],
     ...overrides,
   };
 }
@@ -93,7 +92,7 @@ describe('SessionState', () => {
       state.commit('s1', { name: 'Renamed' });
       expect(store.persistCount).toBe(1);
 
-      state.commit('s1', { stage: 'ready', stageUpdatedAt: 1 });
+      state.commit('s1', { prs: [{ owner: 'o', repo: 'r', number: 1, stage: 'ready', stageUpdatedAt: 1 }] });
       expect(store.persistCount).toBe(2);
     });
 
