@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { THEMES } from '../themes';
+import { useModalKeys } from '../use-modal-keys';
 
 interface PreferencesDialogProps {
   open: boolean;
@@ -39,37 +40,12 @@ export function PreferencesDialog({ open, fontFamily, theme, claudeFontSize, she
     setTimeout(() => inputRef.current?.focus(), 50);
   }, [open, fontFamily, theme, claudeFontSize, shellFontSize]);
 
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        handleClose();
-        return;
-      }
-      if (e.key === 'Tab' && dialogRef.current) {
-        const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
-          'input, button, [tabindex]:not([tabindex="-1"])'
-        );
-        if (focusable.length === 0) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first.focus();
-        }
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [open, onClose, theme]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const handleClose = () => {
+  const handleClose = useCallback(() => {
     onPreviewTheme(theme); // restore original theme
     onClose();
-  };
+  }, [theme, onPreviewTheme, onClose]);
+
+  useModalKeys(dialogRef, handleClose, open);
 
   const handleThemeSelect = (id: string) => {
     setSelectedTheme(id);
