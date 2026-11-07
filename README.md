@@ -45,6 +45,10 @@ Switch away from Chorus entirely — read docs, review a PR, grab coffee — and
 
 If Claude Code exits, restart it in place — the conversation resumes. Closed a session by accident? `⌘⇧T` reopens it, and **File → Recently Closed** lists the last ten.
 
+### Start with a task
+
+Give a new session its first prompt and it gets to work right away — turn on notifications and come back when it's done. Any other Claude Code flag (`--model`, `--allowed-tools`, …) goes in the same dialog, and the last ones you used are remembered.
+
 ### Toolkit command panel
 
 Save frequent commands (e.g. `/commit`, `git status`) and execute them with one click.

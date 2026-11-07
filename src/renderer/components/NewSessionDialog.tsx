@@ -14,6 +14,7 @@ import { prLabel, prUrl } from '../../shared/pr-ref';
 import { invoke, IpcChannels } from '../ipc';
 import { basename } from '../session-presentation';
 import { readPrDraft } from '../pr-draft';
+import { TOGGLE_LABELS, customFlagText, readCustomFlags, readToggles, toggleFlags } from '../session-flags';
 import { useModalKeys } from '../use-modal-keys';
 import type { NewSessionInput } from '../use-sessions';
 import { PrIdentity, PrRemoveButton, PrUrlInput } from './PrLinks';
@@ -30,10 +31,12 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
   const [worktree, setWorktree] = useState('');
   const [prs, setPrs] = useState<PrRef[]>([]);
   const [prDraft, setPrDraft] = useState('');
+  const [prompt, setPrompt] = useState('');
   const [favorites, setFavorites] = useState<string[]>([]);
   const [autoMode, setAutoMode] = useState(false);
   const [skipPermissions, setSkipPermissions] = useState(false);
   const [chrome, setChrome] = useState(false);
+  const [customFlags, setCustomFlags] = useState('');
   const [notifyOnIdle, setNotifyOnIdle] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -42,9 +45,11 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
     // Load defaults
     void invoke(IpcChannels.APP_GET_NEW_SESSION_DEFAULTS).then((defaults) => {
       setCwd(defaults.cwd || '');
-      setAutoMode(defaults.flags.includes('--enable-auto-mode'));
-      setSkipPermissions(defaults.flags.includes('--dangerously-skip-permissions'));
-      setChrome(defaults.flags.includes('--chrome'));
+      const toggles = readToggles(defaults.flags);
+      setAutoMode(toggles.autoMode);
+      setSkipPermissions(toggles.skipPermissions);
+      setChrome(toggles.chrome);
+      setCustomFlags(customFlagText(defaults.flags));
       setNotifyOnIdle(defaults.notifyOnIdle ?? false);
     });
     void invoke(IpcChannels.APP_GET_STATE).then((state) => {
@@ -54,6 +59,7 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
     setWorktree('');
     setPrs([]);
     setPrDraft('');
+    setPrompt('');
     setTimeout(() => nameRef.current?.focus(), 50);
   }, [open]);
 
@@ -102,27 +108,26 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
 
   // A URL still sitting in the field counts as added when the form is submitted
   const pendingPr = useMemo(() => readPrDraft(prDraft, prs), [prDraft, prs]);
-  const canSubmit = !!name.trim() && !!cwd.trim() && pendingPr.kind !== 'invalid';
+  const customFlagsDraft = useMemo(() => readCustomFlags(customFlags), [customFlags]);
+  const canSubmit =
+    !!name.trim() && !!cwd.trim() && pendingPr.kind !== 'invalid' && customFlagsDraft.kind === 'ok';
 
   const handleSubmit = useCallback(
     (e: React.FormEvent) => {
       e.preventDefault();
-      if (!canSubmit) return;
-      const flags: string[] = [];
-      if (autoMode) flags.push('--enable-auto-mode');
-      if (skipPermissions) flags.push('--dangerously-skip-permissions');
-      flags.push(chrome ? '--chrome' : '--no-chrome');
+      if (!canSubmit || customFlagsDraft.kind !== 'ok') return;
       const allPrs = pendingPr.kind === 'ok' ? [...prs, pendingPr.pr] : prs;
       onSubmit({
         name: name.trim(),
         cwd: cwd.trim(),
         worktree: worktree.trim(),
-        flags,
+        flags: [...toggleFlags({ autoMode, skipPermissions, chrome }), ...customFlagsDraft.args],
         notifyOnIdle,
         prUrls: allPrs.map(prUrl),
+        prompt: prompt.trim(),
       });
     },
-    [canSubmit, name, cwd, worktree, autoMode, skipPermissions, chrome, notifyOnIdle, prs, pendingPr, onSubmit]
+    [canSubmit, name, cwd, worktree, autoMode, skipPermissions, chrome, customFlagsDraft, notifyOnIdle, prs, pendingPr, prompt, onSubmit]
   );
 
   if (!open) return null;
@@ -223,6 +228,27 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
             />
           </div>
 
+          {/* Initial prompt */}
+          <div style={fieldStyle}>
+            <label htmlFor="new-session-prompt" style={labelStyle}>
+              Prompt <span style={{ color: 'var(--text-dimmed)', fontWeight: 400 }}>(optional)</span>
+            </label>
+            <textarea
+              id="new-session-prompt"
+              style={textareaStyle}
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter' || !e.metaKey || e.nativeEvent.isComposing) return;
+                e.preventDefault();
+                e.currentTarget.form?.requestSubmit();
+              }}
+              placeholder="What should Claude work on?"
+              rows={3}
+            />
+            <span style={hintStyle}>Sent when the session starts · ⌘↵ to create</span>
+          </div>
+
           {/* Flags */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div
@@ -239,7 +265,7 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
               style={{ fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}
               onClick={() => setAutoMode(!autoMode)}
             >
-              Enable auto mode
+              {TOGGLE_LABELS.autoMode}
             </label>
           </div>
 
@@ -258,7 +284,7 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
               style={{ fontSize: 11, color: skipPermissions ? 'var(--status-error, #e53e3e)' : 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}
               onClick={() => setSkipPermissions(!skipPermissions)}
             >
-              Skip permissions
+              {TOGGLE_LABELS.skipPermissions}
             </label>
           </div>
 
@@ -277,7 +303,7 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
               style={{ fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}
               onClick={() => setChrome(!chrome)}
             >
-              Enable Claude in Chrome
+              {TOGGLE_LABELS.chrome}
             </label>
           </div>
 
@@ -298,6 +324,28 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
             >
               Notify when idle or waiting
             </label>
+          </div>
+
+          {/* Additional flags */}
+          <div style={fieldStyle}>
+            <label htmlFor="new-session-flags" style={labelStyle}>
+              Additional Flags <span style={{ color: 'var(--text-dimmed)', fontWeight: 400 }}>(optional)</span>
+            </label>
+            <input
+              id="new-session-flags"
+              style={{
+                ...inputStyle,
+                borderColor: customFlagsDraft.kind === 'invalid' ? 'var(--status-error, #e53e3e)' : 'var(--border-default)',
+              }}
+              value={customFlags}
+              onChange={(e) => setCustomFlags(e.target.value)}
+              placeholder={`--model opus --allowed-tools "Bash(git *)"`}
+              spellCheck={false}
+              aria-invalid={customFlagsDraft.kind === 'invalid'}
+            />
+            {customFlagsDraft.kind === 'invalid' && (
+              <span style={{ ...hintStyle, color: 'var(--status-error, #e53e3e)' }}>{customFlagsDraft.error}</span>
+            )}
           </div>
 
           {/* Actions */}
@@ -377,6 +425,8 @@ const dialogStyle: React.CSSProperties = {
   padding: 24,
   width: 420,
   maxWidth: '90vw',
+  maxHeight: '90vh',
+  overflowY: 'auto',
   animation: 'slideUp 200ms ease',
 };
 
@@ -411,6 +461,18 @@ const inputStyle: React.CSSProperties = {
   color: 'var(--text-primary)',
   fontFamily: 'var(--font-mono)',
   transition: 'border-color var(--transition-fast)',
+};
+
+const textareaStyle: React.CSSProperties = {
+  ...inputStyle,
+  resize: 'vertical',
+  minHeight: 54,
+  lineHeight: 1.5,
+};
+
+const hintStyle: React.CSSProperties = {
+  fontSize: 10,
+  color: 'var(--text-dimmed)',
 };
 
 const prRowStyle: React.CSSProperties = {

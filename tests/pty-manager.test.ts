@@ -104,12 +104,11 @@ describe('PtyManager', () => {
       expect(firstCall[1]).toContain('--verbose');
     });
 
-    it('should filter out non-flag arguments (flag sanitization)', () => {
-      manager.spawn('session-1', '/tmp/test', ['--enable-auto-mode', 'not-a-flag', '--verbose']);
+    it('passes args through unchanged, flag values and the initial prompt included', () => {
+      const args = ['--effort', 'high', '--allowed-tools', 'Bash(git *)', 'Edit', '--', 'fix the bug'];
+      manager.spawn('session-1', '/tmp/test', args);
       const firstCall = nodePty.spawn.mock.calls[0];
-      expect(firstCall[1]).toContain('--enable-auto-mode');
-      expect(firstCall[1]).toContain('--verbose');
-      expect(firstCall[1]).not.toContain('not-a-flag');
+      expect(firstCall[1]).toEqual(args);
     });
 
     it('should pass empty args when no flags given', () => {

@@ -9,6 +9,8 @@ export interface NewSessionInput {
   flags: string[];
   notifyOnIdle: boolean;
   prUrls: string[];
+  /** Empty for none. */
+  prompt: string;
 }
 
 /** New output you haven't seen, or Claude blocked until you respond. */
@@ -40,6 +42,9 @@ export function findNextNeedingAttention(
  */
 export function useSessions() {
   const [sessions, setSessions] = useState<Session[]>([]);
+  // Main answers the first list only after restoring saved sessions, which
+  // waits on the login-shell environment
+  const [sessionsLoaded, setSessionsLoaded] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
   const sessionsRef = useRef(sessions);
@@ -51,6 +56,7 @@ export function useSessions() {
   useEffect(() => {
     void invoke(IpcChannels.SESSION_LIST).then((list) => {
       setSessions(list);
+      setSessionsLoaded(true);
       setActiveSessionId((current) => current ?? list[0]?.id ?? null);
     });
   }, []);
@@ -90,6 +96,7 @@ export function useSessions() {
       flags: input.flags,
       notifyOnIdle: input.notifyOnIdle,
       prUrls: input.prUrls,
+      prompt: input.prompt || undefined,
     });
     setSessions((prev) => [...prev, session]);
     setActiveSessionId(session.id);
@@ -176,6 +183,7 @@ export function useSessions() {
 
   return {
     sessions,
+    sessionsLoaded,
     activeSession,
     activeSessionId,
     activeSessionIdRef,

@@ -14,23 +14,6 @@ export type ClaudeExitHandler = (sessionId: string, exitCode: number) => void;
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 30;
 
-/** Only these valued flags keep their following argument; everything else must start with "-". */
-const VALUED_FLAGS = new Set(['--session-id', '--resume', '--worktree', '--name']);
-
-function sanitizeClaudeArgs(flags: string[]): string[] {
-  const args: string[] = [];
-  for (let i = 0; i < flags.length; i++) {
-    const f = flags[i];
-    if (f.startsWith('-')) {
-      args.push(f);
-      if (VALUED_FLAGS.has(f) && i + 1 < flags.length) {
-        args.push(flags[++i]);
-      }
-    }
-  }
-  return args;
-}
-
 export class PtyManager {
   private ptys: Map<string, PtyPair> = new Map();
   /** PTYs whose process is gone: signalling them could hit an unrelated process that reused the PID. */
@@ -47,15 +30,15 @@ export class PtyManager {
   }
 
   /**
-   * Spawn a claude PTY and a shell PTY for a session.
+   * Spawn a claude PTY and a shell PTY for a session. `claudeArgs` reach claude unchanged.
    */
   spawn(
     sessionId: string,
     cwd: string,
-    flags: string[],
+    claudeArgs: string[],
     shellCwd?: string,
   ): PtyPair {
-    const claudePty = this.spawnClaude(sessionId, cwd, flags, DEFAULT_COLS, DEFAULT_ROWS);
+    const claudePty = this.spawnClaude(sessionId, cwd, claudeArgs, DEFAULT_COLS, DEFAULT_ROWS);
 
     // Shell uses the original cwd, not the worktree
     const shellPty = pty.spawn(process.env.SHELL ?? '/bin/zsh', [], {
@@ -80,12 +63,12 @@ export class PtyManager {
    * A still-running claude is killed; the new one inherits its terminal size
    * so the TUI draws at the right dimensions immediately.
    */
-  restartClaude(sessionId: string, cwd: string, flags: string[]): void {
+  restartClaude(sessionId: string, cwd: string, claudeArgs: string[]): void {
     const pair = this.ptys.get(sessionId);
     if (!pair) throw new Error(`No PTYs for session ${sessionId}`);
 
     const previous = pair.claude;
-    const claude = this.spawnClaude(sessionId, cwd, flags, previous.cols, previous.rows);
+    const claude = this.spawnClaude(sessionId, cwd, claudeArgs, previous.cols, previous.rows);
     this.ptys.set(sessionId, { claude, shell: pair.shell });
     this.killGracefully(previous);
   }
@@ -143,11 +126,11 @@ export class PtyManager {
   private spawnClaude(
     sessionId: string,
     cwd: string,
-    flags: string[],
+    claudeArgs: string[],
     cols: number,
     rows: number,
   ): pty.IPty {
-    const claudePty = pty.spawn('claude', sanitizeClaudeArgs(flags), {
+    const claudePty = pty.spawn('claude', claudeArgs, {
       name: 'xterm-256color',
       cols,
       rows,

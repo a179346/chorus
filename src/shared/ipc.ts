@@ -74,6 +74,7 @@ export const IpcErrorCodes = {
   PTY_SPAWN_FAILED: 'PTY_SPAWN_FAILED',
   INVALID_DIRECTORY: 'INVALID_DIRECTORY',
   INVALID_PR_URL: 'INVALID_PR_URL',
+  INVALID_FLAGS: 'INVALID_FLAGS',
 } as const;
 
 export type IpcErrorCode = (typeof IpcErrorCodes)[keyof typeof IpcErrorCodes];
