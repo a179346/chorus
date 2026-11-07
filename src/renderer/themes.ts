@@ -76,6 +76,7 @@ const espresso: ThemeDefinition = {
     'border-active': '#D4A06A',
 
     'status-idle': '#5ec9a0',
+    'status-waiting': '#f97316',
     'status-thinking': '#fbbf24',
     'status-generating': '#7da8d8',
     'status-creating': '#a78bfa',
@@ -158,6 +159,7 @@ const obsidian: ThemeDefinition = {
     'border-active': '#a78bfa',
 
     'status-idle': '#5ec9a0',
+    'status-waiting': '#f97316',
     'status-thinking': '#fbbf24',
     'status-generating': '#7da8d8',
     'status-creating': '#a78bfa',
@@ -240,6 +242,7 @@ const midnight: ThemeDefinition = {
     'border-active': '#22d3ee',
 
     'status-idle': '#34d399',
+    'status-waiting': '#fb923c',
     'status-thinking': '#fbbf24',
     'status-generating': '#22d3ee',
     'status-creating': '#a78bfa',
@@ -322,6 +325,7 @@ const forest: ThemeDefinition = {
     'border-active': '#34d399',
 
     'status-idle': '#34d399',
+    'status-waiting': '#f97316',
     'status-thinking': '#e8c840',
     'status-generating': '#60b0d0',
     'status-creating': '#a78bfa',
@@ -404,6 +408,7 @@ const arctic: ThemeDefinition = {
     'border-active': '#5046e5',
 
     'status-idle': '#059669',
+    'status-waiting': '#ea580c',
     'status-thinking': '#ca8a04',
     'status-generating': '#3b82f6',
     'status-creating': '#7c3aed',
@@ -486,6 +491,7 @@ const latte: ThemeDefinition = {
     'border-active': '#8b6914',
 
     'status-idle': '#2d7a4f',
+    'status-waiting': '#c2410c',
     'status-thinking': '#9a7000',
     'status-generating': '#3060a0',
     'status-creating': '#7040a0',
@@ -568,6 +574,7 @@ const sakura: ThemeDefinition = {
     'border-active': '#d4487a',
 
     'status-idle': '#1a8860',
+    'status-waiting': '#c2410c',
     'status-thinking': '#b07800',
     'status-generating': '#3868b0',
     'status-creating': '#9040a0',
@@ -650,6 +657,7 @@ const meadow: ThemeDefinition = {
     'border-active': '#0d7377',
 
     'status-idle': '#0d7050',
+    'status-waiting': '#c2410c',
     'status-thinking': '#8a7000',
     'status-generating': '#306898',
     'status-creating': '#7040a0',

@@ -222,6 +222,16 @@ describe('PtyManager', () => {
       expect(manager.has('session-1')).toBe(false);
     });
 
+    it('should not signal a claude that already exited', () => {
+      const pair = manager.spawn('session-1', '/tmp/test', []);
+      const claudeOnExit = nodePty.spawn.mock.results[0].value.onExit;
+      claudeOnExit.mock.calls[0][0]({ exitCode: 0, signal: 0 });
+
+      manager.kill('session-1');
+      expect(pair.claude.kill).not.toHaveBeenCalled();
+      expect(pair.shell.kill).toHaveBeenCalledWith('SIGTERM');
+    });
+
     it('should not affect other sessions when killing one', () => {
       manager.spawn('session-1', '/tmp/a', []);
       manager.spawn('session-2', '/tmp/b', []);
@@ -346,6 +356,75 @@ describe('PtyManager', () => {
       const exitCallback = claudeOnExit.mock.calls[0][0];
 
       expect(() => exitCallback({ exitCode: 0, signal: 0 })).not.toThrow();
+    });
+  });
+
+  describe('restartClaude', () => {
+    function exitClaude(spawnIndex: number, exitCode = 0): void {
+      const onExit = nodePty.spawn.mock.results[spawnIndex].value.onExit;
+      onExit.mock.calls[0][0]({ exitCode, signal: 0 });
+    }
+
+    it('spawns a new claude with the given cwd and flags, keeping the shell', () => {
+      const pair = manager.spawn('session-1', '/tmp/test', []);
+      manager.restartClaude('session-1', '/tmp/worktree', ['--resume', 'abc']);
+
+      expect(nodePty.spawn).toHaveBeenCalledTimes(3);
+      const restartCall = nodePty.spawn.mock.calls[2];
+      expect(restartCall[0]).toBe('claude');
+      expect(restartCall[1]).toEqual(['--resume', 'abc']);
+      expect(restartCall[2]).toMatchObject({ cwd: '/tmp/worktree' });
+      expect(pair.shell.kill).not.toHaveBeenCalled();
+    });
+
+    it('inherits the previous terminal size', () => {
+      const pair = manager.spawn('session-1', '/tmp/test', []);
+      Object.assign(pair.claude, { cols: 200, rows: 50 });
+      manager.restartClaude('session-1', '/tmp/test', []);
+
+      expect(nodePty.spawn.mock.calls[2][2]).toMatchObject({ cols: 200, rows: 50 });
+    });
+
+    it('routes input to the new claude', () => {
+      manager.spawn('session-1', '/tmp/test', []);
+      manager.restartClaude('session-1', '/tmp/test', []);
+      manager.writeToClaude('session-1', 'hi');
+
+      expect(nodePty.spawn.mock.results[0].value.write).not.toHaveBeenCalled();
+      expect(nodePty.spawn.mock.results[2].value.write).toHaveBeenCalledWith('hi');
+    });
+
+    it('kills a still-running claude without reporting its exit', () => {
+      const exitHandler = vi.fn();
+      manager.setExitHandler(exitHandler);
+      const pair = manager.spawn('session-1', '/tmp/test', []);
+      manager.restartClaude('session-1', '/tmp/test', []);
+
+      expect(pair.claude.kill).toHaveBeenCalledWith('SIGTERM');
+      exitClaude(0);
+      expect(exitHandler).not.toHaveBeenCalled();
+    });
+
+    it('reports exits of the new claude', () => {
+      const exitHandler = vi.fn();
+      manager.setExitHandler(exitHandler);
+      manager.spawn('session-1', '/tmp/test', []);
+      manager.restartClaude('session-1', '/tmp/test', []);
+
+      exitClaude(2, 1);
+      expect(exitHandler).toHaveBeenCalledWith('session-1', 1);
+    });
+
+    it('does not signal a claude that already exited (its PID may be reused)', () => {
+      const pair = manager.spawn('session-1', '/tmp/test', []);
+      exitClaude(0);
+      manager.restartClaude('session-1', '/tmp/test', []);
+
+      expect(pair.claude.kill).not.toHaveBeenCalled();
+    });
+
+    it('throws for an unknown session', () => {
+      expect(() => manager.restartClaude('nope', '/tmp/test', [])).toThrow();
     });
   });
 

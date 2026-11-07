@@ -1,7 +1,7 @@
 import React from 'react';
 import { GitBranch } from 'lucide-react';
 import type { Session } from '../../shared/types';
-import { STAGE_ICON, prUrl, statusColor, PULSING_STATUSES, shortenPath, shortenModel } from '../session-presentation';
+import { STAGE_ICON, prUrl, statusColor, statusLabel, PULSING_STATUSES, shortenPath, shortenModel } from '../session-presentation';
 import { invoke, IpcChannels } from '../ipc';
 
 interface StatusBarProps {
@@ -43,8 +43,8 @@ export function StatusBar({ session }: StatusBarProps): React.ReactElement {
       {/* Left — Status */}
       <div style={sectionStyle}>
         <StatusDot status={session.status} />
-        <span style={{ color: statusColor(session.status), textTransform: 'capitalize', fontWeight: 500 }}>
-          {session.status}
+        <span style={{ color: statusColor(session.status), fontWeight: 500 }}>
+          {statusLabel(session.status)}
         </span>
       </div>
 

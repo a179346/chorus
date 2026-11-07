@@ -9,10 +9,12 @@ import { TerminalView } from './components/TerminalView';
 import { SearchBar } from './components/SearchBar';
 import { NewSessionDialog } from './components/NewSessionDialog';
 import { PreferencesDialog } from './components/PreferencesDialog';
+import { ExitedSessionBanner } from './components/ExitedSessionBanner';
 import { applyThemeCss, getTheme, DEFAULT_THEME_ID } from './themes';
 import { terminals } from './terminal-host';
 import { useSessions, type NewSessionInput } from './use-sessions';
-import { invoke, on, IpcChannels } from './ipc';
+import { hasExited } from './session-presentation';
+import { invoke, ipcErrorMessage, on, IpcChannels } from './ipc';
 
 const DEFAULT_SIDEBAR_WIDTH = 320;
 const DEFAULT_SHELL_HEIGHT = 200;
@@ -30,11 +32,13 @@ export function App(): React.ReactElement {
     selectSession,
     createSession,
     endSession,
+    restartSession,
     toggleNotify,
     renameSession,
     reorderSessions,
     switchToIndex,
     switchRelative,
+    switchToNextNeedingAttention,
   } = useSessions();
 
   // ─── UI state ───────────────────────────────────────
@@ -46,6 +50,8 @@ export function App(): React.ReactElement {
   const [claudeFontSize, setClaudeFontSize] = useState(DEFAULT_FONT_SIZE);
   const [shellFontSize, setShellFontSize] = useState(DEFAULT_FONT_SIZE);
   const [endSessionConfirm, setEndSessionConfirm] = useState<string | null>(null);
+  const [restartError, setRestartError] = useState<{ sessionId: string; message: string } | null>(null);
+  const restartingRef = useRef<Set<string>>(new Set());
   const [currentTheme, setCurrentTheme] = useState(DEFAULT_THEME_ID);
   const [ptySearch, setPtySearch] = useState<{ sessionId: string; key: number } | null>(null);
   const [shellSearch, setShellSearch] = useState<{ sessionId: string; key: number } | null>(null);
@@ -120,6 +126,7 @@ export function App(): React.ReactElement {
       on(IpcChannels.MENU_SWITCH_SESSION, ({ index }) => switchToIndex(index)),
       on(IpcChannels.MENU_PREV_SESSION, () => switchRelative(-1)),
       on(IpcChannels.MENU_NEXT_SESSION, () => switchRelative(1)),
+      on(IpcChannels.MENU_NEXT_NEEDING_ATTENTION, () => switchToNextNeedingAttention()),
       on(IpcChannels.MENU_CLOSE_SESSION, () => {
         const currentId = activeSessionIdRef.current;
         if (currentId) setEndSessionConfirm(currentId);
@@ -138,7 +145,7 @@ export function App(): React.ReactElement {
       on(IpcChannels.MENU_PREFERENCES, () => setShowPreferences(true)),
     ];
     return () => cleanups.forEach((c) => c());
-  }, [switchToIndex, switchRelative]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [switchToIndex, switchRelative, switchToNextNeedingAttention]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Persist panel sizes (debounced) ────────────────
   const savePanelSizes = useCallback(
@@ -182,6 +189,27 @@ export function App(): React.ReactElement {
       terminals.dispose(id);
     },
     [endSession]
+  );
+
+  const handleRestartSession = useCallback(
+    async (id: string) => {
+      // Enter and the button can both fire before the new status arrives
+      if (restartingRef.current.has(id)) return;
+      restartingRef.current.add(id);
+      setRestartError(null);
+      try {
+        await restartSession(id);
+        // The resumed claude replays its history; start from a clean screen.
+        // Safe after the await: main replies before the new PTY emits output.
+        terminals.reset('pty', id);
+        requestAnimationFrame(() => terminals.focus('pty', id));
+      } catch (err) {
+        setRestartError({ sessionId: id, message: ipcErrorMessage(err) });
+      } finally {
+        restartingRef.current.delete(id);
+      }
+    },
+    [restartSession]
   );
 
   const requestEndSession = useCallback(
@@ -364,6 +392,13 @@ export function App(): React.ReactElement {
                 />
               )}
               <TerminalView sessionId={activeSessionId} type="pty" fontFamily={terminalFontFamily} fontSize={claudeFontSize} />
+              {activeSession && hasExited(activeSession) && (
+                <ExitedSessionBanner
+                  session={activeSession}
+                  error={restartError?.sessionId === activeSession.id ? restartError.message : null}
+                  onRestart={handleRestartSession}
+                />
+              )}
             </div>
 
             {/* Shell terminal (collapsible) */}
@@ -400,6 +435,7 @@ export function App(): React.ReactElement {
             onNewSession={() => setShowNewSession(true)}
             onRenameSession={renameSession}
             onEndSession={requestEndSession}
+            onRestartSession={handleRestartSession}
             onToggleNotify={toggleNotify}
             onReorderSessions={reorderSessions}
           />

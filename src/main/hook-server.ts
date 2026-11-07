@@ -11,6 +11,7 @@ export interface HookEvent {
   model?: string;
   tool_name?: string;
   tool_input?: unknown;
+  message?: string;
   notification_type?: string;
   source?: string;
   reason?: string;
@@ -25,8 +26,21 @@ const HOOK_STATUS_MAP: Record<string, SessionStatus> = {
   UserPromptSubmit: 'thinking',
   Stop: 'idle',
   PreToolUse: 'generating',
+  // A tool finishing after a permission prompt is the only signal that the
+  // user approved it — without it the session would read 'waiting' until
+  // the next tool call or Stop.
+  PostToolUse: 'generating',
   SessionStart: 'idle',
 };
+
+/**
+ * Notification types where Claude is blocked until the user responds. The
+ * rest (idle_prompt, auth_success) are informational and leave status alone.
+ */
+const BLOCKING_NOTIFICATION_TYPES: ReadonlySet<string> = new Set([
+  'permission_prompt',
+  'elicitation_dialog',
+]);
 
 /** The hook events Chorus subscribes to. HookInstaller writes these into settings files. */
 export const HOOK_EVENTS = Object.keys(HOOK_STATUS_MAP);
@@ -36,6 +50,8 @@ export interface HookUpdate {
   model?: string | null;
   contextUsage?: number | null;
   contextLimit?: number | null;
+  /** Claude's own description of what it is blocked on; set only with 'waiting'. */
+  waitingReason?: string;
 }
 
 export type HookStatusCallback = (sessionId: string, update: HookUpdate) => void;
@@ -122,6 +138,12 @@ export class HookServer {
     // Track transcript path from any event that provides it
     if (event.transcript_path) {
       this.transcriptPaths.set(event.session_id, event.transcript_path);
+    }
+
+    if (event.hook_event_name === 'Notification') {
+      if (!BLOCKING_NOTIFICATION_TYPES.has(event.notification_type ?? '')) return;
+      this.callback(event.session_id, { status, waitingReason: event.message });
+      return;
     }
 
     // On SessionStart, emit model from the event directly

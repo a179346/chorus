@@ -4,14 +4,14 @@ import {
   GitMerge,
   GitPullRequestClosed,
 } from 'lucide-react';
-import type { PrRef, SessionStage, SessionStatus } from '../shared/types';
+import type { PrRef, Session, SessionStage, SessionStatus } from '../shared/types';
 
 // How a session presents itself anywhere in the UI: status colours, stage
 // icons, and the shortening helpers. One lookup, N components.
 
 const STATUS_COLORS: Record<SessionStatus, string> = {
   idle: 'var(--status-idle)',
-  waiting: 'var(--status-idle)',
+  waiting: 'var(--status-waiting)',
   thinking: 'var(--status-thinking)',
   generating: 'var(--status-generating)',
   creating: 'var(--status-creating)',
@@ -21,6 +21,25 @@ const STATUS_COLORS: Record<SessionStatus, string> = {
 
 export function statusColor(status: SessionStatus | string): string {
   return STATUS_COLORS[status as SessionStatus] ?? 'var(--text-dimmed)';
+}
+
+const STATUS_LABELS: Record<SessionStatus, string> = {
+  idle: 'Idle',
+  waiting: 'Needs input',
+  thinking: 'Thinking',
+  generating: 'Generating',
+  creating: 'Creating',
+  error: 'Error',
+  ended: 'Ended',
+};
+
+export function statusLabel(status: SessionStatus): string {
+  return STATUS_LABELS[status];
+}
+
+/** Claude's process is gone; the session can be relaunched in place. */
+export function hasExited(session: Session): boolean {
+  return session.status === 'ended' || session.status === 'error';
 }
 
 export const PULSING_STATUSES: ReadonlySet<string> = new Set([

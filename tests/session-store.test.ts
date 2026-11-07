@@ -335,6 +335,56 @@ describe('SessionStore', () => {
     });
   });
 
+  describe('recently closed', () => {
+    function storedClosed(ids: string[]): void {
+      vi.mocked(fs.readFileSync).mockReturnValue(
+        JSON.stringify({ sessions: ids.map((id) => ({ id })) }),
+      );
+    }
+
+    function writtenClosedIds(): string[] {
+      const writeCall = vi.mocked(fs.writeFileSync).mock.calls.at(-1)!;
+      expect(String(writeCall[0])).toContain('recently-closed.json');
+      return JSON.parse(writeCall[1] as string).sessions.map((s: { id: string }) => s.id);
+    }
+
+    it('should return an empty list when nothing was closed yet', () => {
+      vi.mocked(fs.readFileSync).mockImplementation(() => {
+        throw new Error('ENOENT');
+      });
+      expect(store.loadRecentlyClosed()).toEqual([]);
+    });
+
+    it('should put the newly closed session first', () => {
+      storedClosed(['a', 'b']);
+      store.rememberClosed(makeSession({ id: 'c' }));
+      expect(writtenClosedIds()).toEqual(['c', 'a', 'b']);
+    });
+
+    it('should move a session closed again to the front instead of duplicating it', () => {
+      storedClosed(['a', 'b', 'c']);
+      store.rememberClosed(makeSession({ id: 'b' }));
+      expect(writtenClosedIds()).toEqual(['b', 'a', 'c']);
+    });
+
+    it('should keep at most RECENTLY_CLOSED_LIMIT sessions', async () => {
+      const { RECENTLY_CLOSED_LIMIT } = await import('../src/main/session-store');
+      storedClosed(Array.from({ length: RECENTLY_CLOSED_LIMIT }, (_, i) => `old-${i}`));
+      store.rememberClosed(makeSession({ id: 'new' }));
+
+      const ids = writtenClosedIds();
+      expect(ids).toHaveLength(RECENTLY_CLOSED_LIMIT);
+      expect(ids[0]).toBe('new');
+      expect(ids).not.toContain(`old-${RECENTLY_CLOSED_LIMIT - 1}`);
+    });
+
+    it('should forget a reopened session', () => {
+      storedClosed(['a', 'b', 'c']);
+      store.forgetClosed('b');
+      expect(writtenClosedIds()).toEqual(['a', 'c']);
+    });
+  });
+
   describe('toolkit commands', () => {
     it('should load toolkit commands', () => {
       vi.mocked(fs.readFileSync).mockReturnValue(

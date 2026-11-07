@@ -148,7 +148,34 @@ describe('SessionState', () => {
 
       state.applyHookUpdate('s1', { status: 'idle' });
 
-      expect(env.showNotification).toHaveBeenCalledWith('Test', 'Session is now Idle');
+      expect(env.showNotification).toHaveBeenCalledWith('s1', 'Test', 'Session is now Idle');
+    });
+
+    it("uses Claude's waiting reason as the notification body", () => {
+      sessions.get('s1')!.status = 'generating';
+      sessions.get('s1')!.notifyOnIdle = true;
+      windowFocused = false;
+
+      state.applyHookUpdate('s1', {
+        status: 'waiting',
+        waitingReason: 'Claude needs your permission to use Bash',
+      });
+
+      expect(env.showNotification).toHaveBeenCalledWith(
+        's1',
+        'Test',
+        'Claude needs your permission to use Bash',
+      );
+    });
+
+    it('does not notify a waiting session whose bell is off', () => {
+      sessions.get('s1')!.status = 'generating';
+      windowFocused = false;
+
+      state.applyHookUpdate('s1', { status: 'waiting', waitingReason: 'x' });
+
+      expect(env.showNotification).not.toHaveBeenCalled();
+      expect(sessions.get('s1')!.unread).toBe(true);
     });
 
     it('does not notify when the window is focused', () => {

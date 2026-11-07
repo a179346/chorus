@@ -313,6 +313,11 @@ function dispose(sessionId: string): void {
   }
 }
 
+/** Wipe a terminal's screen and scrollback, e.g. before a restarted claude redraws its history. */
+function reset(kind: TerminalKind, sessionId: string): void {
+  cache.get(keyOf(kind, sessionId))?.terminal.reset();
+}
+
 function focused(): { kind: TerminalKind; sessionId: string } | null {
   if (!focusedKey) return null;
   const [kind, ...rest] = focusedKey.split(':');
@@ -390,6 +395,7 @@ export const terminals = {
   attach,
   focus,
   dispose,
+  reset,
   focused,
   findNext,
   findPrevious,
