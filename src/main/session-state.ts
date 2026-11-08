@@ -1,5 +1,5 @@
 import type { Session, SessionStateUpdate } from '../shared/types';
-import { SESSION_SYNC_FIELDS } from '../shared/types';
+import { SESSION_SYNC_FIELDS, isExitedStatus } from '../shared/types';
 import type { HookUpdate } from './hook-server';
 
 /**
@@ -34,8 +34,20 @@ const PERSISTED_FIELDS: ReadonlySet<keyof Session> = new Set<keyof Session>([
   'contextLimit',
   'hasUserInput',
   'prs',
-  'unlinkedPrs',
 ]);
+
+/** Whether applying `updates` changes what is saved for the session. */
+function changesSavedState(session: Session, updates: Partial<Session>): boolean {
+  const keys = Object.keys(updates) as (keyof Session)[];
+  if (keys.some((k) => PERSISTED_FIELDS.has(k))) return true;
+  // Of the status, only how claude exited is saved
+  const { status } = updates;
+  return (
+    status !== undefined &&
+    status !== session.status &&
+    (isExitedStatus(status) || isExitedStatus(session.status))
+  );
+}
 
 function notificationBody(update: HookUpdate): string {
   if (update.status === 'waiting') return update.waitingReason ?? 'Session needs your input';
@@ -45,8 +57,9 @@ function notificationBody(update: HookUpdate): string {
 /**
  * The write path for session state. Mutations — hook events, stage changes,
  * renames, PTY exits, read-marking — go through commit(), which updates the
- * store, persists when a persisted field changed, and broadcasts exactly the
- * changed fields to the renderer. One deliberate exception: StageMonitor
+ * store, persists when what is saved for the session changed (a persisted
+ * field, or whether claude has exited), and broadcasts exactly the changed
+ * fields to the renderer. One deliberate exception: StageMonitor
  * bumps a linked PR's stageUpdatedAt in memory when a poll finds no change,
  * skipping the persist/broadcast a commit would cause.
  */
@@ -67,11 +80,13 @@ export class SessionState {
   }
 
   commit(sessionId: string, updates: Partial<Session>): Session | null {
+    const current = this.store.getSession(sessionId);
+    if (!current) return null;
+    const persist = changesSavedState(current, updates);
+
     const session = this.store.updateSession(sessionId, updates);
     if (!session) return null;
-
-    const keys = Object.keys(updates) as (keyof Session)[];
-    if (keys.some((k) => PERSISTED_FIELDS.has(k))) {
+    if (persist) {
       this.store.persistSessions();
     }
 

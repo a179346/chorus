@@ -61,7 +61,6 @@ const espresso: ThemeDefinition = {
     'text-primary': '#efe8d8',
     'text-secondary': '#a69880',
     'text-dimmed': '#706048',
-    'text-accent': '#D4A06A',
 
     'accent-primary': '#D4A06A',
     'accent-blue': '#D4A06A',
@@ -144,7 +143,6 @@ const obsidian: ThemeDefinition = {
     'text-primary': '#e8e6f0',
     'text-secondary': '#8a8ea0',
     'text-dimmed': '#555868',
-    'text-accent': '#a78bfa',
 
     'accent-primary': '#a78bfa',
     'accent-blue': '#a78bfa',
@@ -227,7 +225,6 @@ const midnight: ThemeDefinition = {
     'text-primary': '#dce8f5',
     'text-secondary': '#7898b8',
     'text-dimmed': '#4a6480',
-    'text-accent': '#22d3ee',
 
     'accent-primary': '#22d3ee',
     'accent-blue': '#22d3ee',
@@ -310,7 +307,6 @@ const forest: ThemeDefinition = {
     'text-primary': '#dceee4',
     'text-secondary': '#80a890',
     'text-dimmed': '#507058',
-    'text-accent': '#34d399',
 
     'accent-primary': '#34d399',
     'accent-blue': '#34d399',
@@ -393,7 +389,6 @@ const arctic: ThemeDefinition = {
     'text-primary': '#1e2234',
     'text-secondary': '#5c6478',
     'text-dimmed': '#8c94a8',
-    'text-accent': '#5046e5',
 
     'accent-primary': '#5046e5',
     'accent-blue': '#5046e5',
@@ -476,7 +471,6 @@ const latte: ThemeDefinition = {
     'text-primary': '#2c2418',
     'text-secondary': '#6b5e4c',
     'text-dimmed': '#9c9080',
-    'text-accent': '#8b6914',
 
     'accent-primary': '#8b6914',
     'accent-blue': '#8b6914',
@@ -559,7 +553,6 @@ const sakura: ThemeDefinition = {
     'text-primary': '#2d2028',
     'text-secondary': '#6e5a62',
     'text-dimmed': '#a0909a',
-    'text-accent': '#d4487a',
 
     'accent-primary': '#d4487a',
     'accent-blue': '#d4487a',
@@ -642,7 +635,6 @@ const meadow: ThemeDefinition = {
     'text-primary': '#1a2c22',
     'text-secondary': '#4a6455',
     'text-dimmed': '#82a090',
-    'text-accent': '#0d7377',
 
     'accent-primary': '#0d7377',
     'accent-blue': '#0d7377',

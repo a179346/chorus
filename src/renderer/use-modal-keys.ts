@@ -1,14 +1,11 @@
 import { useEffect } from 'react';
 
-/** While `active`, Escape closes the dialog and Tab cycles focus inside it. */
-export function useModalKeys(
-  dialogRef: React.RefObject<HTMLElement | null>,
-  onClose: () => void,
-  active = true,
-): void {
+/** Escape closes the dialog and Tab cycles focus inside it. */
+export function useModalKeys(dialogRef: React.RefObject<HTMLElement | null>, onClose: () => void): void {
   useEffect(() => {
-    if (!active) return;
     const handler = (e: KeyboardEvent) => {
+      // Keys typed into an IME belong to it: Escape there cancels the composition, not the dialog
+      if (e.isComposing) return;
       if (e.key === 'Escape') {
         onClose();
         return;
@@ -32,5 +29,5 @@ export function useModalKeys(
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [active, dialogRef, onClose]);
+  }, [dialogRef, onClose]);
 }

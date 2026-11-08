@@ -21,7 +21,8 @@ export function useCommandHeld(): boolean {
     };
 
     const handleKeyDown = (e: KeyboardEvent): void => {
-      if (e.key !== 'Meta') {
+      // ⌘ pressed while another modifier is already down starts a chord like ⌘⇧T
+      if (e.key !== 'Meta' || e.shiftKey || e.altKey || e.ctrlKey) {
         reset();
         return;
       }

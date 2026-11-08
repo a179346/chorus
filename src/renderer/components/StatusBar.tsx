@@ -40,13 +40,16 @@ export function StatusBar({ session }: StatusBarProps): React.ReactElement {
         )}
         {session.prs.map((pr) => {
           const { Icon, color, background } = STAGE_ICON[pr.stage];
+          const label = `${prTooltip(pr)} — open on GitHub`;
           return (
             <button
               type="button"
               key={prLabel(pr)}
-              title={`${prTooltip(pr)} — open on GitHub`}
+              className="pr-chip"
+              title={label}
+              aria-label={label}
               onClick={() => openPrInBrowser(pr)}
-              style={{ ...tagStyle, ...prTagStyle, background, color }}
+              style={{ padding: '2px 6px', background, color }}
             >
               <Icon size={12} />
               #{pr.number}
@@ -135,15 +138,6 @@ const tagStyle: React.CSSProperties = {
   whiteSpace: 'nowrap',
   // @ts-expect-error Electron-specific
   WebkitAppRegion: 'no-drag',
-};
-
-const prTagStyle: React.CSSProperties = {
-  gap: 3,
-  padding: '2px 6px',
-  fontFamily: 'var(--font-mono)',
-  fontSize: 10,
-  cursor: 'pointer',
-  flexShrink: 0,
 };
 
 const contextBarTrackStyle: React.CSSProperties = {

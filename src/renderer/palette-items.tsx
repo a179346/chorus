@@ -1,4 +1,3 @@
-import React from 'react';
 import {
   Bell,
   BellDot,
@@ -15,7 +14,9 @@ import {
 } from 'lucide-react';
 import type { Session, ToolkitCommand } from '../shared/types';
 import { hasExited, shortenPath, statusColor, statusLabel } from './session-presentation';
+import { countNeedingAttention } from './use-sessions';
 import type { PaletteItem } from './components/CommandPalette';
+import { Keys } from './components/Kbd';
 import { StatusDot } from './components/StatusDot';
 import { ToolkitIcon } from './components/ToolkitIcon';
 
@@ -64,13 +65,11 @@ export function buildPaletteItems({
         <span style={{ color: session.id === activeSession?.id ? 'var(--text-dimmed)' : statusColor(session.status) }}>
           {session.id === activeSession?.id ? 'Current' : statusLabel(session.status)}
         </span>
-        {index < 9 && <kbd className="kbd" style={{ marginLeft: 8 }}>⌘{index + 1}</kbd>}
+        {index < 9 && <Keys keys={['⌘', String(index + 1)]} />}
       </>
     ),
     run: () => actions.selectSession(session.id),
   }));
-
-  const shortcut = (label: string): React.ReactNode => <kbd className="kbd">{label}</kbd>;
 
   const actionItems: PaletteItem[] = [
     {
@@ -79,17 +78,17 @@ export function buildPaletteItems({
       title: 'New Session…',
       keywords: 'create start open',
       leading: <Plus size={ICON_SIZE} />,
-      trailing: shortcut('⌘T'),
+      trailing: <Keys keys={['⌘', 'T']} />,
       run: actions.newSession,
     },
-    ...(sessions.length > 1
+    ...(countNeedingAttention(sessions, activeSession?.id ?? null) > 0
       ? [{
           id: 'action:next-attention',
           group: 'Actions',
           title: 'Next Session Needing Attention',
           keywords: 'unread waiting jump',
           leading: <BellDot size={ICON_SIZE} />,
-          trailing: shortcut('⌘J'),
+          trailing: <Keys keys={['⌘', 'J']} />,
           run: actions.nextNeedingAttention,
         }]
       : []),
@@ -108,7 +107,7 @@ export function buildPaletteItems({
       title: 'Preferences…',
       keywords: 'settings theme font size',
       leading: <Settings size={ICON_SIZE} />,
-      trailing: shortcut('⌘,'),
+      trailing: <Keys keys={['⌘', ',']} />,
       run: actions.openPreferences,
     },
   ];
@@ -165,7 +164,7 @@ function activeSessionItems(session: Session, actions: PaletteActions): PaletteI
       subtitle: name,
       keywords: 'search',
       leading: <Search size={ICON_SIZE} />,
-      trailing: <kbd className="kbd">⌘F</kbd>,
+      trailing: <Keys keys={['⌘', 'F']} />,
       run: actions.findInTerminal,
     },
   ];
@@ -187,7 +186,7 @@ function activeSessionItems(session: Session, actions: PaletteActions): PaletteI
     subtitle: name,
     keywords: 'close remove kill quit',
     leading: <X size={ICON_SIZE} />,
-    trailing: <kbd className="kbd">⌘W</kbd>,
+    trailing: <Keys keys={['⌘', 'W']} />,
     run: () => actions.endSession(id),
   });
   return items;

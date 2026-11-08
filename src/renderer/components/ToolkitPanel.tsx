@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Ellipsis, Pencil, Plus, Trash2 } from 'lucide-react';
 import type { ToolkitCommand } from '../../shared/types';
+import { useAsyncSubmit } from '../use-async-submit';
 import { Dialog, ConfirmDialog } from './Dialog';
 import { Menu, MenuItem, MenuDivider } from './Menu';
 import { ICON_OPTIONS, ToolkitIcon } from './ToolkitIcon';
@@ -8,22 +9,53 @@ import { ICON_OPTIONS, ToolkitIcon } from './ToolkitIcon';
 interface ToolkitPanelProps {
   commands: ToolkitCommand[];
   onExecute: (commandId: string) => void;
-  onAdd: (command: Omit<ToolkitCommand, 'id'>) => void;
-  onUpdate: (command: ToolkitCommand) => void;
-  onDelete: (commandId: string) => void;
+  // These reject when main refuses the edit (e.g. toolkit.json can't be read); the open dialog shows why
+  onAdd: (command: Omit<ToolkitCommand, 'id'>) => Promise<void>;
+  onUpdate: (command: ToolkitCommand) => Promise<void>;
+  onDelete: (commandId: string) => Promise<void>;
+}
+
+/** The open add or edit form. */
+interface CommandForm {
+  /** Tells openings apart, so each one starts from a fresh form. */
+  key: number;
+  /** The command being edited; null when adding one. */
+  editing: ToolkitCommand | null;
 }
 
 export function ToolkitPanel({ commands, onExecute, onAdd, onUpdate, onDelete }: ToolkitPanelProps): React.ReactElement {
-  const [editingCommand, setEditingCommand] = useState<ToolkitCommand | null>(null);
-  const [showAddForm, setShowAddForm] = useState(false);
+  const [form, setForm] = useState<CommandForm | null>(null);
+  const formOpeningsRef = useRef(0);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; commandId: string } | null>(null);
+  // The "…" button the open menu hangs from; none for a right-click menu
+  const menuAnchorRef = useRef<HTMLElement | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
   const closeMenu = useCallback(() => setContextMenu(null), []);
 
-  const openMenu = useCallback((commandId: string, x: number, y: number) => {
+  /** One form at a time: opening another while one is open keeps that one. */
+  const openForm = useCallback((editing: ToolkitCommand | null) => {
+    const key = ++formOpeningsRef.current;
+    setForm((current) => current ?? { key, editing });
+  }, []);
+
+  const closeForm = useCallback(() => setForm(null), []);
+
+  const openMenuAt = useCallback((commandId: string, x: number, y: number) => {
+    menuAnchorRef.current = null;
     setContextMenu({ x, y, commandId });
   }, []);
+
+  const toggleMenuFrom = useCallback((commandId: string, button: HTMLElement) => {
+    if (contextMenu && menuAnchorRef.current === button) {
+      setContextMenu(null);
+      return;
+    }
+    menuAnchorRef.current = button;
+    // Anchored to the button: a keyboard press has no pointer position
+    const rect = button.getBoundingClientRect();
+    setContextMenu({ x: rect.left, y: rect.bottom + 4, commandId });
+  }, [contextMenu]);
 
   const handleMenuAction = useCallback((action: 'edit' | 'delete') => {
     if (!contextMenu) return;
@@ -31,28 +63,24 @@ export function ToolkitPanel({ commands, onExecute, onAdd, onUpdate, onDelete }:
     setContextMenu(null);
     if (action === 'edit') {
       const cmd = commands.find((c) => c.id === commandId);
-      if (cmd) setEditingCommand(cmd);
+      if (cmd) openForm(cmd);
     } else {
       setDeleteConfirm(commandId);
     }
-  }, [contextMenu, commands]);
+  }, [contextMenu, commands, openForm]);
 
-  const handleConfirmDelete = useCallback(() => {
-    if (deleteConfirm) {
-      onDelete(deleteConfirm);
-      setDeleteConfirm(null);
-    }
-  }, [deleteConfirm, onDelete]);
+  const deleteCommand = useCallback(async (commandId: string) => {
+    await onDelete(commandId);
+    // Only its own confirm: a later one for another command stays open
+    setDeleteConfirm((current) => (current === commandId ? null : current));
+  }, [onDelete]);
 
-  const handleFormSubmit = useCallback((data: { label: string; command: string; icon: string }) => {
-    if (editingCommand) {
-      onUpdate({ ...editingCommand, ...data });
-      setEditingCommand(null);
-    } else {
-      onAdd(data);
-      setShowAddForm(false);
-    }
-  }, [editingCommand, onAdd, onUpdate]);
+  const submitForm = useCallback(async (submitted: CommandForm, data: { label: string; command: string; icon: string }) => {
+    if (submitted.editing) await onUpdate({ ...submitted.editing, ...data });
+    else await onAdd(data);
+    // Only its own form: one opened since stays open
+    setForm((current) => (current?.key === submitted.key ? null : current));
+  }, [onAdd, onUpdate]);
 
   return (
     <div style={containerStyle}>
@@ -63,7 +91,7 @@ export function ToolkitPanel({ commands, onExecute, onAdd, onUpdate, onDelete }:
           type="button"
           className="icon-btn"
           style={{ marginLeft: 'auto' }}
-          onClick={() => setShowAddForm(true)}
+          onClick={() => openForm(null)}
           title="Add command"
           aria-label="Add command"
         >
@@ -76,7 +104,7 @@ export function ToolkitPanel({ commands, onExecute, onAdd, onUpdate, onDelete }:
         {commands.length === 0 ? (
           <div style={{ gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, color: 'var(--text-dimmed)', fontSize: 11, padding: 16, lineHeight: 1.5, textAlign: 'center' }}>
             Save prompts and commands you use often — one click types them into the current session.
-            <button type="button" className="btn" onClick={() => setShowAddForm(true)}>
+            <button type="button" className="btn" onClick={() => openForm(null)}>
               <Plus size={12} />
               Add Command
             </button>
@@ -87,7 +115,8 @@ export function ToolkitPanel({ commands, onExecute, onAdd, onUpdate, onDelete }:
               key={cmd.id}
               command={cmd}
               onExecute={onExecute}
-              onOpenMenu={openMenu}
+              onOpenMenu={openMenuAt}
+              onToggleMenu={toggleMenuFrom}
             />
           ))
         )}
@@ -95,7 +124,7 @@ export function ToolkitPanel({ commands, onExecute, onAdd, onUpdate, onDelete }:
 
       {/* Context menu */}
       {contextMenu && (
-        <Menu x={contextMenu.x} y={contextMenu.y} onClose={closeMenu}>
+        <Menu x={contextMenu.x} y={contextMenu.y} anchorRef={menuAnchorRef} onClose={closeMenu}>
           <MenuItem icon={<Pencil size={13} />} onSelect={() => handleMenuAction('edit')}>
             Edit…
           </MenuItem>
@@ -107,17 +136,19 @@ export function ToolkitPanel({ commands, onExecute, onAdd, onUpdate, onDelete }:
       )}
 
       {/* Add / Edit form dialog */}
-      {(showAddForm || editingCommand) && (
+      {form && (
         <CommandFormDialog
-          initial={editingCommand}
-          onSubmit={handleFormSubmit}
-          onClose={() => { setShowAddForm(false); setEditingCommand(null); }}
+          key={form.key}
+          initial={form.editing}
+          onSubmit={(data) => submitForm(form, data)}
+          onClose={closeForm}
         />
       )}
 
       {/* Delete confirmation dialog */}
       {deleteConfirm && (
         <ConfirmDialog
+          key={deleteConfirm}
           title="Delete Command"
           message={
             <>
@@ -125,7 +156,7 @@ export function ToolkitPanel({ commands, onExecute, onAdd, onUpdate, onDelete }:
             </>
           }
           confirmLabel="Delete"
-          onConfirm={handleConfirmDelete}
+          onConfirm={() => deleteCommand(deleteConfirm)}
           onCancel={() => setDeleteConfirm(null)}
         />
       )}
@@ -139,9 +170,10 @@ interface ToolkitButtonProps {
   command: ToolkitCommand;
   onExecute: (commandId: string) => void;
   onOpenMenu: (commandId: string, x: number, y: number) => void;
+  onToggleMenu: (commandId: string, button: HTMLElement) => void;
 }
 
-function ToolkitButton({ command, onExecute, onOpenMenu }: ToolkitButtonProps): React.ReactElement {
+function ToolkitButton({ command, onExecute, onOpenMenu, onToggleMenu }: ToolkitButtonProps): React.ReactElement {
   return (
     <div className="toolkit-item" style={{ position: 'relative' }}>
       <button
@@ -166,11 +198,7 @@ function ToolkitButton({ command, onExecute, onOpenMenu }: ToolkitButtonProps): 
       <button
         type="button"
         className="toolkit-more"
-        onClick={(e) => {
-          // Anchored to the button: a keyboard press has no pointer position
-          const rect = e.currentTarget.getBoundingClientRect();
-          onOpenMenu(command.id, rect.left, rect.bottom + 4);
-        }}
+        onClick={(e) => onToggleMenu(command.id, e.currentTarget)}
         title="Edit or delete"
         aria-label={`Edit or delete ${command.label}`}
       >
@@ -184,7 +212,8 @@ function ToolkitButton({ command, onExecute, onOpenMenu }: ToolkitButtonProps): 
 
 interface CommandFormDialogProps {
   initial: ToolkitCommand | null;
-  onSubmit: (data: { label: string; command: string; icon: string }) => void;
+  /** Closes the dialog on success; rejects when the edit was refused, and the dialog says why. */
+  onSubmit: (data: { label: string; command: string; icon: string }) => Promise<void>;
   onClose: () => void;
 }
 
@@ -193,22 +222,34 @@ function CommandFormDialog({ initial, onSubmit, onClose }: CommandFormDialogProp
   const [command, setCommand] = useState(initial?.command ?? '');
   const [icon, setIcon] = useState(initial?.icon ?? '');
   const labelRef = useRef<HTMLInputElement>(null);
+  const { run: submit, pending: submitting, error, clearError } = useAsyncSubmit(onSubmit);
 
   useEffect(() => {
     labelRef.current?.focus();
   }, []);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  // An error describes the values that were submitted; any edit makes it stale
+  useEffect(() => {
+    clearError();
+  }, [label, command, icon, clearError]);
+
+  const handleSubmit = (e: React.FormEvent): void => {
     e.preventDefault();
     if (!label.trim() || !command.trim()) return;
-    onSubmit({ label: label.trim(), command: command.trim(), icon });
+    void submit({ label: label.trim(), command: command.trim(), icon });
+  };
+
+  // A pending save belongs to this form: let it finish so its result
+  // (closing, or an error) can't land on a later one
+  const close = (): void => {
+    if (!submitting) onClose();
   };
 
   const isValid = label.trim() && command.trim();
   const title = initial ? 'Edit Command' : 'Add Command';
 
   return (
-    <Dialog title={title} label={title} onClose={onClose} width={400}>
+    <Dialog title={title} label={title} onClose={close} width={400}>
       <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div className="field">
           <label htmlFor="toolkit-label" className="field-label">Label</label>
@@ -237,15 +278,14 @@ function CommandFormDialog({ initial, onSubmit, onClose }: CommandFormDialogProp
 
         <div className="field">
           <span className="field-label">Icon</span>
-          <div role="radiogroup" aria-label="Icon" style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+          <div role="group" aria-label="Icon" style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
             {ICON_OPTIONS.map((opt) => {
               const selected = icon === opt.value;
               return (
                 <button
                   key={opt.value}
                   type="button"
-                  role="radio"
-                  aria-checked={selected}
+                  aria-pressed={selected}
                   aria-label={opt.label}
                   title={opt.label}
                   className="btn"
@@ -265,11 +305,13 @@ function CommandFormDialog({ initial, onSubmit, onClose }: CommandFormDialogProp
           </div>
         </div>
 
+        {error && <span className="field-error" role="alert">{error}</span>}
+
         <div className="dialog-actions">
-          <button type="button" className="btn" onClick={onClose}>
+          <button type="button" className="btn" onClick={close} aria-disabled={submitting}>
             Cancel
           </button>
-          <button type="submit" className="btn btn-primary" disabled={!isValid}>
+          <button type="submit" className="btn btn-primary" disabled={!isValid} aria-disabled={submitting}>
             {initial ? 'Save' : 'Add'}
           </button>
         </div>

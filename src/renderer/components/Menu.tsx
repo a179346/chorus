@@ -1,4 +1,6 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { useCloseOnFocusOutside } from '../use-close-on-focus-outside';
+import { focusIsLost, useFocusReturn } from '../use-focus-return';
 
 const VIEWPORT_MARGIN = 8;
 
@@ -7,67 +9,134 @@ interface MenuProps {
   y: number;
   label?: string;
   width?: number;
+  /** The button that opened the menu: pressing it again is its own toggle, not an outside press. */
+  anchorRef?: RefObject<HTMLElement | null>;
   onClose: () => void;
   children: React.ReactNode;
 }
 
 /**
- * A floating menu at (x, y), measured and nudged to stay on screen.
- * Closes on outside press or Escape; arrow keys move between items.
+ * A floating menu at (x, y), measured and nudged to stay on screen, scrolling
+ * when taller than the window. While focus is in it, arrow keys, Home and End
+ * move between items. It closes on Escape, Tab, a press outside it and its
+ * anchor, or focus leaving it, and hands focus back to whatever had it before.
  */
-export function Menu({ x, y, label, width, onClose, children }: MenuProps): React.ReactElement {
+export function Menu({ x, y, label, width, anchorRef, onClose, children }: MenuProps): React.ReactElement {
   const menuRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ left: x, top: y });
-  // Read through a ref so a new callback identity doesn't re-run the setup and steal focus
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
 
-  // Before paint, so the menu never flashes at its unclamped spot
+  const isReturningFocus = useFocusReturn(menuRef);
+  useCloseOnFocusOutside(menuRef, isReturningFocus, onClose);
+
+  // Before paint, so the menu never flashes at its unclamped spot, and again
+  // whenever its items change size while it's open
   useLayoutEffect(() => {
     const menu = menuRef.current;
     if (!menu) return;
-    const { width: w, height: h } = menu.getBoundingClientRect();
-    setPosition({
-      left: Math.max(4, Math.min(x, window.innerWidth - w - VIEWPORT_MARGIN)),
-      top: Math.max(4, Math.min(y, window.innerHeight - h - VIEWPORT_MARGIN)),
-    });
+    const clamp = (): void => {
+      const { width: w, height: h } = menu.getBoundingClientRect();
+      setPosition({
+        left: clampToViewport(x, w, window.innerWidth),
+        top: clampToViewport(y, h, window.innerHeight),
+      });
+    };
+    clamp();
+    const observer = new ResizeObserver(clamp);
+    observer.observe(menu);
+    return () => observer.disconnect();
   }, [x, y]);
 
   useEffect(() => {
-    const items = (): HTMLElement[] =>
-      Array.from(menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
-
     const handlePointerDown = (e: MouseEvent): void => {
-      if (e.target instanceof Node && !menuRef.current?.contains(e.target)) onCloseRef.current();
-    };
-    const handleKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') {
-        onCloseRef.current();
+      if (!(e.target instanceof Node) || menuRef.current?.contains(e.target)) return;
+      if (anchorRef?.current?.contains(e.target)) {
+        // The anchor's click toggles the menu; until then focus stays in it
+        e.preventDefault();
         return;
       }
-      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
-      e.preventDefault();
-      const list = items();
-      if (list.length === 0) return;
-      const current = list.findIndex((item) => item === document.activeElement);
-      const step = e.key === 'ArrowDown' ? 1 : -1;
-      list[(current + step + list.length) % list.length].focus();
+      onClose();
     };
-
     window.addEventListener('mousedown', handlePointerDown);
-    window.addEventListener('keydown', handleKeyDown);
-    items()[0]?.focus();
-    return () => {
-      window.removeEventListener('mousedown', handlePointerDown);
-      window.removeEventListener('keydown', handleKeyDown);
-    };
+    return () => window.removeEventListener('mousedown', handlePointerDown);
+  }, [anchorRef, onClose]);
+
+  useEffect(() => {
+    const menu = menuRef.current;
+    if (!menu) return;
+    const focusFirstItem = (): void => menuItems(menu)[0]?.focus();
+    focusFirstItem();
+    // A re-render can remove the focused item (its action stopped applying); keep the keyboard in the menu
+    const observer = new MutationObserver(() => {
+      if (focusIsLost()) focusFirstItem();
+    });
+    observer.observe(menu, { childList: true, subtree: true });
+    return () => observer.disconnect();
   }, []);
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (e.key === 'Escape' || e.key === 'Tab') {
+      // Tab would wander off into the page behind; leave the way Escape does
+      e.preventDefault();
+      onClose();
+      return;
+    }
+    const items = menuItems(e.currentTarget);
+    const current = items.findIndex((item) => item === document.activeElement);
+    const next = itemIndexForKey(e.key, current, items.length);
+    if (next === null) return;
+    e.preventDefault();
+    items[next].focus();
+  };
+
   return (
-    <div ref={menuRef} role="menu" aria-label={label} className="menu" style={{ ...position, width }}>
+    <div
+      ref={menuRef}
+      role="menu"
+      aria-label={label}
+      className="menu"
+      style={{ ...position, width, maxHeight: `calc(100vh - ${2 * VIEWPORT_MARGIN}px)` }}
+      onKeyDown={handleKeyDown}
+      // Focus leaving the page (another window) fires no focusin, so blur covers it
+      onBlur={(e) => {
+        if (e.relatedTarget === null) onClose();
+      }}
+      // Hover already moves focus; a press on a divider or the padding mustn't drop it
+      onMouseDown={(e) => e.preventDefault()}
+      // A right-click inside is the menu's own: no native menu, and none from the panel behind
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+    >
       {children}
     </div>
   );
+}
+
+/** `start` moved as little as needed for `size` to fit in `viewport`, margin included. */
+function clampToViewport(start: number, size: number, viewport: number): number {
+  return Math.max(VIEWPORT_MARGIN, Math.min(start, viewport - size - VIEWPORT_MARGIN));
+}
+
+function menuItems(menu: HTMLElement): HTMLElement[] {
+  return Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+}
+
+/** The item a navigation key moves to from `current` (-1 for none), or null for any other key. */
+function itemIndexForKey(key: string, current: number, count: number): number | null {
+  if (count === 0) return null;
+  switch (key) {
+    case 'ArrowDown':
+      return (current + 1) % count;
+    case 'ArrowUp':
+      return current <= 0 ? count - 1 : current - 1;
+    case 'Home':
+      return 0;
+    case 'End':
+      return count - 1;
+    default:
+      return null;
+  }
 }
 
 interface MenuItemProps {

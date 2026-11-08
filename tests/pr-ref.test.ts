@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parsePrUrl, prLabel, prUrl, samePr } from '../src/shared/pr-ref';
+import { findPrUrls, parsePrUrl, prKey, prLabel, prUrl, samePr } from '../src/shared/pr-ref';
 import type { LinkedPr } from '../src/shared/types';
 
 describe('parsePrUrl', () => {
@@ -47,6 +47,24 @@ describe('parsePrUrl', () => {
   });
 });
 
+describe('findPrUrls', () => {
+  it('finds every PR URL in free text, in order', () => {
+    const text = 'Created https://github.com/o/r/pull/1 (see https://github.com/my-org/my.repo/pull/22/files).';
+    expect(findPrUrls(text)).toEqual([
+      { owner: 'o', repo: 'r', number: 1 },
+      { owner: 'my-org', repo: 'my.repo', number: 22 },
+    ]);
+  });
+
+  it('skips links that are not a numbered PR', () => {
+    expect(findPrUrls('remote: https://github.com/o/r/pull/new/feat\nhttps://github.com/o/r/issues/3')).toEqual([]);
+  });
+
+  it('returns nothing for text without a PR URL', () => {
+    expect(findPrUrls('')).toEqual([]);
+  });
+});
+
 describe('prUrl / prLabel', () => {
   const pr = { owner: 'a179346', repo: 'chorus', number: 47 };
 
@@ -57,6 +75,17 @@ describe('prUrl / prLabel', () => {
 
   it('formats a short label', () => {
     expect(prLabel(pr)).toBe('a179346/chorus#47');
+  });
+});
+
+describe('prKey', () => {
+  it('is the same for refs that differ only in owner/repo case', () => {
+    expect(prKey({ owner: 'Foo', repo: 'Bar', number: 1 })).toBe(prKey({ owner: 'foo', repo: 'bar', number: 1 }));
+  });
+
+  it('differs between PRs', () => {
+    expect(prKey({ owner: 'o', repo: 'r', number: 1 })).not.toBe(prKey({ owner: 'o', repo: 'r', number: 2 }));
+    expect(prKey({ owner: 'o', repo: 'r1', number: 1 })).not.toBe(prKey({ owner: 'o1', repo: 'r', number: 1 }));
   });
 });
 

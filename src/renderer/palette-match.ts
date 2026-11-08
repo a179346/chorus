@@ -7,31 +7,44 @@ const SCATTERED = 20;
 /** A hit in an item's secondary text counts for less than one in its title. */
 const SECONDARY_PENALTY = 30;
 
+/** Separates words in an item's text. */
 const WORD_BREAK = /[\s\-_./]/;
 
 /**
- * How well `text` matches `query`, case-insensitively, or null when it doesn't:
- * a prefix beats a word start, which beats a substring, which beats the
- * query's letters appearing in order with gaps.
+ * The same breaks for the query, so "api-refactor" finds "api refactor", except
+ * a "/" that starts a word: it belongs to a slash command like "/pr".
  */
-export function matchScore(text: string, query: string): number | null {
-  const q = query.trim().toLowerCase();
-  if (!q) return 0;
-  const t = text.toLowerCase();
+const QUERY_WORD_BREAK = /[\s\-_.]|(?<=\S)\//;
 
-  if (t.startsWith(q)) return PREFIX;
-  for (let i = t.indexOf(q); i !== -1; i = t.indexOf(q, i + 1)) {
+/** Case- and Unicode-form-insensitive, so "café" typed either way matches. */
+function normalize(text: string): string {
+  return text.toLowerCase().normalize('NFC');
+}
+
+/**
+ * How well `text` matches one query `word`, ignoring case, or null when it
+ * doesn't: a prefix beats a word start, which beats a substring, which beats
+ * the word's letters appearing in order with gaps.
+ */
+export function wordScore(text: string, word: string): number | null {
+  const t = normalize(text);
+  const w = normalize(word);
+
+  if (t.startsWith(w)) return PREFIX;
+  for (let i = t.indexOf(w); i !== -1; i = t.indexOf(w, i + 1)) {
     if (i > 0 && WORD_BREAK.test(t[i - 1])) return WORD_START;
   }
-  if (t.includes(q)) return SUBSTRING;
-  return isSubsequence(q, t) ? SCATTERED : null;
+  if (t.includes(w)) return SUBSTRING;
+  return isSubsequence(w, t) ? SCATTERED : null;
 }
 
 function isSubsequence(needle: string, haystack: string): boolean {
+  // By code point, not UTF-16 unit, so an emoji is one character on both sides
+  const wanted = Array.from(needle);
   let next = 0;
   for (const ch of haystack) {
-    if (ch === needle[next]) next++;
-    if (next === needle.length) return true;
+    if (ch === wanted[next]) next++;
+    if (next === wanted.length) return true;
   }
   return false;
 }
@@ -44,10 +57,11 @@ export interface Matchable {
   keywords?: string;
 }
 
-function itemScore(item: Matchable, query: string): number | null {
-  const title = matchScore(item.title, query);
+/** The item's best score for one word: in its title, or for less in its other text. */
+function fieldScore(item: Matchable, word: string): number | null {
+  const title = wordScore(item.title, word);
   const secondary = [item.subtitle, item.keywords]
-    .map((text) => (text ? matchScore(text, query) : null))
+    .map((text) => (text ? wordScore(text, word) : null))
     .filter((score): score is number => score !== null)
     .map((score) => score - SECONDARY_PENALTY);
   const scores = title === null ? secondary : [title, ...secondary];
@@ -55,23 +69,41 @@ function itemScore(item: Matchable, query: string): number | null {
 }
 
 /**
- * The items matching `query`. Groups keep the order they first appear in, so
- * section headers stay stable while typing; within a group, better matches
- * come first and ties keep their original order.
+ * Every word must match somewhere in the item, in any order ("rename api"
+ * finds Rename Session… on session api), and the item ranks by its weakest
+ * word.
+ */
+function itemScore(item: Matchable, words: readonly string[]): number | null {
+  const scores: number[] = [];
+  for (const word of words) {
+    const score = fieldScore(item, word);
+    if (score === null) return null;
+    scores.push(score);
+  }
+  return Math.min(...scores);
+}
+
+/**
+ * The items matching `query`, best first. A group's items stay together so
+ * section headers don't repeat, and the group holding the best match leads;
+ * equal scores keep the original order. Without a query, everything keeps
+ * its original order.
  */
 export function filterPaletteItems<T extends Matchable>(items: readonly T[], query: string): T[] {
-  const groupRanks = new Map<string, number>();
-  const groupRank = (group: string): number => {
-    let rank = groupRanks.get(group);
-    if (rank === undefined) {
-      rank = groupRanks.size;
-      groupRanks.set(group, rank);
-    }
-    return rank;
-  };
-  return items
-    .map((item, index) => ({ item, index, group: groupRank(item.group), score: itemScore(item, query) }))
+  const words = query.split(QUERY_WORD_BREAK).filter(Boolean);
+  if (words.length === 0) return [...items];
+
+  const ranked = items
+    .map((item, index) => ({ item, index, score: itemScore(item, words) }))
     .filter((entry): entry is typeof entry & { score: number } => entry.score !== null)
-    .sort((a, b) => a.group - b.group || b.score - a.score || a.index - b.index)
-    .map((entry) => entry.item);
+    .sort((a, b) => b.score - a.score || a.index - b.index);
+
+  // A group first appears with its best match, so groups come out best-led too
+  const byGroup = new Map<string, T[]>();
+  for (const { item } of ranked) {
+    const group = byGroup.get(item.group);
+    if (group) group.push(item);
+    else byGroup.set(item.group, [item]);
+  }
+  return [...byGroup.values()].flat();
 }

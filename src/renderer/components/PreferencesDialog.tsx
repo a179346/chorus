@@ -37,8 +37,12 @@ export function PreferencesDialog({ open, fontFamily, theme, claudeFontSize, she
     setSelectedTheme(theme);
     setClaudeSize(String(claudeFontSize));
     setShellSize(String(shellFontSize));
-    setTimeout(() => inputRef.current?.focus(), 50);
   }, [open, fontFamily, theme, claudeFontSize, shellFontSize]);
+
+  // Right away, so keys typed just after opening land here and not in a terminal
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
 
   const handleClose = useCallback(() => {
     onPreviewTheme(theme); // restore original theme
@@ -71,7 +75,7 @@ export function PreferencesDialog({ open, fontFamily, theme, claudeFontSize, she
     <Dialog title="Preferences" label="Preferences" onClose={handleClose} width={460}>
       <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         {/* Theme picker */}
-        <div className="field" role="radiogroup" aria-label="Theme">
+        <div className="field" role="group" aria-label="Theme">
           <span className="field-label">Theme</span>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
             {THEMES.map((t) => {
@@ -80,21 +84,12 @@ export function PreferencesDialog({ open, fontFamily, theme, claudeFontSize, she
                 <button
                   key={t.id}
                   type="button"
-                  role="radio"
-                  aria-checked={isActive}
+                  className="theme-swatch"
+                  aria-pressed={isActive}
                   aria-label={t.name}
                   onClick={() => handleThemeSelect(t.id)}
-                  style={{
-                    padding: 0,
-                    borderRadius: 'var(--radius-md)',
-                    border: '1px solid var(--border-default)',
-                    outline: isActive ? `2px solid ${t.preview.accent}` : 'none',
-                    outlineOffset: 1,
-                    cursor: 'pointer',
-                    overflow: 'hidden',
-                    background: 'none',
-                    transition: 'outline-color var(--transition-fast)',
-                  }}
+                  // The selection ring is drawn in currentColor: the theme's own accent
+                  style={{ color: t.preview.accent }}
                 >
                   <div style={{
                     height: 38,

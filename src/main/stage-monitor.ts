@@ -1,15 +1,18 @@
 import { spawn } from 'node:child_process';
 import pLimit from 'p-limit';
 import type { LinkedPr, PrRef, PrStage, Session } from '../shared/types';
-import { samePr } from '../shared/pr-ref';
+import { prKey, samePr } from '../shared/pr-ref';
 
 const GH_TIMEOUT_MS = 10_000;
 const GH_RETRY_AFTER_MS = 5 * 60 * 1000;
 const STAGE_DEBOUNCE_MS = 1000;
 const STAGE_POLL_INTERVAL_MS = 60_000;
 
+/** The stages gh can report for a PR it found; `not-found` stands for one it didn't. */
+type FoundPrStage = Exclude<PrStage, 'not-found'>;
+
 export type GhResult =
-  | { type: 'ok'; stage: PrStage }
+  | { type: 'ok'; stage: FoundPrStage }
   | { type: 'not-found' }
   | { type: 'unavailable' }
   | { type: 'error' };
@@ -21,7 +24,7 @@ export function deriveStage(json: {
   state?: unknown;
   isDraft?: unknown;
   mergedAt?: unknown;
-}): PrStage {
+}): FoundPrStage {
   const state = typeof json.state === 'string' ? json.state.toUpperCase() : '';
   const isDraft = json.isDraft === true;
   const merged = json.mergedAt !== null && json.mergedAt !== undefined && json.mergedAt !== '';
@@ -50,7 +53,9 @@ export function runGhPrView(pr: PrRef): Promise<GhResult> {
           'view',
           String(pr.number),
           '-R',
-          `${pr.owner}/${pr.repo}`,
+          // Linked PRs are on github.com; a bare owner/repo would go to GH_HOST,
+          // or to an Enterprise host gh is logged in to
+          `github.com/${pr.owner}/${pr.repo}`,
           '--json',
           'state,isDraft,mergedAt',
         ],
@@ -130,14 +135,18 @@ function inFlightPrefix(sessionId: string): string {
   return `${sessionId}\0`;
 }
 
-/** Lowercased PR part so it matches samePr's case-insensitivity. */
 function inFlightKey(sessionId: string, pr: PrRef): string {
-  return inFlightPrefix(sessionId) + `${pr.owner}/${pr.repo}#${pr.number}`.toLowerCase();
+  return inFlightPrefix(sessionId) + prKey(pr);
+}
+
+/** A merged PR stays merged; any other stage can still change (a closed PR can reopen). */
+function canChangeStage(pr: LinkedPr): boolean {
+  return pr.stage !== 'merged';
 }
 
 /**
- * Owns the PRs linked to each session: links them (detected in the transcript
- * or added by the user), unlinks them, and keeps each one's stage current —
+ * Owns the PRs linked to each session: links them (created by Claude, or
+ * added by the user), unlinks them, and keeps each one's stage current —
  * debouncing bursts, deduping in-flight lookups, limiting gh concurrency, and
  * backing off when gh is unavailable. Changes are committed through the
  * session-state seam; when a poll finds a PR's stage unchanged, only its
@@ -173,11 +182,11 @@ export class StageMonitor {
     this.limit = pLimit(opts.concurrency ?? 4);
   }
 
-  /** Look up the stage of every PR linked to the session. */
+  /** Look up the stage of every PR linked to the session that can still change. */
   refresh(sessionId: string): Promise<void> {
     const session = this.getSession(sessionId);
-    if (!session || session.status === 'ended') return Promise.resolve();
-    return this.refreshPrs(sessionId, session.prs);
+    if (!session) return Promise.resolve();
+    return this.refreshPrs(sessionId, session.prs.filter(canChangeStage));
   }
 
   scheduleRefresh(sessionId: string | null): void {
@@ -197,33 +206,36 @@ export class StageMonitor {
     for (const s of this.getAllSessions()) void this.refresh(s.id);
   }
 
-  /** PRs Claude created, found in the transcript. PRs the user unlinked stay unlinked. */
-  handlePrsDetected(sessionId: string, prs: PrRef[]): void {
-    const session = this.getSession(sessionId);
-    if (!session || session.status === 'ended') return;
-    const wanted = prs.filter((pr) => !session.unlinkedPrs.some((u) => samePr(u, pr)));
-    this.link(session, wanted, session.unlinkedPrs);
-  }
-
-  /** PRs the user linked by hand; linking undoes an earlier unlink. */
+  /**
+   * Link PRs — ones Claude created, or the user added — to the session,
+   * skipping those already linked, and look up each of them whose stage can
+   * still change.
+   */
   linkPrs(sessionId: string, prs: PrRef[]): void {
     const session = this.getSession(sessionId);
     if (!session) return;
-    const unlinkedPrs = session.unlinkedPrs.filter((u) => !prs.some((pr) => samePr(u, pr)));
-    this.link(session, prs, unlinkedPrs);
+
+    const linked: LinkedPr[] = [...session.prs];
+    for (const pr of prs) {
+      if (linked.some((p) => samePr(p, pr))) continue;
+      linked.push({ ...toPrRef(pr), stage: 'unknown', stageUpdatedAt: null });
+    }
+    if (linked.length !== session.prs.length) this.commit(sessionId, { prs: linked });
+
+    const requested = linked.filter((p) => prs.some((pr) => samePr(p, pr)));
+    void this.refreshPrs(sessionId, requested.filter(canChangeStage));
   }
 
-  /** Stop tracking a PR, and remember it so transcript detection won't link it again. */
+  /** Stop tracking a PR. */
   unlinkPr(sessionId: string, pr: PrRef): void {
     const session = this.getSession(sessionId);
     if (!session) return;
     const prs = session.prs.filter((p) => !samePr(p, pr));
     if (prs.length === session.prs.length) return;
-    const unlinkedPrs = [...session.unlinkedPrs.filter((u) => !samePr(u, pr)), toPrRef(pr)];
-    this.commit(sessionId, { prs, unlinkedPrs });
+    this.commit(sessionId, { prs });
   }
 
-  /** Drop any pending work for a session (called when it ends). */
+  /** Drop any pending work for a session (called when it is closed). */
   forget(sessionId: string): void {
     const prefix = inFlightPrefix(sessionId);
     for (const key of this.inFlight.keys()) {
@@ -252,22 +264,6 @@ export class StageMonitor {
     this.inFlight.clear();
   }
 
-  /** Append the PRs not linked yet, commit any change, and look all of them up. */
-  private link(session: Session, prs: PrRef[], unlinkedPrs: PrRef[]): void {
-    const linked: LinkedPr[] = [...session.prs];
-    for (const pr of prs) {
-      if (linked.some((p) => samePr(p, pr))) continue;
-      linked.push({ ...toPrRef(pr), stage: 'unknown', stageUpdatedAt: null });
-    }
-
-    const updates: Partial<Session> = {};
-    if (linked.length !== session.prs.length) updates.prs = linked;
-    if (unlinkedPrs.length !== session.unlinkedPrs.length) updates.unlinkedPrs = unlinkedPrs;
-    if (Object.keys(updates).length > 0) this.commit(session.id, updates);
-
-    void this.refreshPrs(session.id, prs);
-  }
-
   private async refreshPrs(sessionId: string, prs: PrRef[]): Promise<void> {
     await Promise.all(prs.map((pr) => this.refreshPr(sessionId, pr)));
   }
@@ -277,18 +273,24 @@ export class StageMonitor {
     const existing = this.inFlight.get(key);
     if (existing) return existing;
 
-    if (!this.ghAvailable && this.now() < this.ghUnavailableUntil) return Promise.resolve();
-
     const promise = this.limit(async () => {
+      // Checked when the lookup runs, not when queued: an earlier lookup
+      // in the queue may just have found gh unavailable
+      if (this.ghBackingOff()) return;
       if (!this.findLinked(sessionId, pr)) return;
       const result = await this.runGh(toPrRef(pr));
       this.applyGhResult(sessionId, pr, result);
     }).finally(() => {
-      this.inFlight.delete(key);
+      // forget() may have dropped this lookup and a newer one taken the key
+      if (this.inFlight.get(key) === promise) this.inFlight.delete(key);
     });
 
     this.inFlight.set(key, promise);
     return promise;
+  }
+
+  private ghBackingOff(): boolean {
+    return !this.ghAvailable && this.now() < this.ghUnavailableUntil;
   }
 
   private applyGhResult(sessionId: string, pr: PrRef, result: GhResult): void {
@@ -300,35 +302,30 @@ export class StageMonitor {
     if (result.type === 'error') return;
     this.ghAvailable = true;
 
-    // Re-read: the session may have ended, or the PR been unlinked, mid-lookup
+    // Re-read: the session may have been closed, or the PR unlinked, mid-lookup
     const found = this.findLinked(sessionId, pr);
     if (!found) return;
     const { session, entry } = found;
 
-    if (result.type === 'not-found') {
-      this.commit(sessionId, { prs: session.prs.filter((p) => p !== entry) });
-      return;
-    }
-
+    // Kept, not unlinked: the user decides whether a PR gh can't see goes
+    const stage = result.type === 'not-found' ? 'not-found' : result.stage;
     const ts = this.now();
-    if (entry.stage === result.stage) {
+    if (entry.stage === stage) {
       entry.stageUpdatedAt = ts;
       return;
     }
     this.commit(sessionId, {
-      prs: session.prs.map((p) =>
-        p === entry ? { ...p, stage: result.stage, stageUpdatedAt: ts } : p,
-      ),
+      prs: session.prs.map((p) => (p === entry ? { ...p, stage, stageUpdatedAt: ts } : p)),
     });
   }
 
-  /** The live session and its entry for this PR, unless the session ended or the PR is unlinked. */
+  /** The open session and its entry for this PR, unless the session was closed or the PR unlinked. */
   private findLinked(
     sessionId: string,
     pr: PrRef,
   ): { session: Session; entry: LinkedPr } | null {
     const session = this.getSession(sessionId);
-    if (!session || session.status === 'ended') return null;
+    if (!session) return null;
     const entry = session.prs.find((p) => samePr(p, pr));
     return entry ? { session, entry } : null;
   }

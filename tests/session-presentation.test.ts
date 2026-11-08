@@ -23,10 +23,17 @@ describe('summaryStage', () => {
     expect(summaryStage(prsWith('unknown', 'closed'))).toBe('closed');
     expect(summaryStage(prsWith('unknown', 'unknown'))).toBe('unknown');
   });
+
+  it('ranks a PR gh cannot find below open PRs but above finished ones', () => {
+    expect(summaryStage(prsWith('not-found', 'draft'))).toBe('draft');
+    expect(summaryStage(prsWith('merged', 'closed', 'not-found'))).toBe('not-found');
+    expect(summaryStage(prsWith('unknown', 'not-found'))).toBe('not-found');
+  });
 });
 
 describe('prTooltip', () => {
   it('names the PR and its stage', () => {
     expect(prTooltip(prsWith('ready')[0])).toBe('o/r#1 · Ready for review');
+    expect(prTooltip(prsWith('not-found')[0])).toBe('o/r#1 · Not found');
   });
 });

@@ -1,7 +1,8 @@
 import http from 'node:http';
 
 import type { PrRef, SessionStatus } from '../shared/types';
-import { extractPrsFromCreateCalls, readTranscriptMetadata } from './transcript-reader';
+import { findPrUrls } from '../shared/pr-ref';
+import { readTranscriptMetadata } from './transcript-reader';
 
 export interface HookEvent {
   session_id: string;
@@ -11,6 +12,10 @@ export interface HookEvent {
   model?: string;
   tool_name?: string;
   tool_input?: unknown;
+  /** PostToolUse: what the tool returned; Bash's has `stdout`. */
+  tool_response?: unknown;
+  /** PostToolUseFailure: why the tool failed, as a string. */
+  error?: unknown;
   message?: string;
   notification_type?: string;
   source?: string;
@@ -26,10 +31,11 @@ const HOOK_STATUS_MAP: Record<string, SessionStatus> = {
   UserPromptSubmit: 'thinking',
   Stop: 'idle',
   PreToolUse: 'generating',
-  // A tool finishing after a permission prompt is the only signal that the
-  // user approved it — without it the session would read 'waiting' until
-  // the next tool call or Stop.
+  // A tool finishing (or failing) after a permission prompt is the only
+  // signal that the user approved it — without it the session would read
+  // 'waiting' until the next tool call or Stop.
   PostToolUse: 'generating',
+  PostToolUseFailure: 'generating',
   SessionStart: 'idle',
 };
 
@@ -52,6 +58,71 @@ export interface HookUpdate {
   contextLimit?: number | null;
   /** Claude's own description of what it is blocked on; set only with 'waiting'. */
   waitingReason?: string;
+}
+
+// ─── PR creation ─────────────────────────────────────────
+
+const GH_PR_CREATE_RE = /(?:^|[\s;|&(])gh\s+pr\s+create\b/;
+// The GitHub MCP server's tool under whatever name the server was added as
+// (mcp__github__…, mcp__plugin_github_github__…, mcp__claude_ai_GitHub__…)
+const MCP_CREATE_PR_TOOL_RE = /^mcp__[\w-]*github[\w-]*__create_pull_request$/i;
+
+function runsGhPrCreate(event: HookEvent): boolean {
+  if (event.tool_name !== 'Bash') return false;
+  const input = event.tool_input;
+  if (typeof input !== 'object' || input === null || !('command' in input)) return false;
+  return typeof input.command === 'string' && GH_PR_CREATE_RE.test(input.command);
+}
+
+function stdoutOf(toolResponse: unknown): string | undefined {
+  if (typeof toolResponse !== 'object' || toolResponse === null || !('stdout' in toolResponse)) return undefined;
+  return typeof toolResponse.stdout === 'string' ? toolResponse.stdout : undefined;
+}
+
+/** The text in which a finished create-PR tool call reports its PR; undefined for any other event. */
+function createPrOutput(event: HookEvent): string | undefined {
+  switch (event.hook_event_name) {
+    case 'PostToolUse':
+      if (runsGhPrCreate(event)) return stdoutOf(event.tool_response);
+      // MCP results differ in shape between servers; the URL is in there as text
+      if (event.tool_name !== undefined && MCP_CREATE_PR_TOOL_RE.test(event.tool_name)) {
+        return JSON.stringify(event.tool_response);
+      }
+      return undefined;
+    case 'PostToolUseFailure':
+      // gh fails when the branch already has a PR, and names that PR's URL
+      return runsGhPrCreate(event) && typeof event.error === 'string' ? event.error : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * The PR (if any) a finished tool call created: from `gh pr create`, whose
+ * output — or error, when the branch already has a PR — ends with the PR's
+ * URL, or from the GitHub MCP server's create_pull_request.
+ */
+export function prsCreatedBy(event: HookEvent): PrRef[] {
+  const output = createPrOutput(event);
+  if (!output) return [];
+  const created = findPrUrls(output).at(-1);
+  return created ? [created] : [];
+}
+
+// ─── Server ──────────────────────────────────────────────
+
+/** Whether a POSTed body has the fields every hook event carries. */
+function isHookEvent(body: unknown): body is HookEvent {
+  return (
+    typeof body === 'object' &&
+    body !== null &&
+    'session_id' in body &&
+    typeof body.session_id === 'string' &&
+    'hook_event_name' in body &&
+    typeof body.hook_event_name === 'string' &&
+    'cwd' in body &&
+    typeof body.cwd === 'string'
+  );
 }
 
 export type HookStatusCallback = (sessionId: string, update: HookUpdate) => void;
@@ -125,12 +196,13 @@ export class HookServer {
   }
 
   private handleHookEvent(body: string): void {
-    let event: HookEvent;
+    let event: unknown;
     try {
       event = JSON.parse(body);
     } catch {
       return; // Malformed JSON — ignore
     }
+    if (!isHookEvent(event)) return;
 
     const status = HOOK_STATUS_MAP[event.hook_event_name];
     if (!status) return;
@@ -152,25 +224,19 @@ export class HookServer {
       return;
     }
 
-    // On Stop, read transcript for updated model + context usage + PR detection
+    // On Stop, read transcript for updated model + context usage
     if (event.hook_event_name === 'Stop') {
       // Emit status immediately so UI updates fast
       this.callback(event.session_id, { status });
 
-      // Wait briefly for Claude Code to flush the transcript, then run both
-      // metadata + PR extraction in parallel against the freshly-flushed file.
+      // Wait briefly for Claude Code to flush the transcript before reading it
       const transcriptPath = this.transcriptPaths.get(event.session_id);
       if (transcriptPath) {
         const sessionId = event.session_id;
         const prevLimit = this.getContextLimit?.(sessionId) ?? null;
         new Promise((r) => setTimeout(r, 500))
-          .then(() =>
-            Promise.all([
-              readTranscriptMetadata(transcriptPath, prevLimit),
-              extractPrsFromCreateCalls(transcriptPath),
-            ]),
-          )
-          .then(([meta, prs]) => {
+          .then(() => readTranscriptMetadata(transcriptPath, prevLimit))
+          .then((meta) => {
             if (meta.model || meta.contextUsage !== null || meta.contextLimit !== null) {
               this.callback(sessionId, {
                 status,
@@ -178,9 +244,6 @@ export class HookServer {
                 contextUsage: meta.contextUsage ?? undefined,
                 contextLimit: meta.contextLimit ?? undefined,
               });
-            }
-            if (prs.length > 0 && this.prCallback) {
-              this.prCallback(sessionId, prs);
             }
           })
           .catch(() => {
@@ -191,5 +254,10 @@ export class HookServer {
     }
 
     this.callback(event.session_id, { status });
+
+    const createdPrs = prsCreatedBy(event);
+    if (createdPrs.length > 0 && this.prCallback) {
+      this.prCallback(event.session_id, createdPrs);
+    }
   }
 }

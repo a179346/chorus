@@ -9,9 +9,20 @@ export type SessionStatus =
   | 'error'
   | 'ended';
 
-/** A linked PR's state on GitHub; 'unknown' until a lookup succeeds. */
+/** The statuses of a session whose claude has exited; its shell lives on. */
+export type ExitedStatus = Extract<SessionStatus, 'ended' | 'error'>;
+
+export function isExitedStatus(status: SessionStatus): status is ExitedStatus {
+  return status === 'ended' || status === 'error';
+}
+
+/**
+ * A linked PR's state on GitHub; 'unknown' until a lookup succeeds.
+ * 'not-found' means gh can't see it — a mistyped URL, or no access.
+ */
 export type PrStage =
   | 'unknown'
+  | 'not-found'
   | 'draft'
   | 'ready'
   | 'merged'
@@ -46,8 +57,6 @@ export interface Session {
   hasUserInput: boolean;
   /** In the order they were linked. */
   prs: LinkedPr[];
-  /** PRs the user unlinked; transcript detection must not link them again. */
-  unlinkedPrs: PrRef[];
 }
 
 export interface SessionConfig {
@@ -85,6 +94,7 @@ export type SessionStateUpdate = { sessionId: string } & Partial<
 
 // ─── Persistence (subset of Session saved to disk) ──────
 
+/** What this version writes to disk for a session. */
 export interface PersistedSession {
   id: string;
   name: string;
@@ -100,7 +110,24 @@ export interface PersistedSession {
   lastActiveAt: number;
   hasUserInput: boolean;
   prs: LinkedPr[];
-  unlinkedPrs: PrRef[];
+  /** How the session's claude exited; null while it runs. An exited session is restored with only its shell. */
+  exitStatus: ExitedStatus | null;
+}
+
+/**
+ * A saved session as read back from disk. This or any older release may have
+ * written it, so fields added after v1.0.0 can be missing.
+ */
+export interface StoredSession extends Omit<PersistedSession, 'contextLimit' | 'prs' | 'exitStatus'> {
+  /** Since v1.5.0. */
+  contextLimit?: number | null;
+  /** After v1.6.0; v1.4.0–v1.6.0 stored one PR as `pr` / `stage` / `stageUpdatedAt`. */
+  prs?: LinkedPr[];
+  /** After v1.6.0. */
+  exitStatus?: ExitedStatus | null;
+  pr?: PrRef | null;
+  stage?: 'no-pr' | 'draft' | 'ready' | 'merged' | 'closed';
+  stageUpdatedAt?: number | null;
 }
 
 // ─── Toolkit ─────────────────────────────────────────────

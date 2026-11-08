@@ -28,6 +28,12 @@ describe('customFlagText', () => {
     expect(customFlagText(['--dangerously-skip-permissions', '--chrome'])).toBe('');
   });
 
+  it('keeps a custom flag’s value that reads like a checkbox flag', () => {
+    const flags = ['--no-chrome', '--append-system-prompt', '--chrome'];
+    expect(customFlagText(flags)).toBe('--append-system-prompt --chrome');
+    expect(readToggles(flags).chrome).toBe(false);
+  });
+
   it('reads back as the same custom flags', () => {
     const custom = ['--append-system-prompt', `be "brief"`, '--model', 'opus'];
     const text = customFlagText(['--chrome', ...custom]);
@@ -58,6 +64,15 @@ describe('readCustomFlags', () => {
     });
   });
 
+  it('applies claude’s rules for session flags', () => {
+    expect(readCustomFlags('--verbose true')).toEqual({
+      kind: 'invalid',
+      error: "true isn't a flag — --verbose takes no value",
+    });
+    expect(readCustomFlags('--verbose=true')).toEqual({ kind: 'invalid', error: '--verbose takes no value' });
+    expect(readCustomFlags('--model')).toEqual({ kind: 'invalid', error: '--model needs a value' });
+  });
+
   it('rejects flags Chorus manages', () => {
     expect(readCustomFlags('--verbose --resume abc')).toEqual({
       kind: 'invalid',
@@ -73,6 +88,13 @@ describe('readCustomFlags', () => {
     expect(readCustomFlags('--verbose --dangerously-skip-permissions')).toEqual({
       kind: 'invalid',
       error: 'Use the “Skip permissions” checkbox above',
+    });
+  });
+
+  it('accepts a checkbox flag’s name as another flag’s value', () => {
+    expect(readCustomFlags('--append-system-prompt --chrome')).toEqual({
+      kind: 'ok',
+      args: ['--append-system-prompt', '--chrome'],
     });
   });
 });

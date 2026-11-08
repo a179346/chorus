@@ -24,6 +24,9 @@ export function SearchBar({ type, sessionId, onClose }: SearchBarProps): React.R
     return () => { if (activeSearchType === type) activeSearchType = null; };
   }, [type]);
 
+  // The bar also unmounts when the active session changes, so highlights are cleared here, not only on Close.
+  useEffect(() => () => terminals.clearSearch(type, sessionId), [type, sessionId]);
+
   useEffect(() => {
     if (query) {
       const result = terminals.findNext(type, sessionId, query);
@@ -69,14 +72,9 @@ export function SearchBar({ type, sessionId, onClose }: SearchBarProps): React.R
     return () => cleanups.forEach((c) => c());
   }, [handleNext, handlePrev, type]);
 
-  const handleClose = useCallback(() => {
-    terminals.clearSearch(type, sessionId);
-    onClose();
-  }, [type, sessionId, onClose]);
-
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Escape') {
-      handleClose();
+      onClose();
     } else if (e.key === 'Enter') {
       e.preventDefault();
       if (e.shiftKey) {
@@ -85,7 +83,7 @@ export function SearchBar({ type, sessionId, onClose }: SearchBarProps): React.R
         handleNext();
       }
     }
-  }, [handleClose, handleNext, handlePrev]);
+  }, [onClose, handleNext, handlePrev]);
 
   const resultText = query
     ? resultCount > 0
@@ -117,7 +115,7 @@ export function SearchBar({ type, sessionId, onClose }: SearchBarProps): React.R
         <button type="button" className="icon-btn" onClick={handleNext} title="Next (↵)" aria-label="Next match">
           <ChevronDown size={14} />
         </button>
-        <button type="button" className="icon-btn" onClick={handleClose} title="Close (Esc)" aria-label="Close find">
+        <button type="button" className="icon-btn" onClick={onClose} title="Close (Esc)" aria-label="Close find">
           <X size={13} />
         </button>
       </div>

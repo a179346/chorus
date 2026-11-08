@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { StageMonitor, deriveStage, type GhResult } from '../src/main/stage-monitor';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { StageMonitor, deriveStage, runGhPrView, type GhResult } from '../src/main/stage-monitor';
 import type { LinkedPr, PrRef, Session } from '../src/shared/types';
 
 const PR1: PrRef = { owner: 'o', repo: 'r', number: 1 };
@@ -29,7 +32,6 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     lastActiveAt: 0,
     hasUserInput: true,
     prs: [linked(PR1)],
-    unlinkedPrs: [],
     ...overrides,
   };
 }
@@ -62,6 +64,34 @@ describe('deriveStage', () => {
 
   it('is case-insensitive on state', () => {
     expect(deriveStage({ state: 'open', isDraft: false, mergedAt: null })).toBe('ready');
+  });
+});
+
+describe('runGhPrView', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chorus-gh-'));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('asks gh about the PR on github.com, whichever host gh defaults to', async () => {
+    // A stand-in gh that records its arguments and reports a draft PR
+    const argsFile = path.join(dir, 'args');
+    const json = '{"state":"OPEN","isDraft":true,"mergedAt":null}';
+    fs.writeFileSync(path.join(dir, 'gh'), `#!/bin/sh\nprintf '%s\\n' "$@" > '${argsFile}'\necho '${json}'\n`, {
+      mode: 0o755,
+    });
+    vi.stubEnv('PATH', `${dir}:${process.env.PATH}`);
+
+    expect(await runGhPrView({ owner: 'o', repo: 'r', number: 42 })).toEqual({ type: 'ok', stage: 'draft' });
+    expect(fs.readFileSync(argsFile, 'utf8').trimEnd().split('\n')).toEqual([
+      'pr', 'view', '42', '-R', 'github.com/o/r', '--json', 'state,isDraft,mergedAt',
+    ]);
   });
 });
 
@@ -146,7 +176,7 @@ describe('StageMonitor', () => {
       ]);
     });
 
-    it('unlinks only the PR GitHub no longer finds', async () => {
+    it('keeps a PR GitHub cannot find, marked not found', async () => {
       sessions.set('s1', makeSession({ prs: [linked(PR1, { stage: 'ready' }), linked(PR2, { stage: 'ready' })] }));
       ghResultByNumber.set(1, { type: 'not-found' });
       const monitor = makeMonitor();
@@ -154,19 +184,48 @@ describe('StageMonitor', () => {
       await monitor.refresh('s1');
 
       expect(commits).toHaveLength(1);
-      expect(prsOf('s1').map((pr) => pr.number)).toEqual([2]);
-      // Not remembered as unlinked: a later detection may link it again
-      expect(sessions.get('s1')!.unlinkedPrs).toEqual([]);
+      expect(prsOf('s1').map((pr) => [pr.number, pr.stage])).toEqual([
+        [1, 'not-found'],
+        [2, 'ready'],
+      ]);
     });
 
-    it('does nothing for sessions without prs, ended sessions, or unknown ids', async () => {
+    it('keeps looking up a not-found PR, which resolves once gh can see it', async () => {
+      sessions.set('s1', makeSession({ prs: [linked(PR1, { stage: 'not-found' })] }));
+      const monitor = makeMonitor();
+
+      await monitor.refresh('s1');
+
+      expect(prsOf('s1')[0].stage).toBe('ready');
+    });
+
+    it('stops looking up a merged PR but keeps looking up a closed one', async () => {
+      sessions.set('s1', makeSession({ prs: [linked(PR1, { stage: 'merged' }), linked(PR2, { stage: 'closed' })] }));
+      const monitor = makeMonitor();
+
+      await monitor.refresh('s1');
+
+      expect(ghCalls).toEqual([PR2]);
+    });
+
+    it.each(['ended', 'error'] as const)(
+      'keeps looking up the PRs of a session whose claude exited (%s)',
+      async (status) => {
+        sessions.set('s1', makeSession({ status }));
+        const monitor = makeMonitor();
+
+        await monitor.refresh('s1');
+
+        expect(prsOf('s1')[0].stage).toBe('ready');
+      },
+    );
+
+    it('does nothing for sessions without prs or ids no longer open', async () => {
       sessions.set('no-pr', makeSession({ id: 'no-pr', prs: [] }));
-      sessions.set('ended', makeSession({ id: 'ended', status: 'ended' }));
       const monitor = makeMonitor();
 
       await monitor.refresh('no-pr');
-      await monitor.refresh('ended');
-      await monitor.refresh('missing');
+      await monitor.refresh('closed');
 
       expect(runGh).not.toHaveBeenCalled();
       expect(commits).toHaveLength(0);
@@ -203,6 +262,16 @@ describe('StageMonitor', () => {
       expect(commits).toHaveLength(1);
     });
 
+    it('skips lookups queued behind the one that finds gh unavailable', async () => {
+      sessions.set('s1', makeSession({ prs: [linked(PR1), linked(PR2)] }));
+      ghResult = { type: 'unavailable' };
+      const monitor = makeMonitor({ concurrency: 1 });
+
+      await monitor.refresh('s1');
+
+      expect(runGh).toHaveBeenCalledTimes(1);
+    });
+
     it('dedupes concurrent lookups of the same PR', async () => {
       sessions.set('s1', makeSession());
       let release!: (r: GhResult) => void;
@@ -220,6 +289,30 @@ describe('StageMonitor', () => {
       release({ type: 'ok', stage: 'ready' });
       await Promise.all([first, second]);
       expect(runGh).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps deduping the lookup that replaced one forgotten mid-flight', async () => {
+      sessions.set('s1', makeSession());
+      const releases: Array<(r: GhResult) => void> = [];
+      const pendingGh = () => new Promise<GhResult>((resolve) => { releases.push(resolve); });
+      runGh.mockImplementationOnce(pendingGh).mockImplementationOnce(pendingGh);
+      const monitor = makeMonitor();
+
+      const first = monitor.refresh('s1');
+      await vi.waitFor(() => expect(runGh).toHaveBeenCalledTimes(1));
+      // The session is closed and reopened under the same id
+      monitor.forget('s1');
+      const second = monitor.refresh('s1');
+      await vi.waitFor(() => expect(runGh).toHaveBeenCalledTimes(2));
+
+      releases[0]({ type: 'ok', stage: 'ready' });
+      await first;
+      void monitor.refresh('s1');
+      await flush();
+      expect(runGh).toHaveBeenCalledTimes(2);
+
+      releases[1]({ type: 'ok', stage: 'ready' });
+      await second;
     });
 
     it('drops the result for a PR unlinked while its lookup was in flight', async () => {
@@ -269,22 +362,22 @@ describe('StageMonitor', () => {
     expect(runGh).not.toHaveBeenCalled();
   });
 
-  describe('handlePrsDetected', () => {
-    it('links newly detected PRs after the existing ones and looks them up', async () => {
-      sessions.set('s1', makeSession());
+  describe('linkPrs', () => {
+    it('links new PRs after the existing ones and looks them up', async () => {
+      sessions.set('s1', makeSession({ prs: [] }));
       const monitor = makeMonitor();
 
-      monitor.handlePrsDetected('s1', [PR1, PR2]);
+      monitor.linkPrs('s1', [PR1, PR2]);
 
       expect(commits[0].updates.prs).toEqual([linked(PR1), linked(PR2)]);
       await vi.waitFor(() => expect(ghCalls).toEqual([PR1, PR2]));
     });
 
-    it('only refreshes when every detected PR is already linked', async () => {
+    it('only refreshes when every PR is already linked', async () => {
       sessions.set('s1', makeSession());
       const monitor = makeMonitor();
 
-      monitor.handlePrsDetected('s1', [{ owner: 'O', repo: 'R', number: 1 }]);
+      monitor.linkPrs('s1', [{ owner: 'O', repo: 'R', number: 1 }]);
 
       await vi.waitFor(() => expect(runGh).toHaveBeenCalled());
       // No link commit — only the stage change from the refresh itself
@@ -292,38 +385,16 @@ describe('StageMonitor', () => {
       expect(commits.every((c) => c.updates.prs?.[0].stage === 'ready')).toBe(true);
     });
 
-    it('skips PRs the user unlinked', async () => {
-      sessions.set('s1', makeSession({ prs: [], unlinkedPrs: [PR2] }));
+    it('does not look up a merged PR it is asked to link again', async () => {
+      sessions.set('s1', makeSession({ prs: [linked(PR1, { stage: 'merged' })] }));
       const monitor = makeMonitor();
 
-      monitor.handlePrsDetected('s1', [PR2]);
-      await flush();
+      monitor.linkPrs('s1', [PR1, PR2]);
 
-      expect(commits).toHaveLength(0);
-      expect(runGh).not.toHaveBeenCalled();
-    });
-
-    it('ignores detection for ended sessions', async () => {
-      sessions.set('s1', makeSession({ status: 'ended', prs: [] }));
-      const monitor = makeMonitor();
-
-      monitor.handlePrsDetected('s1', [PR1]);
-      await flush();
-
-      expect(commits).toHaveLength(0);
-      expect(runGh).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('linkPrs', () => {
-    it('links a PR the user had unlinked and forgets the unlink', async () => {
-      sessions.set('s1', makeSession({ prs: [], unlinkedPrs: [PR2] }));
-      const monitor = makeMonitor();
-
-      monitor.linkPrs('s1', [PR2]);
-
-      expect(commits[0].updates).toEqual({ prs: [linked(PR2)], unlinkedPrs: [] });
       await vi.waitFor(() => expect(ghCalls).toEqual([PR2]));
+      await flush();
+      expect(ghCalls).toEqual([PR2]);
+      expect(prsOf('s1')[0].stage).toBe('merged');
     });
 
     it('skips PRs already linked, including duplicates within the request', () => {
@@ -335,29 +406,35 @@ describe('StageMonitor', () => {
       expect(commits[0].updates.prs).toEqual([linked(PR1), linked(PR2)]);
     });
 
-    it('links on an exited session but leaves the lookup until it runs again', async () => {
+    it('links and looks up on a session whose claude exited', async () => {
       sessions.set('s1', makeSession({ status: 'ended', prs: [] }));
       const monitor = makeMonitor();
 
       monitor.linkPrs('s1', [PR1]);
-      await flush();
 
       expect(prsOf('s1')).toEqual([linked(PR1)]);
+      await vi.waitFor(() => expect(ghCalls).toEqual([PR1]));
+    });
+
+    it('ignores a session that is no longer open', async () => {
+      const monitor = makeMonitor();
+
+      monitor.linkPrs('closed', [PR1]);
+      await flush();
+
+      expect(commits).toHaveLength(0);
       expect(runGh).not.toHaveBeenCalled();
     });
   });
 
   describe('unlinkPr', () => {
-    it('removes the PR and remembers it so detection will not link it again', async () => {
+    it('removes only that PR', () => {
       sessions.set('s1', makeSession({ prs: [linked(PR1), linked(PR2)] }));
       const monitor = makeMonitor();
 
       monitor.unlinkPr('s1', { owner: 'O', repo: 'r', number: 1 });
-      monitor.handlePrsDetected('s1', [PR1]);
-      await flush();
 
-      expect(prsOf('s1').map((pr) => pr.number)).toEqual([2]);
-      expect(sessions.get('s1')!.unlinkedPrs).toEqual([{ owner: 'O', repo: 'r', number: 1 }]);
+      expect(commits).toEqual([{ sessionId: 's1', updates: { prs: [linked(PR2)] } }]);
     });
 
     it('does nothing for a PR that is not linked', () => {

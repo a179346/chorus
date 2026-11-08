@@ -1,4 +1,4 @@
-import { flagName, formatFlagText, parseFlagText, unsupportedFlagError } from '../shared/claude-cli';
+import { checkSessionFlags, formatFlagText, parseFlagText } from '../shared/claude-cli';
 
 /** The New Session dialog's flag checkboxes. */
 export interface FlagToggles {
@@ -34,39 +34,46 @@ export function toggleFlags(toggles: FlagToggles): string[] {
   return flags;
 }
 
+/**
+ * How many of a session's flags the checkboxes set. They lead (the dialog
+ * puts them before the custom flags), so a custom flag's value that happens
+ * to read like one is left alone.
+ */
+function toggleFlagCount(flags: readonly string[]): number {
+  let count = 0;
+  while (count < flags.length && TOGGLE_OF_FLAG.has(flags[count])) count++;
+  return count;
+}
+
 /** The checkbox states behind a session's flags. */
 export function readToggles(flags: readonly string[]): FlagToggles {
+  const owned = flags.slice(0, toggleFlagCount(flags));
   return {
-    autoMode: flags.includes(AUTO_MODE),
-    skipPermissions: flags.includes(SKIP_PERMISSIONS),
-    chrome: flags.includes(CHROME),
+    autoMode: owned.includes(AUTO_MODE),
+    skipPermissions: owned.includes(SKIP_PERMISSIONS),
+    chrome: owned.includes(CHROME),
   };
 }
 
 /** The flags no checkbox owns, as text for the Additional Flags field. */
 export function customFlagText(flags: readonly string[]): string {
-  return formatFlagText(flags.filter((f) => !TOGGLE_OF_FLAG.has(f)));
+  return formatFlagText(flags.slice(toggleFlagCount(flags)));
 }
 
 /** What the user has typed into the Additional Flags field. */
 export type CustomFlagsDraft = { kind: 'ok'; args: string[] } | { kind: 'invalid'; error: string };
 
+/** claude's rules for session flags (main checks them again), plus pointing checkbox flags to their checkbox. */
 export function readCustomFlags(text: string): CustomFlagsDraft {
   const parsed = parseFlagText(text);
   if (!parsed.ok) return { kind: 'invalid', error: parsed.error };
 
-  const { args } = parsed;
-  // A leading bare word would reach claude as a prompt or subcommand
-  if (args.length > 0 && flagName(args[0]) === null) {
-    return { kind: 'invalid', error: `${args[0]} isn't a flag — flags start with -` };
-  }
+  const check = checkSessionFlags(parsed.args);
+  if (!check.ok) return { kind: 'invalid', error: check.error };
 
-  const unsupported = unsupportedFlagError(args);
-  if (unsupported) return { kind: 'invalid', error: unsupported };
-
-  for (const arg of args) {
-    const toggle = TOGGLE_OF_FLAG.get(flagName(arg) ?? '');
+  for (const name of check.flagNames) {
+    const toggle = TOGGLE_OF_FLAG.get(name);
     if (toggle) return { kind: 'invalid', error: `Use the “${TOGGLE_LABELS[toggle]}” checkbox above` };
   }
-  return { kind: 'ok', args };
+  return { kind: 'ok', args: parsed.args };
 }

@@ -10,7 +10,7 @@ vi.mock('node:os', () => ({
   homedir: () => '/mock-home',
 }));
 
-const { SessionStore, toPersisted, fromPersisted } = await import('../src/main/session-store');
+const { SessionStore, toPersisted, fromPersisted, lastClosedByUser, RECENTLY_CLOSED_LIMIT } = await import('../src/main/session-store');
 
 function makeSession(overrides: Partial<import('../src/shared/types').Session> = {}): import('../src/shared/types').Session {
   return {
@@ -108,9 +108,10 @@ describe('SessionStore', () => {
   });
 
   describe('persistence', () => {
-    it('should persist non-ended sessions: index + individual files', () => {
+    it('should persist every session, including ones whose claude exited: index + individual files', () => {
       store.addSession(makeSession({ id: 'a', status: 'idle' }));
       store.addSession(makeSession({ id: 'b', status: 'ended' }));
+      store.addSession(makeSession({ id: 'c', status: 'error' }));
       store.persistSessions();
 
       // Find the index file write (sessions.json)
@@ -118,17 +119,13 @@ describe('SessionStore', () => {
       const indexWrite = writeCalls.find((c) => String(c[0]).includes('sessions.json.tmp'));
       expect(indexWrite).toBeDefined();
       const index = JSON.parse(indexWrite![1] as string);
-      expect(index.sessionIds).toEqual(['a']);
+      expect(index.sessionIds).toEqual(['a', 'b', 'c']);
 
-      // Find the session file write (session-a.json)
-      const sessionWrite = writeCalls.find((c) => String(c[0]).includes('session-a.json.tmp'));
-      expect(sessionWrite).toBeDefined();
-      const saved = JSON.parse(sessionWrite![1] as string);
-      expect(saved.id).toBe('a');
-
-      // Should NOT write session-b (ended)
-      const sessionBWrite = writeCalls.find((c) => String(c[0]).includes('session-b.json.tmp'));
-      expect(sessionBWrite).toBeUndefined();
+      for (const id of ['a', 'b', 'c']) {
+        const sessionWrite = writeCalls.find((c) => String(c[0]).includes(`session-${id}.json.tmp`));
+        expect(sessionWrite).toBeDefined();
+        expect(JSON.parse(sessionWrite![1] as string).id).toBe(id);
+      }
     });
 
     it('should load persisted sessions from index + individual files', () => {
@@ -154,6 +151,14 @@ describe('SessionStore', () => {
       const persisted = store.loadPersistedSessions();
       expect(persisted).toEqual([]);
     });
+
+    it.each([['null'], ['{}'], ['[]'], ['{"sessionIds":{}}']])(
+      'should return empty array if the sessions index is %s',
+      (content) => {
+        vi.mocked(fs.readFileSync).mockReturnValue(content);
+        expect(store.loadPersistedSessions()).toEqual([]);
+      },
+    );
 
     it('should skip sessions with missing individual files', () => {
       vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
@@ -192,6 +197,97 @@ describe('SessionStore', () => {
       expect(saved).toHaveProperty('name');
       expect(saved).toHaveProperty('cwd');
       expect(saved).toHaveProperty('flags');
+    });
+
+    describe('saved sessions not restored', () => {
+      const STORED = { name: 'S', cwd: '/tmp', worktree: null, flags: [], model: null, contextUsage: null, createdAt: 1, lastActiveAt: 1 };
+
+      function savedOnDisk(ids: string[]): void {
+        vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+          const filePath = String(p);
+          if (filePath.endsWith('sessions.json')) return JSON.stringify({ sessionIds: ids });
+          const id = ids.find((i) => filePath.endsWith(`session-${i}.json`));
+          if (id) return JSON.stringify({ ...STORED, id });
+          throw new Error('ENOENT');
+        });
+      }
+
+      function writtenIndex(): string[] {
+        const indexWrite = vi.mocked(fs.writeFileSync).mock.calls.filter((c) => String(c[0]).includes('sessions.json.tmp')).at(-1);
+        expect(indexWrite).toBeDefined();
+        return JSON.parse(indexWrite![1] as string).sessionIds;
+      }
+
+      it('stay in the index when other sessions are written', () => {
+        savedOnDisk(['a', 'b']);
+        store.loadPersistedSessions();
+        store.addSession(makeSession({ id: 'a' }));
+        store.addSession(makeSession({ id: 'new' }));
+        store.persistSessions();
+
+        expect(writtenIndex()).toEqual(['a', 'new', 'b']);
+        // Only listed sessions are written; b's file is left as it is
+        expect(vi.mocked(fs.writeFileSync).mock.calls.some((c) => String(c[0]).includes('session-b.json'))).toBe(false);
+      });
+
+      it('stay in the index when a write comes before any restore', () => {
+        savedOnDisk(['a', 'b']);
+        store.addSession(makeSession({ id: 'new' }));
+        store.persistSessions();
+
+        expect(writtenIndex()).toEqual(['new', 'a', 'b']);
+      });
+
+      it('stay in the index through a reorder and a removal', () => {
+        savedOnDisk(['a', 'b']);
+        store.loadPersistedSessions();
+        store.addSession(makeSession({ id: 'x' }));
+        store.addSession(makeSession({ id: 'y' }));
+
+        store.reorderSessions(['y', 'x']);
+        expect(writtenIndex()).toEqual(['y', 'x', 'a', 'b']);
+
+        vi.mocked(fs.unlinkSync).mockImplementation(() => {});
+        store.removeSession('x');
+        expect(writtenIndex()).toEqual(['y', 'a', 'b']);
+      });
+
+      it('leave the index, and lose their file, when removed', () => {
+        vi.mocked(fs.unlinkSync).mockImplementation(() => {});
+        savedOnDisk(['a', 'b']);
+        store.loadPersistedSessions();
+        store.removeSession('a');
+
+        expect(writtenIndex()).toEqual(['b']);
+        expect(vi.mocked(fs.unlinkSync)).toHaveBeenCalledWith(expect.stringContaining('session-a.json'));
+      });
+
+      it('leave out ids whose file is gone once loaded', () => {
+        vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+          const filePath = String(p);
+          if (filePath.endsWith('sessions.json')) return JSON.stringify({ sessionIds: ['a', 'gone'] });
+          if (filePath.endsWith('session-a.json')) return JSON.stringify({ ...STORED, id: 'a' });
+          throw new Error('ENOENT');
+        });
+        store.loadPersistedSessions();
+        store.persistSessions();
+
+        expect(writtenIndex()).toEqual(['a']);
+      });
+
+      it('keep their files through the orphan cleanup', () => {
+        vi.mocked(fs.unlinkSync).mockImplementation(() => {});
+        vi.mocked(fs.readdirSync).mockReturnValue(
+          ['session-a.json', 'session-b.json', 'session-orphan.json', 'state.json'] as any,
+        );
+        savedOnDisk(['b']);
+        store.loadPersistedSessions();
+        store.addSession(makeSession({ id: 'a' }));
+        store.cleanupOrphanedSessionFiles();
+
+        const deleted = vi.mocked(fs.unlinkSync).mock.calls.map((c) => path.basename(String(c[0])));
+        expect(deleted).toEqual(['session-orphan.json']);
+      });
     });
 
     it('should delete session file and update index on removeSession', () => {
@@ -355,6 +451,17 @@ describe('SessionStore', () => {
       expect(store.loadRecentlyClosed()).toEqual([]);
     });
 
+    it.each([['null'], ['{}'], ['{"sessions":{}}']])(
+      'should treat a file holding %s as an empty list',
+      (content) => {
+        vi.mocked(fs.readFileSync).mockReturnValue(content);
+        expect(store.loadRecentlyClosed()).toEqual([]);
+
+        store.rememberClosed(makeSession({ id: 'c' }));
+        expect(writtenClosedIds()).toEqual(['c']);
+      },
+    );
+
     it('should put the newly closed session first', () => {
       storedClosed(['a', 'b']);
       store.rememberClosed(makeSession({ id: 'c' }));
@@ -367,8 +474,7 @@ describe('SessionStore', () => {
       expect(writtenClosedIds()).toEqual(['b', 'a', 'c']);
     });
 
-    it('should keep at most RECENTLY_CLOSED_LIMIT sessions', async () => {
-      const { RECENTLY_CLOSED_LIMIT } = await import('../src/main/session-store');
+    it('should keep at most RECENTLY_CLOSED_LIMIT sessions', () => {
       storedClosed(Array.from({ length: RECENTLY_CLOSED_LIMIT }, (_, i) => `old-${i}`));
       store.rememberClosed(makeSession({ id: 'new' }));
 
@@ -383,9 +489,132 @@ describe('SessionStore', () => {
       store.forgetClosed('b');
       expect(writtenClosedIds()).toEqual(['a', 'c']);
     });
+
+    describe('saved sessions that could not be restored', () => {
+      const STORED = { name: 'S', cwd: '/gone', worktree: null, flags: [], notifyOnIdle: false, unread: false, model: null, contextUsage: null, createdAt: 1, lastActiveAt: 1, hasUserInput: true };
+      // What the store has written, by path, so that reads see earlier writes
+      let disk: Map<string, string>;
+
+      beforeEach(() => {
+        disk = new Map();
+        vi.mocked(fs.writeFileSync).mockImplementation((file, data) => {
+          disk.set(String(file).replace(/\.tmp$/, ''), String(data));
+        });
+        vi.mocked(fs.readFileSync).mockImplementation((file) => {
+          const content = disk.get(String(file));
+          if (content === undefined) throw new Error('ENOENT');
+          return content;
+        });
+        vi.mocked(fs.unlinkSync).mockImplementation(() => {});
+      });
+
+      function onDisk(name: string, data: unknown): void {
+        disk.set(path.join('/mock-home', '.chorus', name), JSON.stringify(data));
+      }
+
+      function closedIds(): string[] {
+        return store.loadRecentlyClosed().map((s) => s.id);
+      }
+
+      function recentlyClosedWrites(): number {
+        return vi.mocked(fs.writeFileSync).mock.calls.filter((c) => String(c[0]).includes('recently-closed.json')).length;
+      }
+
+      it('go first, all in one write', () => {
+        onDisk('recently-closed.json', { sessions: [{ ...STORED, id: 'closed' }] });
+        store.moveUnrestorableToRecentlyClosed([{ ...STORED, id: 'f1' }, { ...STORED, id: 'f2' }]);
+
+        expect(closedIds()).toEqual(['f1', 'f2', 'closed']);
+        expect(recentlyClosedWrites()).toBe(1);
+      });
+
+      it('stay past the limit, which only drops sessions closed by the user', () => {
+        const closed = Array.from({ length: RECENTLY_CLOSED_LIMIT }, (_, i) => ({ ...STORED, id: `old-${i}` }));
+        onDisk('recently-closed.json', { sessions: closed });
+        const failed = Array.from({ length: RECENTLY_CLOSED_LIMIT + 2 }, (_, i) => ({ ...STORED, id: `failed-${i}` }));
+
+        store.moveUnrestorableToRecentlyClosed(failed);
+        expect(closedIds()).toEqual([...failed, ...closed].map((s) => s.id));
+
+        store.rememberClosed(makeSession({ id: 'new' }));
+        expect(closedIds()).toEqual(['new', ...failed.map((s) => s.id), ...closed.slice(0, -1).map((s) => s.id)]);
+      });
+
+      it('leave the saved sessions once Recently Closed holds them', () => {
+        onDisk('sessions.json', { sessionIds: ['f1', 'kept'] });
+        onDisk('session-f1.json', { ...STORED, id: 'f1' });
+        onDisk('session-kept.json', { ...STORED, id: 'kept' });
+        const [f1] = store.loadPersistedSessions();
+
+        store.moveUnrestorableToRecentlyClosed([f1]);
+
+        const unlink = vi.mocked(fs.unlinkSync).mock;
+        expect(unlink.calls.map((c) => path.basename(String(c[0])))).toEqual(['session-f1.json']);
+        const recentlyClosedWrite = vi.mocked(fs.writeFileSync).mock.calls.findIndex((c) => String(c[0]).includes('recently-closed.json'));
+        expect(vi.mocked(fs.writeFileSync).mock.invocationCallOrder[recentlyClosedWrite]).toBeLessThan(unlink.invocationCallOrder[0]);
+        expect(JSON.parse(disk.get(path.join('/mock-home', '.chorus', 'sessions.json'))!).sessionIds).toEqual(['kept']);
+      });
+
+      it('are passed over when reopening the latest session the user closed', () => {
+        onDisk('recently-closed.json', { sessions: [{ ...STORED, id: 'closed' }] });
+        store.moveUnrestorableToRecentlyClosed([{ ...STORED, id: 'f1' }]);
+        expect(lastClosedByUser(store.loadRecentlyClosed())).toMatchObject({ id: 'closed' });
+
+        store.forgetClosed('closed');
+        expect(lastClosedByUser(store.loadRecentlyClosed())).toBeUndefined();
+      });
+
+      it('take in a session kept after its reopen failed, which then is passed over the same way, where it is', () => {
+        onDisk('recently-closed.json', { sessions: [{ ...STORED, id: 'failing' }, { ...STORED, id: 'older' }] });
+
+        store.markRestoreFailed('failing');
+
+        expect(closedIds()).toEqual(['failing', 'older']);
+        expect(lastClosedByUser(store.loadRecentlyClosed())).toMatchObject({ id: 'older' });
+      });
+
+      it('stay saved, to be restored next time, when Recently Closed cannot be written', () => {
+        onDisk('sessions.json', { sessionIds: ['f1'] });
+        onDisk('session-f1.json', { ...STORED, id: 'f1' });
+        const [f1] = store.loadPersistedSessions();
+        vi.mocked(fs.writeFileSync).mockImplementation((file) => {
+          if (String(file).includes('recently-closed.json')) throw new Error('EACCES');
+        });
+
+        expect(() => store.moveUnrestorableToRecentlyClosed([f1])).toThrow('EACCES');
+
+        expect(fs.unlinkSync).not.toHaveBeenCalled();
+        store.persistSessions();
+        const indexWrite = vi.mocked(fs.writeFileSync).mock.calls.filter((c) => String(c[0]).includes('sessions.json.tmp')).at(-1);
+        expect(JSON.parse(String(indexWrite![1])).sessionIds).toEqual(['f1']);
+      });
+    });
   });
 
   describe('toolkit commands', () => {
+    const A = { label: 'A', command: '/a' };
+    const B = { label: 'B', command: '/b' };
+    const Z = { label: 'Z', command: '/z' };
+
+    // Reads see what the last write wrote, so each edit starts from the one before
+    function toolkitOnDisk(file: unknown): void {
+      let content = JSON.stringify(file);
+      vi.mocked(fs.readFileSync).mockImplementation(() => content);
+      vi.mocked(fs.writeFileSync).mockImplementation((_file, data) => {
+        content = String(data);
+      });
+    }
+
+    function writtenToolkit(): unknown {
+      const write = vi.mocked(fs.writeFileSync).mock.calls.filter((c) => String(c[0]).includes('toolkit.json.tmp')).at(-1);
+      expect(write).toBeDefined();
+      return JSON.parse(String(write![1]));
+    }
+
+    function loadedIds(): string[] {
+      return store.loadToolkitCommands().map((c) => c.id);
+    }
+
     it('should load toolkit commands', () => {
       vi.mocked(fs.readFileSync).mockReturnValue(
         JSON.stringify({
@@ -405,14 +634,251 @@ describe('SessionStore', () => {
       expect(cmds).toEqual([]);
     });
 
+    it.each([['null'], ['[]'], ['{}'], ['{"commands":{}}']])('should treat a toolkit file holding %s as empty', (content) => {
+      vi.mocked(fs.readFileSync).mockReturnValue(content);
+      expect(store.loadToolkitCommands()).toEqual([]);
+    });
+
+    it('should leave out entries that are not commands', () => {
+      vi.mocked(fs.readFileSync).mockReturnValue(
+        JSON.stringify({
+          commands: [null, 'x', { id: 'a' }, { id: 'b', label: 'B', command: 7 }, { id: 'c', label: 'C', command: '/c' }],
+        }),
+      );
+      expect(store.loadToolkitCommands()).toEqual([{ id: 'c', label: 'C', command: '/c' }]);
+    });
+
+    it('should drop an icon that is not a name', () => {
+      vi.mocked(fs.readFileSync).mockReturnValue(
+        JSON.stringify({ commands: [{ id: 'a', label: 'A', command: '/a', icon: null }] }),
+      );
+      expect(store.loadToolkitCommands()).toEqual([{ id: 'a', label: 'A', command: '/a' }]);
+    });
+
+    it('should keep each id no other entry has, and derive the others from the label and command, the same on every load', () => {
+      toolkitOnDisk({
+        commands: [
+          { id: 'dup', label: 'One', command: '/1' },
+          { id: 'dup', label: 'Two', command: '/2' },
+          { label: 'Three', command: '/3' },
+          { id: '', label: 'Four', command: '/4' },
+          { id: 'own', label: 'Five', command: '/5' },
+        ],
+      });
+      const ids = loadedIds();
+
+      expect(ids.slice(0, 4)).toEqual(Array.from({ length: 4 }, () => expect.stringMatching(/^command-[0-9a-f]{8}$/)));
+      expect(ids[4]).toBe('own');
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(loadedIds()).toEqual(ids);
+    });
+
+    it('should give a command the same derived id wherever it is, telling twins apart by order', () => {
+      toolkitOnDisk({ commands: [A, B] });
+      const [, b] = store.loadToolkitCommands();
+
+      toolkitOnDisk({ commands: [Z, B, A] });
+      expect(store.loadToolkitCommands()[1]).toEqual(b);
+
+      toolkitOnDisk({ commands: [A, A, B] });
+      const ids = loadedIds();
+      expect(ids[0]).not.toBe(ids[1]);
+      expect(ids[2]).toBe(b.id);
+      expect(loadedIds()).toEqual(ids);
+    });
+
+    it('should derive no id that an entry has as its own, even one entries share', () => {
+      toolkitOnDisk({ commands: [A] });
+      const [{ id: derived }] = store.loadToolkitCommands();
+
+      toolkitOnDisk({ commands: [A, { ...B, id: derived }] });
+      expect(loadedIds()).toEqual([`${derived}-2`, derived]);
+
+      toolkitOnDisk({ commands: [A, { ...B, id: derived }, { ...Z, id: derived }] });
+      expect(loadedIds()).not.toContain(derived);
+    });
+
+    it('should find the command to run by its id after entries are moved by hand', () => {
+      toolkitOnDisk({ commands: [A, B] });
+      const [, b] = store.loadToolkitCommands();
+
+      toolkitOnDisk({ commands: [B, A] });
+
+      expect(store.requireToolkitCommand(b.id).command).toBe('/b');
+    });
+
+    it('should refuse to run an id no command goes by', () => {
+      toolkitOnDisk({ commands: [A] });
+      expect(() => store.requireToolkitCommand('missing')).toThrow(/changed or removed outside Chorus/);
+    });
+
+    it('should never write when loading or finding commands', () => {
+      toolkitOnDisk({ commands: [A, A, { ...B, id: 'dup' }, { ...Z, id: 'dup' }, { label: 'Not a command' }] });
+
+      const [first] = store.loadToolkitCommands();
+      store.requireToolkitCommand(first.id);
+
+      expect(fs.writeFileSync).not.toHaveBeenCalled();
+      expect(fs.renameSync).not.toHaveBeenCalled();
+    });
+
     it('should save toolkit commands', () => {
+      vi.mocked(fs.readFileSync).mockReturnValue('{"commands":[]}');
       const commands = [
         { id: 'cmd-1', label: 'Test', command: '/test' },
       ];
-      store.saveToolkitCommands(commands as any);
+      store.saveToolkitCommands(commands);
       const writeCall = vi.mocked(fs.writeFileSync).mock.calls[0];
       const written = JSON.parse(writeCall[1] as string);
       expect(written.commands).toHaveLength(1);
+    });
+
+    describe('edits', () => {
+      const HAND_WRITTEN = [
+        { id: 'a', label: 'A', command: '/a' },
+        { label: 'Not a command yet' },
+        { id: 'b', label: 'B', command: '/b', note: 'mine' },
+      ];
+      const NEW = { id: 'c', label: 'C', command: '/c' };
+
+      it('add a command after every entry, keeping the ones that are not commands and the other keys', () => {
+        toolkitOnDisk({ commands: HAND_WRITTEN, comment: 'my toolkit' });
+        store.addToolkitCommand(NEW);
+        expect(writtenToolkit()).toEqual({ commands: [...HAND_WRITTEN, NEW], comment: 'my toolkit' });
+      });
+
+      it('replace the edited command whole, and only it', () => {
+        toolkitOnDisk({ commands: HAND_WRITTEN });
+        store.updateToolkitCommand({ id: 'b', label: 'B2', command: '/b2' });
+        expect(writtenToolkit()).toEqual({ commands: [HAND_WRITTEN[0], HAND_WRITTEN[1], { id: 'b', label: 'B2', command: '/b2' }] });
+      });
+
+      it('delete only the deleted command', () => {
+        toolkitOnDisk({ commands: HAND_WRITTEN });
+        store.deleteToolkitCommand('a');
+        expect(writtenToolkit()).toEqual({ commands: HAND_WRITTEN.slice(1) });
+      });
+
+      it('return the commands they wrote, without reading the file again', () => {
+        toolkitOnDisk({ commands: HAND_WRITTEN });
+
+        const returned = store.addToolkitCommand(NEW);
+
+        expect(fs.readFileSync).toHaveBeenCalledTimes(1);
+        expect(returned).toEqual(store.loadToolkitCommands());
+        expect(returned.map((c) => c.id)).toEqual(['a', 'b', 'c']);
+      });
+
+      it('find a command by the id it was loaded with', () => {
+        const commands = [{ label: 'One', command: '/1' }, { label: 'Two', command: '/2' }];
+        toolkitOnDisk({ commands });
+        const [first, second] = store.loadToolkitCommands();
+
+        store.deleteToolkitCommand(second.id);
+
+        expect(writtenToolkit()).toEqual({ commands: [{ ...commands[0], id: first.id }] });
+      });
+
+      it('find a command by the id it was loaded with after an entry is added above it by hand', () => {
+        toolkitOnDisk({ commands: [A, B] });
+        const [a, b] = store.loadToolkitCommands();
+        toolkitOnDisk({ commands: [Z, A, B] });
+        const [z] = store.loadToolkitCommands();
+
+        store.updateToolkitCommand({ ...b, label: 'B!' });
+        expect(writtenToolkit()).toEqual({ commands: [{ ...Z, id: z.id }, { ...A, id: a.id }, { ...b, label: 'B!' }] });
+
+        store.deleteToolkitCommand(b.id);
+        expect(writtenToolkit()).toEqual({ commands: [{ ...Z, id: z.id }, { ...A, id: a.id }] });
+      });
+
+      it('write in the ids of commands that go by derived ones', () => {
+        const commands = [
+          { label: 'One', command: '/1' },
+          { id: 'x', label: 'X', command: '/x' },
+          { id: 'x', label: 'X again', command: '/x2' },
+        ];
+        toolkitOnDisk({ commands });
+        const ids = loadedIds();
+
+        store.addToolkitCommand(NEW);
+
+        expect(ids).not.toContain('x');
+        expect(writtenToolkit()).toEqual({
+          commands: [...commands.map((command, i) => ({ ...command, id: ids[i] })), NEW],
+        });
+      });
+
+      it('keep each id on the command it was loaded for, through edits of the other commands', () => {
+        toolkitOnDisk({
+          commands: [{ label: 'One', command: '/1' }, { label: 'Two', command: '/2' }, { label: 'Three', command: '/3' }],
+        });
+        const [one, two, three] = store.loadToolkitCommands();
+
+        store.deleteToolkitCommand(one.id);
+        expect(store.loadToolkitCommands()).toEqual([two, three]);
+
+        store.updateToolkitCommand({ ...two, label: 'Two!' });
+        expect(store.requireToolkitCommand(three.id)).toEqual(three);
+        store.deleteToolkitCommand(three.id);
+
+        expect(store.loadToolkitCommands()).toEqual([{ ...two, label: 'Two!' }]);
+      });
+
+      it('refuse to update an id no command goes by, leaving the file alone', () => {
+        toolkitOnDisk({ commands: HAND_WRITTEN });
+        expect(() => store.updateToolkitCommand({ ...NEW, id: 'missing' })).toThrow(/changed or removed outside Chorus/);
+        expect(fs.writeFileSync).not.toHaveBeenCalled();
+      });
+
+      it('refuse to update a command whose label or command was changed by hand before it had its id written', () => {
+        toolkitOnDisk({ commands: [A] });
+        const [a] = store.loadToolkitCommands();
+        toolkitOnDisk({ commands: [{ ...A, command: '/a-changed' }] });
+
+        expect(() => store.updateToolkitCommand({ ...a, label: 'A!' })).toThrow(/changed or removed outside Chorus/);
+        expect(fs.writeFileSync).not.toHaveBeenCalled();
+      });
+
+      it('delete an id no command goes by as already gone, writing nothing', () => {
+        toolkitOnDisk({ commands: HAND_WRITTEN });
+        const loaded = store.loadToolkitCommands();
+
+        expect(store.deleteToolkitCommand('missing')).toEqual(loaded);
+        expect(fs.writeFileSync).not.toHaveBeenCalled();
+      });
+
+      it('find neither of two commands by the id they were both given by hand', () => {
+        toolkitOnDisk({ commands: [{ ...A, id: 'u' }] });
+        const [a] = store.loadToolkitCommands();
+        toolkitOnDisk({ commands: [{ id: 'u', label: 'A copy', command: '/a-copy' }, { ...A, id: 'u' }] });
+        const loaded = store.loadToolkitCommands();
+
+        expect(loaded.map((c) => c.id)).not.toContain('u');
+        expect(() => store.updateToolkitCommand({ ...a, label: 'A!' })).toThrow(/changed or removed outside Chorus/);
+        expect(store.deleteToolkitCommand(a.id)).toEqual(loaded);
+        expect(fs.writeFileSync).not.toHaveBeenCalled();
+      });
+
+      it('start the toolkit when there is no file', () => {
+        vi.mocked(fs.existsSync).mockReturnValue(false);
+        store.addToolkitCommand(NEW);
+        expect(writtenToolkit()).toEqual({ commands: [NEW] });
+      });
+
+      it.each([['not json'], ['null'], ['[]'], ['{}'], ['{"commands":{}}']])(
+        'refuse to overwrite a file holding %s, which loads as empty',
+        (content) => {
+          vi.mocked(fs.readFileSync).mockReturnValue(content);
+          const refusal = /toolkit\.json: it isn't JSON with a "commands" list/;
+
+          expect(() => store.addToolkitCommand(NEW)).toThrow(refusal);
+          expect(() => store.updateToolkitCommand(NEW)).toThrow(refusal);
+          expect(() => store.deleteToolkitCommand('a')).toThrow(refusal);
+          expect(() => store.saveToolkitCommands([NEW])).toThrow(refusal);
+          expect(fs.writeFileSync).not.toHaveBeenCalled();
+        },
+      );
     });
 
     it('should return all commands', () => {
@@ -445,20 +911,53 @@ describe('toPersisted / fromPersisted', () => {
     createdAt: 1,
     lastActiveAt: 1,
     hasUserInput: true,
+    exitStatus: null,
   };
 
-  it('round-trips linked and unlinked PRs', () => {
+  it('round-trips linked PRs', () => {
     const prs = [
       { owner: 'o', repo: 'r', number: 1, stage: 'merged' as const, stageUpdatedAt: 5 },
-      { owner: 'o', repo: 'r', number: 2, stage: 'ready' as const, stageUpdatedAt: 6 },
+      { owner: 'o', repo: 'r', number: 2, stage: 'not-found' as const, stageUpdatedAt: 6 },
     ];
-    const unlinkedPrs = [{ owner: 'o', repo: 'r', number: 3 }];
-    const session = fromPersisted({ ...base, prs, unlinkedPrs });
+    const session = fromPersisted({ ...base, prs });
 
     expect(session.prs).toEqual(prs);
-    expect(session.unlinkedPrs).toEqual(unlinkedPrs);
-    expect(toPersisted(session)).toMatchObject({ prs, unlinkedPrs });
-    expect(toPersisted(session)).not.toHaveProperty('pr');
+    expect(toPersisted(session)).toEqual({ ...base, prs });
+  });
+
+  it('ignores keys this version no longer writes', () => {
+    const stored = JSON.parse(JSON.stringify({ ...base, prs: [], unlinkedPrs: [{ owner: 'o', repo: 'r', number: 3 }] }));
+
+    expect(toPersisted(fromPersisted(stored))).toEqual({ ...base, prs: [] });
+  });
+
+  it.each([['ended' as const], ['error' as const]])('saves that claude exited (%s) and restores the session exited', (status) => {
+    const saved = toPersisted({ ...fromPersisted({ ...base, prs: [] }), status });
+
+    expect(saved.exitStatus).toBe(status);
+    expect(fromPersisted(saved).status).toBe(status);
+  });
+
+  it.each([['idle' as const], ['thinking' as const], ['creating' as const]])(
+    'saves a session whose claude runs (%s) as running, to be relaunched',
+    (status) => {
+      const saved = toPersisted({ ...fromPersisted({ ...base, prs: [] }), status });
+
+      expect(saved.exitStatus).toBeNull();
+      expect(fromPersisted(saved).status).toBe('creating');
+    },
+  );
+
+  it('reads a file from before exit statuses were saved as a running session', () => {
+    const { exitStatus: _omitted, ...stored } = base;
+
+    expect(fromPersisted({ ...stored, prs: [] }).status).toBe('creating');
+  });
+
+  it('reads a file from before v1.5.0 without a context limit', () => {
+    const { contextLimit: _omitted, ...stored } = base;
+
+    expect(fromPersisted(stored).contextLimit).toBeNull();
   });
 
   it('migrates a file from before multiple PRs into a one-PR list', () => {
@@ -468,7 +967,6 @@ describe('toPersisted / fromPersisted', () => {
     const session = fromPersisted(legacy);
 
     expect(session.prs).toEqual([{ owner: 'o', repo: 'r', number: 7, stage: 'draft', stageUpdatedAt: 9 }]);
-    expect(session.unlinkedPrs).toEqual([]);
   });
 
   it("migrates a legacy PR whose stage was never resolved ('no-pr') as unknown", () => {

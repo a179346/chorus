@@ -40,10 +40,9 @@
 
 /* ─── Focus ──────────────────────────────────────────── */
 
+/* role="button": the sortable session cards, which dnd-kit makes focusable */
 button:focus-visible,
-a:focus-visible,
-[role="button"]:focus-visible,
-[role="checkbox"]:focus-visible {
+[role="button"]:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
 }
@@ -69,17 +68,18 @@ a:focus-visible,
     color var(--transition-fast), transform var(--transition-fast), opacity var(--transition-fast);
 }
 
-.btn:hover:not(:disabled) {
+.btn:hover:not(:disabled, [aria-disabled='true']) {
   background: var(--bg-hover);
   border-color: rgba(var(--tint-rgb), 0.16);
   color: var(--text-primary);
 }
 
-.btn:active:not(:disabled) {
+.btn:active:not(:disabled, [aria-disabled='true']) {
   transform: scale(0.98);
 }
 
-.btn:disabled {
+.btn:disabled,
+.btn[aria-disabled='true'] {
   opacity: 0.4;
   cursor: default;
 }
@@ -92,7 +92,7 @@ a:focus-visible,
   font-weight: 600;
 }
 
-.btn-primary:hover:not(:disabled) {
+.btn-primary:hover:not(:disabled, [aria-disabled='true']) {
   border-color: transparent;
   background: var(--accent-primary);
   color: var(--btn-primary-text);
@@ -107,7 +107,7 @@ a:focus-visible,
   font-weight: 600;
 }
 
-.btn-danger:hover:not(:disabled) {
+.btn-danger:hover:not(:disabled, [aria-disabled='true']) {
   border-color: transparent;
   background: var(--accent-red);
   color: #fff;
@@ -342,9 +342,10 @@ textarea.input {
   padding: 4px;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
+  overflow-y: auto;
   background: var(--bg-elevated);
   box-shadow: var(--shadow-lg);
-  animation: fadeIn 100ms ease;
+  animation: fadeIn 120ms ease;
 }
 
 .menu-item {
@@ -666,7 +667,7 @@ textarea.input {
 .palette-item-trailing {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 8px;
   margin-left: auto;
   flex-shrink: 0;
   font-size: 11px;
@@ -694,4 +695,107 @@ textarea.input {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+}
+
+/* ─── Sidebar header pill, PR chips, shell header ────── */
+
+/* "N need you" — the clickable twin of ⌘J */
+.attention-pill {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(var(--accent-rgb), 0.16);
+  color: var(--accent-primary);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+  animation: fadeIn 150ms ease;
+  transition: background var(--transition-fast), transform var(--transition-fast);
+}
+
+.attention-pill:hover {
+  background: rgba(var(--accent-rgb), 0.26);
+}
+
+.attention-pill:active {
+  transform: scale(0.97);
+}
+
+/* Colour and fill come inline from the PR's stage, so hover draws a ring in
+   that colour instead of changing the fill. */
+.pr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+  -webkit-app-region: no-drag;
+  transition: box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+
+.pr-chip:hover {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 40%, transparent);
+}
+
+.pr-chip:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+.pr-chip:active {
+  transform: scale(0.97);
+}
+
+.shell-header {
+  background: var(--bg-panel);
+  color: var(--text-dimmed);
+  user-select: none;
+  transition: color var(--transition-fast);
+}
+
+.shell-header:hover {
+  color: var(--text-secondary);
+}
+
+.shell-header:active {
+  color: var(--text-primary);
+}
+
+.shell-header .panel-title {
+  color: inherit;
+}
+
+/* Inset: the panel clips anything drawn outside the header */
+.shell-header:focus-visible {
+  box-shadow: inset var(--focus-ring);
+}
+
+/* ─── Preferences theme swatches ─────────────────────── */
+
+/* The chosen theme is ringed in its own accent (the swatch's colour, set
+   inline). Keyboard focus sits outside that ring with a gap, so the two stay
+   apart even though the chosen theme's accent is also the app's while it
+   is previewed. */
+.theme-swatch {
+  padding: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: none;
+  cursor: pointer;
+  transition: box-shadow var(--transition-fast);
+}
+
+.theme-swatch[aria-pressed="true"],
+.theme-swatch[aria-pressed="true"]:focus-visible {
+  box-shadow: 0 0 0 2px currentColor;
+}
+
+.theme-swatch:focus-visible {
+  outline: 2px solid rgba(var(--accent-rgb), 0.6);
+  outline-offset: 3px;
+  box-shadow: none;
 }

@@ -13,6 +13,11 @@ import { invoke, on, IpcChannels } from './ipc';
 
 export type TerminalKind = 'pty' | 'shell';
 
+export interface TerminalAddress {
+  kind: TerminalKind;
+  sessionId: string;
+}
+
 export interface SearchResult {
   resultIndex: number;
   resultCount: number;
@@ -178,8 +183,9 @@ interface AttachOptions {
 
 /**
  * Mount a session's terminal into a container and wire up input, focus
- * tracking, and resizing. Returns a cleanup that detaches the DOM but keeps
- * the terminal alive in the cache for reattachment.
+ * tracking, and resizing. Never takes focus: whoever shows a terminal decides
+ * whether it should also get the keyboard. Returns a cleanup that detaches
+ * the DOM but keeps the terminal alive in the cache for reattachment.
  */
 function attach(
   kind: TerminalKind,
@@ -214,9 +220,6 @@ function attach(
     safeFitAndResize(entry, kind, sessionId);
     terminal.refresh(0, terminal.rows - 1);
     syncViewport(terminal);
-    if (kind === 'pty') {
-      terminal.focus();
-    }
   });
 
   // After renderer reload (Cmd+R), the PTY process is still alive but the
@@ -318,7 +321,7 @@ function reset(kind: TerminalKind, sessionId: string): void {
   cache.get(keyOf(kind, sessionId))?.terminal.reset();
 }
 
-function focused(): { kind: TerminalKind; sessionId: string } | null {
+function focused(): TerminalAddress | null {
   if (!focusedKey) return null;
   const [kind, ...rest] = focusedKey.split(':');
   return { kind: kind as TerminalKind, sessionId: rest.join(':') };

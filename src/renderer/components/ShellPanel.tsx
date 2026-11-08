@@ -15,6 +15,7 @@ export function ShellPanel({ collapsed, onToggle, children }: ShellPanelProps): 
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       <button
         type="button"
+        className="shell-header"
         style={headerStyle}
         onClick={onToggle}
         aria-expanded={!collapsed}
@@ -46,8 +47,5 @@ const headerStyle: React.CSSProperties = {
   gap: 6,
   width: '100%',
   padding: '0 14px',
-  background: 'var(--bg-panel)',
-  color: 'var(--text-dimmed)',
   flexShrink: 0,
-  userSelect: 'none',
 };

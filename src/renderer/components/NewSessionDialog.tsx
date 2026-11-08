@@ -16,18 +16,20 @@ import { invoke, IpcChannels } from '../ipc';
 import { basename } from '../session-presentation';
 import { readPrDraft } from '../pr-draft';
 import { TOGGLE_LABELS, customFlagText, readCustomFlags, readToggles, toggleFlags } from '../session-flags';
+import { useAsyncSubmit } from '../use-async-submit';
 import type { NewSessionInput } from '../use-sessions';
-import { PrIdentity, PrRemoveButton, PrUrlInput } from './PrLinks';
+import { PrIdentity, PrRemoveButton, PrUrlInput, usePrRemovalFocus } from './PrLinks';
 import { Dialog } from './Dialog';
 import { Checkbox } from './Checkbox';
 
 interface NewSessionDialogProps {
-  open: boolean;
   onClose: () => void;
-  onSubmit: (config: NewSessionInput) => void;
+  /** Resolves once the session exists; a rejection is shown in the dialog. */
+  onSubmit: (config: NewSessionInput) => Promise<void>;
 }
 
-export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogProps): React.ReactElement | null {
+/** The owner mounts it only while open, keyed per opening, so each opening starts from a blank form. */
+export function NewSessionDialog({ onClose, onSubmit }: NewSessionDialogProps): React.ReactElement {
   const [name, setName] = useState('');
   const [cwd, setCwd] = useState('');
   const [worktree, setWorktree] = useState('');
@@ -40,11 +42,18 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
   const [chrome, setChrome] = useState(false);
   const [customFlags, setCustomFlags] = useState('');
   const [notifyOnIdle, setNotifyOnIdle] = useState(false);
+  // Creating can wait on the login-shell environment for many seconds
+  const {
+    run: submit,
+    pending: submitting,
+    error: submitError,
+    clearError: clearSubmitError,
+  } = useAsyncSubmit(onSubmit);
   const nameRef = useRef<HTMLInputElement>(null);
+  const prInputRef = useRef<HTMLInputElement>(null);
+  const prRemovalFocus = usePrRemovalFocus(prs, prInputRef);
 
   useEffect(() => {
-    if (!open) return;
-    // Load defaults
     void invoke(IpcChannels.APP_GET_NEW_SESSION_DEFAULTS).then((defaults) => {
       setCwd(defaults.cwd || '');
       const toggles = readToggles(defaults.flags);
@@ -57,13 +66,14 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
     void invoke(IpcChannels.APP_GET_STATE).then((state) => {
       setFavorites(state.favoriteDirectories);
     });
-    setName('');
-    setWorktree('');
-    setPrs([]);
-    setPrDraft('');
-    setPrompt('');
-    setTimeout(() => nameRef.current?.focus(), 50);
-  }, [open]);
+    // Right away, so keys typed just after opening land here and not in a terminal
+    nameRef.current?.focus();
+  }, []);
+
+  // An error describes the values that were submitted; any edit makes it stale
+  useEffect(() => {
+    clearSubmitError();
+  }, [name, cwd, worktree, prs, prDraft, prompt, autoMode, skipPermissions, chrome, customFlags, notifyOnIdle, clearSubmitError]);
 
   const handleSelectDir = useCallback(async () => {
     const dir = await invoke(IpcChannels.DIALOG_SELECT_DIRECTORY);
@@ -107,31 +117,32 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
   // A URL still sitting in the field counts as added when the form is submitted
   const pendingPr = useMemo(() => readPrDraft(prDraft, prs), [prDraft, prs]);
   const customFlagsDraft = useMemo(() => readCustomFlags(customFlags), [customFlags]);
-  const canSubmit =
+  const formIsValid =
     !!name.trim() && !!cwd.trim() && pendingPr.kind !== 'invalid' && customFlagsDraft.kind === 'ok';
 
-  const handleSubmit = useCallback(
-    (e: React.FormEvent) => {
-      e.preventDefault();
-      if (!canSubmit || customFlagsDraft.kind !== 'ok') return;
-      const allPrs = pendingPr.kind === 'ok' ? [...prs, pendingPr.pr] : prs;
-      onSubmit({
-        name: name.trim(),
-        cwd: cwd.trim(),
-        worktree: worktree.trim(),
-        flags: [...toggleFlags({ autoMode, skipPermissions, chrome }), ...customFlagsDraft.args],
-        notifyOnIdle,
-        prUrls: allPrs.map(prUrl),
-        prompt: prompt.trim(),
-      });
-    },
-    [canSubmit, name, cwd, worktree, autoMode, skipPermissions, chrome, customFlagsDraft, notifyOnIdle, prs, pendingPr, prompt, onSubmit]
-  );
+  const handleSubmit = (e: React.FormEvent): void => {
+    e.preventDefault();
+    if (!formIsValid || customFlagsDraft.kind !== 'ok') return;
+    const allPrs = pendingPr.kind === 'ok' ? [...prs, pendingPr.pr] : prs;
+    void submit({
+      name: name.trim(),
+      cwd: cwd.trim(),
+      worktree: worktree.trim(),
+      flags: [...toggleFlags({ autoMode, skipPermissions, chrome }), ...customFlagsDraft.args],
+      notifyOnIdle,
+      prUrls: allPrs.map(prUrl),
+      prompt: prompt.trim(),
+    });
+  };
 
-  if (!open) return null;
+  // A pending create belongs to this form: let it finish so its result
+  // (closing, or an error) can't land on a later one
+  const close = useCallback(() => {
+    if (!submitting) onClose();
+  }, [submitting, onClose]);
 
   return (
-    <Dialog title="New Session" label="New Session" onClose={onClose} width={460}>
+    <Dialog title="New Session" label="New Session" onClose={close} width={460}>
       <form
         onSubmit={handleSubmit}
         onKeyDown={(e) => {
@@ -150,7 +161,6 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="my-session"
-            autoFocus
           />
         </div>
 
@@ -222,10 +232,18 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
               <div style={{ flex: 1, minWidth: 0 }}>
                 <PrIdentity pr={pr} />
               </div>
-              <PrRemoveButton pr={pr} onRemove={() => setPrs(prs.filter((p) => p !== pr))} />
+              <PrRemoveButton
+                pr={pr}
+                buttonRef={prRemovalFocus.removeButtonRef(pr)}
+                onRemove={() => {
+                  prRemovalFocus.willRemove(pr);
+                  setPrs(prs.filter((p) => p !== pr));
+                }}
+              />
             </div>
           ))}
           <PrUrlInput
+            inputRef={prInputRef}
             value={prDraft}
             onChange={setPrDraft}
             linked={prs}
@@ -276,12 +294,22 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
           {customFlagsDraft.kind === 'invalid' && <span className="field-error">{customFlagsDraft.error}</span>}
         </div>
 
+        {submitError && <span className="field-error" role="alert">{submitError}</span>}
+
+        {/* aria-disabled while creating: a disabled button drops focus to the
+            page, leaving no keyboard way back into the form if creating fails */}
         <div className="dialog-actions">
-          <button type="button" className="btn" onClick={onClose}>
+          <button type="button" className="btn" onClick={close} aria-disabled={submitting}>
             Cancel
           </button>
-          <button type="submit" className="btn btn-primary" disabled={!canSubmit} title="Create (⌘↵)">
-            Create
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={!formIsValid}
+            aria-disabled={submitting}
+            title="Create (⌘↵)"
+          >
+            {submitting ? 'Creating…' : 'Create'}
             <span className="btn-kbd">⌘↵</span>
           </button>
         </div>
@@ -321,7 +349,8 @@ function FavoriteChip({ dir, selected, onSelect }: FavoriteChipProps): React.Rea
       {...attributes}
       {...listeners}
     >
-      {basename(dir)}
+      {/* .btn is a flex container, so the ellipsis needs a box of its own */}
+      <span style={favoriteChipLabelStyle}>{basename(dir)}</span>
     </button>
   );
 }
@@ -342,8 +371,13 @@ const favoriteChipStyle: React.CSSProperties = {
   fontFamily: 'var(--font-mono)',
   fontSize: 10,
   maxWidth: '100%',
+};
+
+const favoriteChipLabelStyle: React.CSSProperties = {
+  minWidth: 0,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
 };
 
 const optionsGridStyle: React.CSSProperties = {
