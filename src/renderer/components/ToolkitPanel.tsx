@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Ellipsis, Pencil, Plus, Trash2 } from 'lucide-react';
 import type { ToolkitCommand } from '../../shared/types';
+import { ipcErrorMessage } from '../ipc';
 import { Dialog, ConfirmDialog } from './Dialog';
 import { Menu, MenuItem, MenuDivider } from './Menu';
 import { ICON_OPTIONS, ToolkitIcon } from './ToolkitIcon';
@@ -8,9 +9,10 @@ import { ICON_OPTIONS, ToolkitIcon } from './ToolkitIcon';
 interface ToolkitPanelProps {
   commands: ToolkitCommand[];
   onExecute: (commandId: string) => void;
-  onAdd: (command: Omit<ToolkitCommand, 'id'>) => void;
-  onUpdate: (command: ToolkitCommand) => void;
-  onDelete: (commandId: string) => void;
+  // These reject when main refuses the edit (e.g. toolkit.json can't be read); the open dialog shows why
+  onAdd: (command: Omit<ToolkitCommand, 'id'>) => Promise<void>;
+  onUpdate: (command: ToolkitCommand) => Promise<void>;
+  onDelete: (commandId: string) => Promise<void>;
 }
 
 export function ToolkitPanel({ commands, onExecute, onAdd, onUpdate, onDelete }: ToolkitPanelProps): React.ReactElement {
@@ -51,19 +53,18 @@ export function ToolkitPanel({ commands, onExecute, onAdd, onUpdate, onDelete }:
     }
   }, [contextMenu, commands]);
 
-  const handleConfirmDelete = useCallback(() => {
-    if (deleteConfirm) {
-      onDelete(deleteConfirm);
-      setDeleteConfirm(null);
-    }
+  const handleConfirmDelete = useCallback(async () => {
+    if (!deleteConfirm) return;
+    await onDelete(deleteConfirm);
+    setDeleteConfirm(null);
   }, [deleteConfirm, onDelete]);
 
-  const handleFormSubmit = useCallback((data: { label: string; command: string; icon: string }) => {
+  const handleFormSubmit = useCallback(async (data: { label: string; command: string; icon: string }) => {
     if (editingCommand) {
-      onUpdate({ ...editingCommand, ...data });
+      await onUpdate({ ...editingCommand, ...data });
       setEditingCommand(null);
     } else {
-      onAdd(data);
+      await onAdd(data);
       setShowAddForm(false);
     }
   }, [editingCommand, onAdd, onUpdate]);
@@ -196,7 +197,8 @@ function ToolkitButton({ command, onExecute, onOpenMenu, onToggleMenu }: Toolkit
 
 interface CommandFormDialogProps {
   initial: ToolkitCommand | null;
-  onSubmit: (data: { label: string; command: string; icon: string }) => void;
+  /** Closes the dialog on success; rejects when the edit was refused, and the dialog says why. */
+  onSubmit: (data: { label: string; command: string; icon: string }) => Promise<void>;
   onClose: () => void;
 }
 
@@ -205,15 +207,26 @@ function CommandFormDialog({ initial, onSubmit, onClose }: CommandFormDialogProp
   const [command, setCommand] = useState(initial?.command ?? '');
   const [icon, setIcon] = useState(initial?.icon ?? '');
   const labelRef = useRef<HTMLInputElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  // Enter and a click can both land before main answers
+  const submittingRef = useRef(false);
 
   useEffect(() => {
     labelRef.current?.focus();
   }, []);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!label.trim() || !command.trim()) return;
-    onSubmit({ label: label.trim(), command: command.trim(), icon });
+    if (!label.trim() || !command.trim() || submittingRef.current) return;
+    submittingRef.current = true;
+    setError(null);
+    try {
+      await onSubmit({ label: label.trim(), command: command.trim(), icon });
+    } catch (err) {
+      setError(ipcErrorMessage(err));
+    } finally {
+      submittingRef.current = false;
+    }
   };
 
   const isValid = label.trim() && command.trim();
@@ -221,7 +234,7 @@ function CommandFormDialog({ initial, onSubmit, onClose }: CommandFormDialogProp
 
   return (
     <Dialog title={title} label={title} onClose={onClose} width={400}>
-      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <form onSubmit={(e) => void handleSubmit(e)} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div className="field">
           <label htmlFor="toolkit-label" className="field-label">Label</label>
           <input
@@ -275,6 +288,8 @@ function CommandFormDialog({ initial, onSubmit, onClose }: CommandFormDialogProp
             })}
           </div>
         </div>
+
+        {error && <span className="field-error" role="alert">{error}</span>}
 
         <div className="dialog-actions">
           <button type="button" className="btn" onClick={onClose}>

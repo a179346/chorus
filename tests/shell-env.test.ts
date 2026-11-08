@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fallbackPath, readLoginShellEnv, resolveShellEnv, userShell } from '../src/main/shell-env';
 
-// Stand-in shells: each gets `-ilc <probe command>` exactly as a real shell would
+// Stand-in shells: each gets the flags and probe command a real shell would
 let dir: string;
 
 function fakeShell(name: string, body: string): string {
@@ -85,6 +85,33 @@ describe('readLoginShellEnv', () => {
 
   it('rejects a shell that does not exist', async () => {
     await expect(readLoginShellEnv(path.join(dir, 'missing'))).rejects.toThrow(/^Couldn't start /);
+  });
+
+  it('starts the shell as an interactive login shell', async () => {
+    const shell = fakeShell('bash', '[ "$1" = -ilc ] || exit 2\nexec /bin/sh -c "$2"');
+    expect((await readLoginShellEnv(shell)).PATH).toBeTruthy();
+  });
+
+  it.each(['csh', 'tcsh'])('starts %s without -l, which it takes only on its own', async (name) => {
+    const shell = fakeShell(name, '[ "$1" = -ic ] || exit 2\nexec /bin/sh -c "$2"');
+    expect((await readLoginShellEnv(shell)).PATH).toBeTruthy();
+  });
+
+  describe('with the real tcsh', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('reads .login as well as .tcshrc, as a login shell does', async () => {
+      const home = fs.mkdtempSync(path.join(dir, 'home-'));
+      fs.writeFileSync(path.join(home, '.login'), 'setenv CHORUS_FROM_LOGIN 1\n');
+      fs.writeFileSync(path.join(home, '.tcshrc'), 'setenv CHORUS_FROM_TCSHRC 1\n');
+      vi.stubEnv('HOME', home);
+
+      const env = await readLoginShellEnv('/bin/tcsh');
+
+      expect(env).toMatchObject({ CHORUS_FROM_LOGIN: '1', CHORUS_FROM_TCSHRC: '1' });
+    });
   });
 });
 

@@ -7,8 +7,14 @@ const SCATTERED = 20;
 /** A hit in an item's secondary text counts for less than one in its title. */
 const SECONDARY_PENALTY = 30;
 
-/** Separates words in an item's text and in the query alike, so "api-refactor" finds "api refactor". */
+/** Separates words in an item's text. */
 const WORD_BREAK = /[\s\-_./]/;
+
+/**
+ * The same breaks for the query, so "api-refactor" finds "api refactor", except
+ * a "/" that starts a word: it belongs to a slash command like "/pr".
+ */
+const QUERY_WORD_BREAK = /[\s\-_.]|(?<=\S)\//;
 
 /** Case- and Unicode-form-insensitive, so "café" typed either way matches. */
 function normalize(text: string): string {
@@ -84,7 +90,7 @@ function itemScore(item: Matchable, words: readonly string[]): number | null {
  * its original order.
  */
 export function filterPaletteItems<T extends Matchable>(items: readonly T[], query: string): T[] {
-  const words = query.split(WORD_BREAK).filter(Boolean);
+  const words = query.split(QUERY_WORD_BREAK).filter(Boolean);
   if (words.length === 0) return [...items];
 
   const ranked = items

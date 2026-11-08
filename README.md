@@ -47,7 +47,7 @@ Switch away from Chorus entirely — read docs, review a PR, grab coffee — and
 
 ### Restart and reopen
 
-If Claude Code exits, restart it in place — the conversation resumes. Closed a session by accident? `⌘⇧T` reopens it, and **File → Recently Closed** lists the last ten.
+If Claude Code exits, restart it in place — the conversation resumes. Closed a session by accident? `⌘⇧T` reopens it, and **File → Recently Closed** lists the last ten, plus any session that couldn't be restored at launch.
 
 ### Start with a task
 

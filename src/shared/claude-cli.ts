@@ -8,10 +8,11 @@ import type { Session } from './types';
 /**
  * Flags that set a session's identity, resume or worktree (Chorus passes
  * these itself), that keep claude from running as an interactive session in
- * this terminal, or that turn off the hooks Chorus relies on to follow the
- * session. `--` is here because Chorus uses it to pass the prompt. A
- * `--settings` file or JSON can turn the hooks off too (`disableAllHooks`),
- * but what it holds isn't inspected.
+ * this terminal, that whatever launches claude sets for its own ends, or that
+ * turn off the hooks Chorus relies on to follow the session. `--` is here
+ * because Chorus uses it to pass the prompt. A `--settings` file or JSON can
+ * turn the hooks off too (`disableAllHooks`), but what it holds isn't
+ * inspected.
  */
 const UNSUPPORTED_FLAGS: ReadonlySet<string> = new Set([
   '--',
@@ -40,6 +41,25 @@ const UNSUPPORTED_FLAGS: ReadonlySet<string> = new Set([
   '--rewind-files',
   '-h', '--help',
   '-v', '--version',
+  // Set by an SDK or desktop host, a deep link, /background, `claude agents`
+  // or a team lead when it launches claude; meaningless in a session started here
+  '--session-mirror',
+  '--await-claim',
+  '--await-initialize',
+  '--host-auth-is-org-sign-in',
+  '--enable-auth-status',
+  '--deep-link-origin',
+  '--deep-link-repo',
+  '--deep-link-last-fetch',
+  '--deep-link-cwd-b64',
+  '--reply-on-resume',
+  '--agents-view-if-allowed',
+  '--plan-mode-required',
+  '--agent-id',
+  '--agent-name',
+  '--agent-type',
+  '--agent-color',
+  '--team-name',
   // Turn off the hooks (as does a --setting-sources without local)
   '--bare',
   '--safe-mode',
@@ -137,9 +157,11 @@ const VALUE_FLAGS: ReadonlyMap<string, ValueKind> = new Map<string, ValueKind>([
 ]);
 
 /**
- * The flags in `claude --help` (2.1.319) that take no value, plus the hidden
- * --enable-auto-mode, which the New Session dialog passes. claude rejects a
- * value attached to one (`--verbose=true`). Unsupported flags are left out.
+ * Every flag claude (2.1.319) declares that takes no value: the ones in
+ * `claude --help`, then the hidden ones. claude rejects a value attached to
+ * one (`--verbose=true`). This must follow claude's flags: one missing here
+ * passes with a value attached, and a word after it gets the hint to attach
+ * it. Unsupported flags are left out.
  */
 const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   '--allow-dangerously-skip-permissions',
@@ -148,7 +170,6 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   '--chrome',
   '--dangerously-skip-permissions',
   '--disable-slash-commands',
-  '--enable-auto-mode',
   '--exclude-dynamic-system-prompt-sections',
   '--forward-subagent-text',
   '--ide',
@@ -159,15 +180,27 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   '--replay-user-messages',
   '--strict-mcp-config',
   '--verbose',
+  // Hidden from --help
+  '--allow-other-models',
+  '-d2e', '--debug-to-stderr',
+  '--enable-auto-mode',
+  '--include-unsupported-models',
+  '--init',
+  '--maintenance',
 ]);
 
+function isKnownFlag(arg: string): boolean {
+  return UNSUPPORTED_FLAGS.has(arg) || VALUE_FLAGS.has(arg) || BOOLEAN_FLAGS.has(arg);
+}
+
 /**
- * The flag an argument names, or null for a plain value. Covers the forms
- * the CLI accepts: `--name=value`, and a short flag with its value attached
- * (`-nvalue`).
+ * The flag an argument names, or null for a plain value. As in claude's
+ * parser, an argument that is a whole known flag names it (`-d2e` is a flag of
+ * its own, not `-d` with a value). Otherwise covers the forms the CLI accepts:
+ * `--name=value`, and a short flag with its value attached (`-nvalue`).
  */
 function flagName(arg: string): string | null {
-  if (arg === '--') return arg;
+  if (isKnownFlag(arg)) return arg;
   if (arg.startsWith('--')) return arg.split('=')[0];
   if (arg.startsWith('-') && arg.length > 1) return arg.slice(0, 2);
   return null;

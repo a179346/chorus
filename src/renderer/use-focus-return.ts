@@ -2,7 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 
 /**
  * Where focus goes when a closing menu, dialog, or palette has nothing to
- * hand it back to. App points it at the active session's Claude terminal.
+ * hand it back to. App points it at the active session's Claude terminal, if
+ * nothing else has taken focus a frame later.
  */
 export const FocusFallbackContext = createContext<() => void>(() => {});
 

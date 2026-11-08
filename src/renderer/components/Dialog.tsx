@@ -1,4 +1,5 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { ipcErrorMessage } from '../ipc';
 import { useBackdropDismiss } from '../use-backdrop-dismiss';
 import { useFocusReturn } from '../use-focus-return';
 import { useModalKeys } from '../use-modal-keys';
@@ -40,24 +41,42 @@ interface ConfirmDialogProps {
   title: string;
   message: React.ReactNode;
   confirmLabel: string;
-  onConfirm: () => void;
+  /** May be async: while it runs a second confirm is ignored, and if it rejects the dialog stays open and says why. */
+  onConfirm: () => void | Promise<void>;
   onCancel: () => void;
 }
 
 /** A destructive yes/no question; the confirm button takes focus so Enter answers it. */
 export function ConfirmDialog({ title, message, confirmLabel, onConfirm, onCancel }: ConfirmDialogProps): React.ReactElement {
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  // Enter and a click can both land before an async confirm settles
+  const confirmingRef = useRef(false);
 
   useEffect(() => {
     confirmRef.current?.focus();
   }, []);
 
+  const confirm = async () => {
+    if (confirmingRef.current) return;
+    confirmingRef.current = true;
+    setError(null);
+    try {
+      await onConfirm();
+    } catch (err) {
+      setError(ipcErrorMessage(err));
+    } finally {
+      confirmingRef.current = false;
+    }
+  };
+
   return (
     <Dialog title={title} label={title} onClose={onCancel} width={380} role="alertdialog">
       <p className="dialog-text">{message}</p>
+      {error && <p className="field-error" role="alert">{error}</p>}
       <div className="dialog-actions">
         <button type="button" className="btn" onClick={onCancel}>Cancel</button>
-        <button ref={confirmRef} type="button" className="btn btn-danger" onClick={onConfirm}>{confirmLabel}</button>
+        <button ref={confirmRef} type="button" className="btn btn-danger" onClick={() => void confirm()}>{confirmLabel}</button>
       </div>
     </Dialog>
   );

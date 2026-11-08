@@ -119,6 +119,18 @@ describe('checkSessionFlags', () => {
     });
   });
 
+  it('knows the boolean flags --help leaves out', () => {
+    const hidden = ['--allow-other-models', '-d2e', '--debug-to-stderr', '--include-unsupported-models', '--init', '--maintenance'];
+    expect(checkSessionFlags(hidden)).toEqual({ ok: true, flagNames: hidden });
+    expect(errorOf(['--maintenance', 'now'])).toBe("now isn't a flag — --maintenance takes no value");
+    expect(errorOf(['--init=1'])).toBe('--init takes no value');
+  });
+
+  it('reads -d2e as a flag of its own, as claude does, not -d with a value', () => {
+    expect(errorOf(['-d2e', 'hooks'])).toBe("hooks isn't a flag — -d2e takes no value");
+    expect(checkSessionFlags(['-dhooks'])).toEqual({ ok: true, flagNames: ['-d'] });
+  });
+
   it('keeps an empty value with its flag', () => {
     expect(errorOf(['--fallback-model', ''])).toBeNull();
   });
@@ -188,8 +200,20 @@ describe('checkSessionFlags', () => {
     [['--safe-mode'], '--safe-mode'],
     [['--restricted'], '--restricted'],
     [['--project-config-root', '..'], '--project-config-root'],
+    [['--session-mirror'], '--session-mirror'],
+    [['--await-claim'], '--await-claim'],
+    [['--await-initialize'], '--await-initialize'],
+    [['--host-auth-is-org-sign-in'], '--host-auth-is-org-sign-in'],
+    [['--enable-auth-status'], '--enable-auth-status'],
+    [['--deep-link-origin'], '--deep-link-origin'],
+    [['--reply-on-resume'], '--reply-on-resume'],
+    [['--agents-view-if-allowed'], '--agents-view-if-allowed'],
+    [['--plan-mode-required'], '--plan-mode-required'],
+    [['--deep-link-repo', 'o/r'], '--deep-link-repo'],
+    [['--agent-id', 'a1'], '--agent-id'],
+    [['--team-name=t'], '--team-name'],
     [['--'], '--'],
-  ])('rejects flags Chorus manages, that end the interactive session, or that turn off its hooks: %j', (args, name) => {
+  ])('rejects flags Chorus manages, that end the interactive session, that a launching host sets, or that turn off its hooks: %j', (args, name) => {
     expect(errorOf(args)).toBe(`${name} isn't supported in Chorus sessions`);
   });
 

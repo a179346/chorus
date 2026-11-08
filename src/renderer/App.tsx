@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import type { ToolkitCommand } from '../shared/types';
+import type { Session, ToolkitCommand } from '../shared/types';
 import { SplitPane } from './components/SplitPane';
 import { StatusBar } from './components/StatusBar';
 import { ShellPanel, SHELL_HEADER_HEIGHT } from './components/ShellPanel';
@@ -45,7 +45,6 @@ export function App(): React.ReactElement {
     activeSession,
     activeSessionId,
     activeSessionIdRef,
-    setActiveSessionId,
     selectSession,
     createSession,
     endSession,
@@ -96,9 +95,6 @@ export function App(): React.ReactElement {
         setToolkitHeight(state.panelSizes.toolkitHeight || DEFAULT_TOOLKIT_HEIGHT);
         setShellCollapsed(state.panelSizes.shellCollapsed ?? false);
       }
-      if (state.lastActiveSessionId) {
-        setActiveSessionId(state.lastActiveSessionId);
-      }
       if (state.terminalSettings?.fontFamily) {
         setTerminalFontFamily(state.terminalSettings.fontFamily);
       }
@@ -118,7 +114,7 @@ export function App(): React.ReactElement {
     });
 
     void invoke(IpcChannels.TOOLKIT_LIST, {}).then(setToolkitCommands);
-  }, [setActiveSessionId]);
+  }, []);
 
   // ─── Preload terminals for every session ───────────
   // Background sessions emit PTY data immediately on app restart (claude --resume
@@ -245,10 +241,17 @@ export function App(): React.ReactElement {
     if (sid && !modalIsOpen()) terminals.focus('pty', sid);
   }, [activeSessionIdRef]);
 
-  // For callers that run while a closing menu, dialog or palette still holds
-  // focus (focus fallback, palette actions): wait until it has left the page
-  const focusActiveClaudeAfterClose = useCallback(() => {
-    requestAnimationFrame(focusActiveClaude);
+  /**
+   * Puts the keyboard back in Claude a frame later, unless by then something
+   * else has taken it: for when focus may just have been dropped (a rename
+   * ended, or a closing menu, dialog or palette had nowhere to hand it back).
+   * The frame lets a rename's blur finish, and content opened by the action
+   * that closed the palette (the find bar) focus itself.
+   */
+  const focusActiveClaudeIfLost = useCallback(() => {
+    requestAnimationFrame(() => {
+      if (focusIsLost()) focusActiveClaude();
+    });
   }, [focusActiveClaude]);
 
   // Showing a session hands it the keyboard. TerminalView, a child, has
@@ -298,34 +301,19 @@ export function App(): React.ReactElement {
     []
   );
 
-  /** After renaming, put the keyboard back in Claude — unless focus already went somewhere else. */
-  const refocusTerminalIfIdle = useCallback(() => {
-    // A rename ending on blur runs before focus lands on whatever took it
-    requestAnimationFrame(() => {
-      if (focusIsLost()) focusActiveClaude();
-    });
-  }, [focusActiveClaude]);
-
   const handleRenameSession = useCallback(
     (id: string, name: string) => {
       renameSession(id, name);
       setRenamingSessionId(null);
-      refocusTerminalIfIdle();
+      focusActiveClaudeIfLost();
     },
-    [renameSession, refocusTerminalIfIdle]
+    [renameSession, focusActiveClaudeIfLost]
   );
 
   const handleCancelRename = useCallback(() => {
     setRenamingSessionId(null);
-    refocusTerminalIfIdle();
-  }, [refocusTerminalIfIdle]);
-
-  const handleConfirmEndSession = useCallback(() => {
-    if (endSessionConfirm) {
-      void handleEndSession(endSessionConfirm);
-      setEndSessionConfirm(null);
-    }
-  }, [endSessionConfirm, handleEndSession]);
+    focusActiveClaudeIfLost();
+  }, [focusActiveClaudeIfLost]);
 
   const sessionToEnd = sessions.find((s) => s.id === endSessionConfirm) ?? null;
 
@@ -337,10 +325,12 @@ export function App(): React.ReactElement {
       const sid = activeSessionIdRef.current;
       if (sid) {
         void invoke(IpcChannels.TOOLKIT_EXECUTE, { sessionId: sid, commandId });
-        focusActiveClaudeAfterClose();
+        // The command types into Claude, so Claude gets the keyboard — a frame
+        // later, after a closing palette has handed focus back to its opener
+        requestAnimationFrame(focusActiveClaude);
       }
     },
-    [activeSessionIdRef, focusActiveClaudeAfterClose]
+    [activeSessionIdRef, focusActiveClaude]
   );
 
   const handleToolkitAdd = useCallback(
@@ -432,7 +422,7 @@ export function App(): React.ReactElement {
 
   // ─── Render ─────────────────────────────────────────
   return (
-    <FocusFallbackContext.Provider value={focusActiveClaudeAfterClose}>
+    <FocusFallbackContext.Provider value={focusActiveClaudeIfLost}>
       <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {/* Main layout: left/right split */}
         <SplitPane
@@ -572,18 +562,10 @@ export function App(): React.ReactElement {
 
         {/* End session confirmation dialog */}
         {sessionToEnd && (
-          <ConfirmDialog
-            title="End Session"
-            message={
-              <>
-                End <strong>{sessionToEnd.name}</strong>? This stops its Claude Code process and removes it from the list.{' '}
-                {sessionToEnd.hasUserInput
-                  ? 'You can bring it back with ⌘⇧T.'
-                  : "It has no conversation yet, so it can't be reopened."}
-              </>
-            }
-            confirmLabel="End Session"
-            onConfirm={handleConfirmEndSession}
+          <EndSessionConfirm
+            key={sessionToEnd.id}
+            session={sessionToEnd}
+            onEnd={handleEndSession}
             onCancel={() => setEndSessionConfirm(null)}
           />
         )}
@@ -616,6 +598,33 @@ export function App(): React.ReactElement {
 
       </div>
     </FocusFallbackContext.Provider>
+  );
+}
+
+interface EndSessionConfirmProps {
+  session: Session;
+  /** Closes the dialog once the session is gone; rejects when main couldn't end it. */
+  onEnd: (id: string) => Promise<void>;
+  onCancel: () => void;
+}
+
+/** Asks before ending a session; if ending fails, the session stays and the dialog says why. */
+function EndSessionConfirm({ session, onEnd, onCancel }: EndSessionConfirmProps): React.ReactElement {
+  return (
+    <ConfirmDialog
+      title="End Session"
+      message={
+        <>
+          End <strong>{session.name}</strong>? This stops its Claude Code process and removes it from the list.{' '}
+          {session.hasUserInput
+            ? 'You can bring it back with ⌘⇧T.'
+            : "It has no conversation yet, so it can't be reopened."}
+        </>
+      }
+      confirmLabel="End Session"
+      onConfirm={() => onEnd(session.id)}
+      onCancel={onCancel}
+    />
   );
 }
 

@@ -69,7 +69,9 @@ session is created (see claude CLI arguments below).
 ### Shell environment (`shell-env.ts`)
 
 A packaged app opened from the Dock or at login gets launchd's minimal
-environment. `readLoginShellEnv` starts `$SHELL -ilc` asynchronously and
+environment. `readLoginShellEnv` starts `$SHELL` as an interactive login shell
+asynchronously (`-ilc`; csh and tcsh, which take `-l` only on its own, get
+`-ic` and a `-` before their name in argv[0], as login(1) gives them) and
 captures its environment from `command env -0` between start/end markers (the
 end marker only follows a successful env, so a failed env rejects instead of
 reading as empty):
@@ -82,8 +84,13 @@ else `/bin/zsh`), for this probe and the shell panel. The composition root
 merges the result into `process.env`, then restores saved sessions: each one
 the user has prompted comes back as it was saved — claude resuming its
 conversation, or, if claude had exited, only its shell, showing the exited
-banner until the user restarts it — and one that can't be restored (its
-directory is gone, or its PTYs didn't spawn) goes to Recently Closed instead.
+banner until the user restarts it — and the ones that can't be restored
+(directory gone, PTYs didn't spawn) go to Recently Closed, in one write once
+every restorable session is running. Each leaves the saved sessions only after
+that write succeeds (otherwise it is retried next launch), and stays in Recently
+Closed, outside its limit of ten, until it is reopened or removed. A reopen
+that fails says why and offers to remove the session; by default it stays,
+since a missing volume may come back.
 Until the restore has run, the `SessionRestore` gate holds back everything
 that lists or spawns sessions; it opens even if the restore fails (a dialog
 says so). The store never drops a saved session it hasn't restored or removed:
@@ -123,8 +130,10 @@ The one place that knows claude's argument syntax. `checkSessionFlags` reads a
 session's flags the way claude's option parser does, using two tables that
 must follow claude's flags: the value-taking flags (required / optional /
 variadic) in `claude --help` plus hidden ones a user is likely to type
-(`--system-prompt-file`, `--thinking`, `--channels`…), and the flags in
-`--help` that take no value (plus `--enable-auto-mode`). A value always goes
+(`--system-prompt-file`, `--thinking`, `--channels`…), and every flag
+claude declares that takes no value, hidden ones included (`--init`,
+`--maintenance`, `--enable-auto-mode`…); as in claude's parser, an argument
+that is a whole known flag names it (`-d2e` isn't `-d` with a value). A value always goes
 with its flag and is never checked as a flag; a value attached to a flag that
 takes none (`--verbose=true`, which claude refuses) is an error; any other word
 (claude would take it as a prompt or subcommand) is an error — after a flag
@@ -132,7 +141,9 @@ that takes no value it says so, after a flag in neither table it suggests
 `--flag=value`; a trailing flag missing its required value is an error. It
 also rejects flags Chorus manages (`--session-id`/`--resume`/`--name`/
 `--worktree`…), flags that end the interactive session in this terminal (`-p`,
-`--bg`, `--cloud`, `--environment`, `--tmux`, `--rewind-files`…), and flags
+`--bg`, `--cloud`, `--environment`, `--tmux`, `--rewind-files`…), flags a
+host or team lead sets when it launches claude (`--session-mirror`,
+`--reply-on-resume`, `--deep-link-*`, `--agent-id`, `--team-name`…), and flags
 that turn off the hooks (`--bare`, `--safe-mode`, `--restricted`,
 `--project-config-root`, and a `--setting-sources` without `local` or naming
 anything but `user`/`project`/`local`); what a `--settings` file or JSON holds
@@ -158,7 +169,8 @@ theming. Callers address terminals by `(kind, sessionId)` through the
 adapter that mounts a container and calls `terminals.attach`. Attaching never
 moves focus: App's `focusActiveClaude` is the one place that puts the keyboard
 in the active session's Claude terminal (on switching sessions, after a
-restart, a toolkit run or a rename, and as the focus fallback), and it never
+restart or a toolkit run, and — only if focus is still lost a frame later —
+after a rename or as the focus fallback), and it never
 takes focus from an open dialog or the palette.
 
 ### useSessions — session state hook (`use-sessions.ts`)
@@ -166,9 +178,11 @@ takes focus from an open dialog or the palette.
 Owns the renderer's session list and active-session state: subscribes to
 `SESSION_STATE` pushes (only `SESSION_SYNC_FIELDS`), and exposes the session
 verbs (create, end, restart, switch, next needing attention, rename, reorder,
-toggle notify, link/unlink PR). Only a listed session is active: the last
-active id App restores at startup takes effect once main lists it, and if it
-doesn't come back the first session is active. `App.tsx` keeps only UI state.
+toggle notify, link/unlink PR). The active session is decided here: once both the session list and app state
+arrive, the saved last-active session if it came back, else the first; when the
+active session ends, the first remaining one, else none. Every change goes to
+main (`SESSION_SWITCH`, or `lastActiveSessionId: null` for none), which saves
+it and marks the shown session seen. Only a listed session is active. `App.tsx` keeps only UI state.
 
 ### session-presentation (`session-presentation.ts`)
 
@@ -192,14 +206,16 @@ toggles it), or focus leaving it), instead of each component
 re-rolling them. Menus, dialogs and the command palette hand focus back to what
 had it when they opened (`use-focus-return.ts`); when that element is gone
 (or the same update removes it right after focus went back),
-`FocusFallbackContext` takes over, and App points it at the active Claude
-terminal.
+`FocusFallbackContext` takes over: App focuses the active Claude terminal a
+frame later, only if nothing has taken focus by then (e.g. a find bar opened
+by a palette action).
 
 ### Command palette (`components/CommandPalette.tsx`, `palette-items.tsx`, `palette-match.ts`)
 
 `palette-match` is the pure ranking (prefix > word start > substring >
 scattered letters). The query splits into words at the same breaks as item
-text (spaces, `-`, `_`, `.`, `/`); every word must match, in any order, and an item
+text (spaces, `-`, `_`, `.`, `/`), except that a `/` starting a query word
+stays part of it, so `/pr` finds a toolkit command by its slash command; every word must match, in any order, and an item
 ranks by its weakest word; a group's items stay together, and the group
 holding the best match leads. Without a query everything keeps its order.
 `palette-items` builds the

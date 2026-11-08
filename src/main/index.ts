@@ -346,25 +346,31 @@ function startSavedSession(session: Session): Session {
  * Bring back the saved sessions the user has prompted; the others have no
  * conversation to resume, so they are dropped. One that can't be restored (its
  * directory is gone, or its PTYs didn't spawn) goes to Recently Closed instead
- * of vanishing; reopening it from there says what's wrong.
+ * of vanishing; reopening it from there says what's wrong. The saved sessions
+ * are only written once every session that can be restored is running, so a
+ * failed write can't hold any of them back.
  */
 function restoreSavedSessions(): void {
-  let anyClosed = false;
+  const unprompted: StoredSession[] = [];
+  const unrestorable: StoredSession[] = [];
   for (const stored of sessionStore.loadPersistedSessions()) {
     if (!stored.hasUserInput) {
-      sessionStore.removeSession(stored.id);
+      unprompted.push(stored);
       continue;
     }
     try {
       startSavedSession(fromPersisted(stored, validateCwd(stored.cwd)));
     } catch {
-      sessionStore.rememberClosed(fromPersisted(stored));
-      sessionStore.removeSession(stored.id);
-      anyClosed = true;
+      unrestorable.push(stored);
     }
   }
-  if (anyClosed) createMenu();
   sessionState.refreshUnreadBadge();
+
+  if (unrestorable.length > 0) {
+    sessionStore.moveUnrestorableToRecentlyClosed(unrestorable);
+    createMenu();
+  }
+  for (const stored of unprompted) sessionStore.removeSession(stored.id);
 }
 
 /**
@@ -379,7 +385,7 @@ async function restoreSessions(shellEnvAdopted: Promise<void>): Promise<void> {
     const reason = err instanceof Error ? err.message : String(err);
     void dialog.showMessageBox({
       type: "error",
-      message: "Couldn't restore your sessions",
+      message: "Couldn't restore all your sessions",
       detail: `${reason}\n\nThe sessions that weren't restored stay saved for the next time Chorus starts.`,
     });
   }
@@ -400,21 +406,31 @@ async function reopenClosedSession(id?: string): Promise<void> {
   try {
     reopenSession(stored);
   } catch (err) {
-    // A vanished directory never comes back; a spawn failure may be transient
-    if (err instanceof IpcHandlerError && err.code === IpcErrorCodes.INVALID_DIRECTORY) {
-      sessionStore.forgetClosed(stored.id);
-    }
-    void dialog.showMessageBox({
-      type: "error",
-      message: `Couldn't reopen "${stored.name}"`,
-      detail: err instanceof Error ? err.message : String(err),
-    });
-    createMenu();
+    await reportReopenFailure(stored, err);
     return;
   }
 
   sessionStore.forgetClosed(stored.id);
   sessionStore.persistSessions();
+  createMenu();
+}
+
+/**
+ * Say why a closed session didn't reopen, and let the user remove it from
+ * Recently Closed. It stays by default: what failed may come back (an
+ * unmounted volume, say) and reopening then works.
+ */
+async function reportReopenFailure(stored: StoredSession, err: unknown): Promise<void> {
+  const { response } = await dialog.showMessageBox({
+    type: "error",
+    message: `Couldn't reopen "${stored.name}"`,
+    detail: err instanceof Error ? err.message : String(err),
+    buttons: ["Keep", "Remove from Recently Closed"],
+    defaultId: 0,
+    cancelId: 0,
+  });
+  if (response !== 1) return;
+  sessionStore.forgetClosed(stored.id);
   createMenu();
 }
 
@@ -832,26 +848,17 @@ const invokeHandlers: InvokeHandlers = {
   },
 
   [IpcChannels.TOOLKIT_ADD]: (command) => {
-    const commands = sessionStore.loadToolkitCommands();
-    commands.push(command);
-    sessionStore.saveToolkitCommands(commands);
+    sessionStore.addToolkitCommand(command);
     return command;
   },
 
   [IpcChannels.TOOLKIT_UPDATE]: (command) => {
-    const commands = sessionStore.loadToolkitCommands();
-    const idx = commands.findIndex((c) => c.id === command.id);
-    if (idx !== -1) {
-      commands[idx] = command;
-    }
-    sessionStore.saveToolkitCommands(commands);
+    sessionStore.updateToolkitCommand(command);
     return command;
   },
 
   [IpcChannels.TOOLKIT_DELETE]: ({ id }) => {
-    const commands = sessionStore.loadToolkitCommands();
-    const filtered = commands.filter((c) => c.id !== id);
-    sessionStore.saveToolkitCommands(filtered);
+    sessionStore.deleteToolkitCommand(id);
   },
 
   // --- App state ---

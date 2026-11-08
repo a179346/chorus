@@ -44,6 +44,11 @@ export function activeIdAfterLoad(list: readonly Session[], wantedId: string | n
   return list.some((s) => s.id === wantedId) ? wantedId : list[0]?.id ?? null;
 }
 
+/** Who takes over when the active session ends: the first other one in the sidebar. */
+export function activeIdAfterEnd(list: readonly Session[], endedId: string): string | null {
+  return list.find((s) => s.id !== endedId)?.id ?? null;
+}
+
 /**
  * The renderer's copy of session state. Loads the initial list, merges
  * SESSION_STATE pushes from main in one place, and exposes every session
@@ -56,11 +61,10 @@ export function useSessions() {
   // Main answers the first list only after restoring saved sessions, which
   // waits on the login-shell environment
   const [sessionsLoaded, setSessionsLoaded] = useState(false);
-  // May name a session that isn't listed: App restores the last active id
-  // before the list arrives. Only a listed one becomes the active session, so
-  // nothing acts on a session main doesn't have (a terminal attached before
-  // its PTY exists would never send it its size).
-  const [wantedActiveId, setActiveSessionId] = useState<string | null>(null);
+  // May name a session that isn't listed yet: main can reveal one before the
+  // first list arrives. Only a listed one becomes the active session, so
+  // nothing acts on a session this list doesn't have.
+  const [wantedActiveId, setWantedActiveId] = useState<string | null>(null);
 
   const activeSession = sessions.find((s) => s.id === wantedActiveId) ?? null;
   const activeSessionId = activeSession?.id ?? null;
@@ -69,15 +73,6 @@ export function useSessions() {
   sessionsRef.current = sessions;
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
-
-  // Initial load
-  useEffect(() => {
-    void invoke(IpcChannels.SESSION_LIST).then((list) => {
-      setSessions(list);
-      setSessionsLoaded(true);
-      setActiveSessionId((wanted) => activeIdAfterLoad(list, wanted));
-    });
-  }, []);
 
   // The single merge point for state pushed from main
   useEffect(() => {
@@ -88,11 +83,36 @@ export function useSessions() {
     });
   }, []);
 
+  // Main tracks the active session too: it saves it, and never marks the one
+  // you're looking at unread
   const selectSession = useCallback((id: string) => {
-    setActiveSessionId(id);
+    setWantedActiveId(id);
     void invoke(IpcChannels.SESSION_SWITCH, { id });
-    void invoke(IpcChannels.APP_SAVE_STATE, { lastActiveSessionId: id });
   }, []);
+
+  /** Makes the renderer's own pick active (after loading, after an end), or none; main hears either way. */
+  const activate = useCallback(
+    (id: string | null) => {
+      if (id) {
+        selectSession(id);
+        return;
+      }
+      setWantedActiveId(null);
+      void invoke(IpcChannels.APP_SAVE_STATE, { lastActiveSessionId: null });
+    },
+    [selectSession],
+  );
+
+  // Initial load
+  useEffect(() => {
+    void Promise.all([invoke(IpcChannels.SESSION_LIST), invoke(IpcChannels.APP_GET_STATE)]).then(
+      ([list, state]) => {
+        setSessions(list);
+        setSessionsLoaded(true);
+        activate(activeIdAfterLoad(list, state.lastActiveSessionId));
+      },
+    );
+  }, [activate]);
 
   // Sessions main brings forward (notification click) or launches itself (reopen)
   useEffect(() => {
@@ -117,7 +137,8 @@ export function useSessions() {
       prompt: input.prompt || undefined,
     });
     setSessions((prev) => [...prev, session]);
-    setActiveSessionId(session.id);
+    // Main made it active when it created it
+    setWantedActiveId(session.id);
     void invoke(IpcChannels.APP_SAVE_STATE, {
       lastActiveSessionId: session.id,
       newSessionDefaults: {
@@ -129,16 +150,14 @@ export function useSessions() {
     return session;
   }, []);
 
-  const endSession = useCallback(async (id: string): Promise<void> => {
-    await invoke(IpcChannels.SESSION_END, { id });
-    setSessions((prev) => {
-      const filtered = prev.filter((s) => s.id !== id);
-      if (activeSessionIdRef.current === id) {
-        setActiveSessionId(filtered[0]?.id ?? null);
-      }
-      return filtered;
-    });
-  }, []);
+  const endSession = useCallback(
+    async (id: string): Promise<void> => {
+      await invoke(IpcChannels.SESSION_END, { id });
+      setSessions((prev) => prev.filter((s) => s.id !== id));
+      if (activeSessionIdRef.current === id) activate(activeIdAfterEnd(sessionsRef.current, id));
+    },
+    [activate],
+  );
 
   // The new status comes back through the SESSION_STATE merge
   const restartSession = useCallback(
@@ -203,7 +222,6 @@ export function useSessions() {
     activeSession,
     activeSessionId,
     activeSessionIdRef,
-    setActiveSessionId,
     selectSession,
     createSession,
     endSession,

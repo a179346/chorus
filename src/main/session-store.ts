@@ -21,7 +21,7 @@ const STATE_FILE = path.join(CHORUS_DIR, 'state.json');
 const TOOLKIT_FILE = path.join(CHORUS_DIR, 'toolkit.json');
 const RECENTLY_CLOSED_FILE = path.join(CHORUS_DIR, 'recently-closed.json');
 
-/** How many closed sessions stay reopenable. */
+/** How many sessions the user closed stay reopenable; saved sessions that couldn't be restored stay as well. */
 export const RECENTLY_CLOSED_LIMIT = 10;
 
 const DEFAULT_WINDOW_BOUNDS: WindowBounds = {
@@ -156,7 +156,20 @@ export function fromPersisted(ps: StoredSession, cwd: string = ps.cwd): Session 
 
 /** recently-closed.json, most recently closed first. */
 interface RecentlyClosedFile {
-  sessions: StoredSession[];
+  sessions: RecentlyClosedEntry[];
+}
+
+/**
+ * A closed session as recently-closed.json holds it. `restoreFailed` marks a
+ * saved session that couldn't be restored, which nobody chose to close: it
+ * stays until it is reopened or removed, outside RECENTLY_CLOSED_LIMIT.
+ */
+type RecentlyClosedEntry = StoredSession & { restoreFailed?: boolean };
+
+/** The entries that stay: every one whose restore failed, and the latest RECENTLY_CLOSED_LIMIT others. */
+function withinLimit(entries: readonly RecentlyClosedEntry[]): RecentlyClosedEntry[] {
+  const latestClosed = new Set(entries.filter((entry) => !entry.restoreFailed).slice(0, RECENTLY_CLOSED_LIMIT));
+  return entries.filter((entry) => entry.restoreFailed || latestClosed.has(entry));
 }
 
 /** Only the container is checked: Chorus alone writes the file. */
@@ -166,13 +179,23 @@ function isRecentlyClosedFile(data: unknown): data is RecentlyClosedFile {
 
 // ─── Toolkit ──────────────────────────────────────────────
 
-/** toolkit.json. People edit it by hand, so each command is checked as it is read. */
+/**
+ * toolkit.json. People edit it by hand, so each command is checked as it is
+ * read, and an edit leaves every other entry and key as it was written.
+ */
 interface ToolkitFile {
   commands: unknown[];
 }
 
 function isToolkitFile(data: unknown): data is ToolkitFile {
   return typeof data === 'object' && data !== null && 'commands' in data && Array.isArray(data.commands);
+}
+
+/** toolkit.json as written (an empty toolkit when there's no file); null when it isn't a toolkit. */
+function readToolkitFile(): ToolkitFile | null {
+  if (!fs.existsSync(TOOLKIT_FILE)) return { commands: [] };
+  const file = readJson<unknown>(TOOLKIT_FILE, null);
+  return isToolkitFile(file) ? file : null;
 }
 
 /** A command as toolkit.json holds it: only its label and command are sure to be right. */
@@ -194,21 +217,39 @@ function isStoredToolkitCommand(data: unknown): data is StoredToolkitCommand {
   );
 }
 
+/** A command read from toolkit.json, and the index of its entry there. */
+interface LoadedToolkitCommand {
+  command: ToolkitCommand;
+  entryIndex: number;
+}
+
 /**
- * The commands, each with a unique id: the id is how a command is run, edited
- * or deleted. A missing or repeated id is replaced by one derived from it, so
- * every load of the same file gives the same ids. An icon that isn't a name
- * is dropped.
+ * The entries that are commands, each with a unique id: the id is how a
+ * command is run, edited or deleted. A missing or repeated id is replaced by
+ * one derived from it, so every load of the same file gives the same ids. An
+ * icon that isn't a name is dropped.
  */
-function toToolkitCommands(stored: readonly StoredToolkitCommand[]): ToolkitCommand[] {
+function toToolkitCommands(entries: readonly unknown[]): LoadedToolkitCommand[] {
   const taken = new Set<string>();
-  return stored.map(({ id, label, command, icon }) => {
+  const loaded: LoadedToolkitCommand[] = [];
+  entries.forEach((entry, entryIndex) => {
+    if (!isStoredToolkitCommand(entry)) return;
+    const { id, label, command, icon } = entry;
     const base = typeof id === 'string' && id !== '' ? id : 'command';
     let unique = base;
     for (let n = 2; taken.has(unique); n++) unique = `${base}-${n}`;
     taken.add(unique);
-    return typeof icon === 'string' ? { id: unique, label, command, icon } : { id: unique, label, command };
+    loaded.push({
+      command: typeof icon === 'string' ? { id: unique, label, command, icon } : { id: unique, label, command },
+      entryIndex,
+    });
   });
+  return loaded;
+}
+
+/** Where the command with this id is among the entries; undefined when none has it. */
+function entryIndexOf(entries: readonly unknown[], id: string): number | undefined {
+  return toToolkitCommands(entries).find((loaded) => loaded.command.id === id)?.entryIndex;
 }
 
 // ─── Store ────────────────────────────────────────────────
@@ -344,21 +385,43 @@ export class SessionStore {
   // ─── Recently closed ──────────────────────────────────────
 
   /** Closed sessions that can be reopened, most recently closed first. */
-  loadRecentlyClosed(): StoredSession[] {
+  loadRecentlyClosed(): RecentlyClosedEntry[] {
     const file = readJson<unknown>(RECENTLY_CLOSED_FILE, null);
     return isRecentlyClosedFile(file) ? file.sessions : [];
   }
 
   /** Remember a closed session so it can be reopened later. */
   rememberClosed(session: Session): void {
-    const rest = this.loadRecentlyClosed().filter((ps) => ps.id !== session.id);
-    const sessions = [toPersisted(session), ...rest].slice(0, RECENTLY_CLOSED_LIMIT);
-    writeJson(RECENTLY_CLOSED_FILE, { sessions });
+    this.putFirstInRecentlyClosed([toPersisted(session)]);
+  }
+
+  /**
+   * Move saved sessions that couldn't be restored to Recently Closed, in one
+   * write, so they don't vanish. Each leaves the saved sessions only once
+   * Recently Closed holds it: if the write fails, they stay saved and are
+   * restored next time.
+   */
+  moveUnrestorableToRecentlyClosed(sessions: readonly StoredSession[]): void {
+    this.putFirstInRecentlyClosed(
+      sessions.map((stored) => ({ ...toPersisted(fromPersisted(stored)), restoreFailed: true })),
+    );
+    for (const stored of sessions) this.removeSession(stored.id);
   }
 
   forgetClosed(id: string): void {
-    const sessions = this.loadRecentlyClosed().filter((ps) => ps.id !== id);
-    writeJson(RECENTLY_CLOSED_FILE, { sessions });
+    this.writeRecentlyClosed(this.loadRecentlyClosed().filter((entry) => entry.id !== id));
+  }
+
+  /** Put these entries first, in place of any earlier entry for the same session. */
+  private putFirstInRecentlyClosed(entries: readonly RecentlyClosedEntry[]): void {
+    const ids = new Set(entries.map((entry) => entry.id));
+    const rest = this.loadRecentlyClosed().filter((entry) => !ids.has(entry.id));
+    this.writeRecentlyClosed([...entries, ...rest]);
+  }
+
+  private writeRecentlyClosed(entries: readonly RecentlyClosedEntry[]): void {
+    const file: RecentlyClosedFile = { sessions: withinLimit(entries) };
+    writeJson(RECENTLY_CLOSED_FILE, file);
   }
 
   // ─── App State ────────────────────────────────────────────
@@ -389,14 +452,46 @@ export class SessionStore {
 
   // ─── Toolkit ──────────────────────────────────────────────
 
-  /** The toolkit's commands; any entry that isn't a command is left out. */
+  /** The toolkit's commands; any entry that isn't a command is left out, and a file that isn't a toolkit has none. */
   loadToolkitCommands(): ToolkitCommand[] {
-    const file = readJson<unknown>(TOOLKIT_FILE, null);
-    if (!isToolkitFile(file)) return [];
-    return toToolkitCommands(file.commands.filter(isStoredToolkitCommand));
+    const file = readToolkitFile();
+    return file ? toToolkitCommands(file.commands).map((loaded) => loaded.command) : [];
   }
 
+  /** Replace all of the toolkit's entries with these commands. */
   saveToolkitCommands(commands: ToolkitCommand[]): void {
-    writeJson(TOOLKIT_FILE, { commands });
+    this.editToolkit(() => commands);
+  }
+
+  addToolkitCommand(command: ToolkitCommand): void {
+    this.editToolkit((entries) => [...entries, command]);
+  }
+
+  /** Replace the command that has this one's id; without one, nothing changes. */
+  updateToolkitCommand(command: ToolkitCommand): void {
+    this.editToolkit((entries) => {
+      const index = entryIndexOf(entries, command.id);
+      return entries.map((entry, i) => (i === index ? command : entry));
+    });
+  }
+
+  deleteToolkitCommand(id: string): void {
+    this.editToolkit((entries) => {
+      const index = entryIndexOf(entries, id);
+      return entries.filter((_, i) => i !== index);
+    });
+  }
+
+  /**
+   * Write toolkit.json with `edit` applied to its entries as written. Throws,
+   * leaving the file alone, when the file isn't a toolkit: writing would lose
+   * what the user wrote in it.
+   */
+  private editToolkit(edit: (entries: unknown[]) => unknown[]): void {
+    const file = readToolkitFile();
+    if (!file) {
+      throw new Error(`Didn't change ${TOOLKIT_FILE}: it isn't JSON with a "commands" list. Fix or move it, then try again.`);
+    }
+    writeJson(TOOLKIT_FILE, { ...file, commands: edit(file.commands) });
   }
 }

@@ -10,7 +10,7 @@ vi.mock('node:os', () => ({
   homedir: () => '/mock-home',
 }));
 
-const { SessionStore, toPersisted, fromPersisted } = await import('../src/main/session-store');
+const { SessionStore, toPersisted, fromPersisted, RECENTLY_CLOSED_LIMIT } = await import('../src/main/session-store');
 
 function makeSession(overrides: Partial<import('../src/shared/types').Session> = {}): import('../src/shared/types').Session {
   return {
@@ -474,8 +474,7 @@ describe('SessionStore', () => {
       expect(writtenClosedIds()).toEqual(['b', 'a', 'c']);
     });
 
-    it('should keep at most RECENTLY_CLOSED_LIMIT sessions', async () => {
-      const { RECENTLY_CLOSED_LIMIT } = await import('../src/main/session-store');
+    it('should keep at most RECENTLY_CLOSED_LIMIT sessions', () => {
       storedClosed(Array.from({ length: RECENTLY_CLOSED_LIMIT }, (_, i) => `old-${i}`));
       store.rememberClosed(makeSession({ id: 'new' }));
 
@@ -489,6 +488,88 @@ describe('SessionStore', () => {
       storedClosed(['a', 'b', 'c']);
       store.forgetClosed('b');
       expect(writtenClosedIds()).toEqual(['a', 'c']);
+    });
+
+    describe('saved sessions that could not be restored', () => {
+      const STORED = { name: 'S', cwd: '/gone', worktree: null, flags: [], notifyOnIdle: false, unread: false, model: null, contextUsage: null, createdAt: 1, lastActiveAt: 1, hasUserInput: true };
+      // What the store has written, by path, so that reads see earlier writes
+      let disk: Map<string, string>;
+
+      beforeEach(() => {
+        disk = new Map();
+        vi.mocked(fs.writeFileSync).mockImplementation((file, data) => {
+          disk.set(String(file).replace(/\.tmp$/, ''), String(data));
+        });
+        vi.mocked(fs.readFileSync).mockImplementation((file) => {
+          const content = disk.get(String(file));
+          if (content === undefined) throw new Error('ENOENT');
+          return content;
+        });
+        vi.mocked(fs.unlinkSync).mockImplementation(() => {});
+      });
+
+      function onDisk(name: string, data: unknown): void {
+        disk.set(path.join('/mock-home', '.chorus', name), JSON.stringify(data));
+      }
+
+      function closedIds(): string[] {
+        return store.loadRecentlyClosed().map((s) => s.id);
+      }
+
+      function recentlyClosedWrites(): number {
+        return vi.mocked(fs.writeFileSync).mock.calls.filter((c) => String(c[0]).includes('recently-closed.json')).length;
+      }
+
+      it('go first, all in one write', () => {
+        onDisk('recently-closed.json', { sessions: [{ ...STORED, id: 'closed' }] });
+        store.moveUnrestorableToRecentlyClosed([{ ...STORED, id: 'f1' }, { ...STORED, id: 'f2' }]);
+
+        expect(closedIds()).toEqual(['f1', 'f2', 'closed']);
+        expect(recentlyClosedWrites()).toBe(1);
+      });
+
+      it('stay past the limit, which only drops sessions closed by the user', () => {
+        const closed = Array.from({ length: RECENTLY_CLOSED_LIMIT }, (_, i) => ({ ...STORED, id: `old-${i}` }));
+        onDisk('recently-closed.json', { sessions: closed });
+        const failed = Array.from({ length: RECENTLY_CLOSED_LIMIT + 2 }, (_, i) => ({ ...STORED, id: `failed-${i}` }));
+
+        store.moveUnrestorableToRecentlyClosed(failed);
+        expect(closedIds()).toEqual([...failed, ...closed].map((s) => s.id));
+
+        store.rememberClosed(makeSession({ id: 'new' }));
+        expect(closedIds()).toEqual(['new', ...failed.map((s) => s.id), ...closed.slice(0, -1).map((s) => s.id)]);
+      });
+
+      it('leave the saved sessions once Recently Closed holds them', () => {
+        onDisk('sessions.json', { sessionIds: ['f1', 'kept'] });
+        onDisk('session-f1.json', { ...STORED, id: 'f1' });
+        onDisk('session-kept.json', { ...STORED, id: 'kept' });
+        const [f1] = store.loadPersistedSessions();
+
+        store.moveUnrestorableToRecentlyClosed([f1]);
+
+        const unlink = vi.mocked(fs.unlinkSync).mock;
+        expect(unlink.calls.map((c) => path.basename(String(c[0])))).toEqual(['session-f1.json']);
+        const recentlyClosedWrite = vi.mocked(fs.writeFileSync).mock.calls.findIndex((c) => String(c[0]).includes('recently-closed.json'));
+        expect(vi.mocked(fs.writeFileSync).mock.invocationCallOrder[recentlyClosedWrite]).toBeLessThan(unlink.invocationCallOrder[0]);
+        expect(JSON.parse(disk.get(path.join('/mock-home', '.chorus', 'sessions.json'))!).sessionIds).toEqual(['kept']);
+      });
+
+      it('stay saved, to be restored next time, when Recently Closed cannot be written', () => {
+        onDisk('sessions.json', { sessionIds: ['f1'] });
+        onDisk('session-f1.json', { ...STORED, id: 'f1' });
+        const [f1] = store.loadPersistedSessions();
+        vi.mocked(fs.writeFileSync).mockImplementation((file) => {
+          if (String(file).includes('recently-closed.json')) throw new Error('EACCES');
+        });
+
+        expect(() => store.moveUnrestorableToRecentlyClosed([f1])).toThrow('EACCES');
+
+        expect(fs.unlinkSync).not.toHaveBeenCalled();
+        store.persistSessions();
+        const indexWrite = vi.mocked(fs.writeFileSync).mock.calls.filter((c) => String(c[0]).includes('sessions.json.tmp')).at(-1);
+        expect(JSON.parse(String(indexWrite![1])).sessionIds).toEqual(['f1']);
+      });
     });
   });
 
@@ -553,13 +634,87 @@ describe('SessionStore', () => {
     });
 
     it('should save toolkit commands', () => {
+      vi.mocked(fs.readFileSync).mockReturnValue('{"commands":[]}');
       const commands = [
         { id: 'cmd-1', label: 'Test', command: '/test' },
       ];
-      store.saveToolkitCommands(commands as any);
+      store.saveToolkitCommands(commands);
       const writeCall = vi.mocked(fs.writeFileSync).mock.calls[0];
       const written = JSON.parse(writeCall[1] as string);
       expect(written.commands).toHaveLength(1);
+    });
+
+    describe('edits', () => {
+      const HAND_WRITTEN = [
+        { id: 'a', label: 'A', command: '/a' },
+        { label: 'Not a command yet' },
+        { id: 'b', label: 'B', command: '/b', note: 'mine' },
+      ];
+      const NEW = { id: 'c', label: 'C', command: '/c' };
+
+      function toolkitOnDisk(file: unknown): void {
+        vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(file));
+      }
+
+      function writtenToolkit(): unknown {
+        const write = vi.mocked(fs.writeFileSync).mock.calls.find((c) => String(c[0]).includes('toolkit.json.tmp'));
+        expect(write).toBeDefined();
+        return JSON.parse(String(write![1]));
+      }
+
+      it('add a command after every entry, keeping the ones that are not commands and the other keys', () => {
+        toolkitOnDisk({ commands: HAND_WRITTEN, comment: 'my toolkit' });
+        store.addToolkitCommand(NEW);
+        expect(writtenToolkit()).toEqual({ commands: [...HAND_WRITTEN, NEW], comment: 'my toolkit' });
+      });
+
+      it('replace only the edited command', () => {
+        toolkitOnDisk({ commands: HAND_WRITTEN });
+        store.updateToolkitCommand({ id: 'b', label: 'B2', command: '/b2' });
+        expect(writtenToolkit()).toEqual({ commands: [HAND_WRITTEN[0], HAND_WRITTEN[1], { id: 'b', label: 'B2', command: '/b2' }] });
+      });
+
+      it('delete only the deleted command', () => {
+        toolkitOnDisk({ commands: HAND_WRITTEN });
+        store.deleteToolkitCommand('a');
+        expect(writtenToolkit()).toEqual({ commands: HAND_WRITTEN.slice(1) });
+      });
+
+      it('find a command by the id it was loaded with', () => {
+        const commands = [{ label: 'One', command: '/1' }, { label: 'Two', command: '/2' }];
+        toolkitOnDisk({ commands });
+        const [, second] = store.loadToolkitCommands();
+
+        store.deleteToolkitCommand(second.id);
+
+        expect(writtenToolkit()).toEqual({ commands: [commands[0]] });
+      });
+
+      it('change nothing for an id no command has', () => {
+        toolkitOnDisk({ commands: HAND_WRITTEN });
+        store.updateToolkitCommand({ ...NEW, id: 'missing' });
+        expect(writtenToolkit()).toEqual({ commands: HAND_WRITTEN });
+      });
+
+      it('start the toolkit when there is no file', () => {
+        vi.mocked(fs.existsSync).mockReturnValue(false);
+        store.addToolkitCommand(NEW);
+        expect(writtenToolkit()).toEqual({ commands: [NEW] });
+      });
+
+      it.each([['not json'], ['null'], ['[]'], ['{}'], ['{"commands":{}}']])(
+        'refuse to overwrite a file holding %s, which loads as empty',
+        (content) => {
+          vi.mocked(fs.readFileSync).mockReturnValue(content);
+          const refusal = /toolkit\.json: it isn't JSON with a "commands" list/;
+
+          expect(() => store.addToolkitCommand(NEW)).toThrow(refusal);
+          expect(() => store.updateToolkitCommand(NEW)).toThrow(refusal);
+          expect(() => store.deleteToolkitCommand('a')).toThrow(refusal);
+          expect(() => store.saveToolkitCommands([NEW])).toThrow(refusal);
+          expect(fs.writeFileSync).not.toHaveBeenCalled();
+        },
+      );
     });
 
     it('should return all commands', () => {

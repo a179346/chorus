@@ -83,6 +83,17 @@ describe('filterPaletteItems', () => {
     expect(ids(filterPaletteItems(items, 'code/web'))).toEqual(['2']);
   });
 
+  it('keeps a slash that starts a word, so a slash command finds its toolkit item', () => {
+    const result = filterPaletteItems(
+      [
+        { id: 'preferences', group: 'Actions', title: 'Preferences…', keywords: 'settings theme font' },
+        { id: 'pr-command', group: 'Toolkit', title: 'Open PR', subtitle: '/pr' },
+      ],
+      '/pr',
+    );
+    expect(ids(result)[0]).toBe('pr-command');
+  });
+
   it('treats a query of only word breaks as no query', () => {
     expect(ids(filterPaletteItems(items, ' -./ '))).toEqual(['1', '2', '3', '4']);
   });

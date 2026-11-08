@@ -121,13 +121,13 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
   // A URL still sitting in the field counts as added when the form is submitted
   const pendingPr = useMemo(() => readPrDraft(prDraft, prs), [prDraft, prs]);
   const customFlagsDraft = useMemo(() => readCustomFlags(customFlags), [customFlags]);
-  const canSubmit =
-    !submitting && !!name.trim() && !!cwd.trim() && pendingPr.kind !== 'invalid' && customFlagsDraft.kind === 'ok';
+  const formIsValid =
+    !!name.trim() && !!cwd.trim() && pendingPr.kind !== 'invalid' && customFlagsDraft.kind === 'ok';
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
-      if (!canSubmit || customFlagsDraft.kind !== 'ok') return;
+      if (submitting || !formIsValid || customFlagsDraft.kind !== 'ok') return;
       const allPrs = pendingPr.kind === 'ok' ? [...prs, pendingPr.pr] : prs;
       setSubmitting(true);
       setSubmitError(null);
@@ -147,7 +147,7 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
         setSubmitting(false);
       }
     },
-    [canSubmit, name, cwd, worktree, autoMode, skipPermissions, chrome, customFlagsDraft, notifyOnIdle, prs, pendingPr, prompt, onSubmit]
+    [submitting, formIsValid, name, cwd, worktree, autoMode, skipPermissions, chrome, customFlagsDraft, notifyOnIdle, prs, pendingPr, prompt, onSubmit]
   );
 
   // A pending create belongs to this form: let it finish so its result
@@ -313,11 +313,19 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
 
         {submitError && <span className="field-error" role="alert">{submitError}</span>}
 
+        {/* aria-disabled while creating: a disabled button drops focus to the
+            page, leaving no keyboard way back into the form if creating fails */}
         <div className="dialog-actions">
-          <button type="button" className="btn" onClick={close} disabled={submitting}>
+          <button type="button" className="btn" onClick={close} aria-disabled={submitting}>
             Cancel
           </button>
-          <button type="submit" className="btn btn-primary" disabled={!canSubmit} title="Create (⌘↵)">
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={!formIsValid}
+            aria-disabled={submitting}
+            title="Create (⌘↵)"
+          >
             {submitting ? 'Creating…' : 'Create'}
             <span className="btn-kbd">⌘↵</span>
           </button>

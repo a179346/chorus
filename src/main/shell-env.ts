@@ -26,6 +26,25 @@ export function userShell(): string {
   return process.env.SHELL || '/bin/zsh';
 }
 
+/** Shells that take -l only as their sole argument, so it can't go with -c. */
+const CSH_SHELLS: ReadonlySet<string> = new Set(['csh', 'tcsh']);
+
+interface ShellInvocation {
+  args: string[];
+  argv0?: string;
+}
+
+/**
+ * How to run `command` in `shell` started as an interactive login shell. -i as
+ * well as -l: version managers usually hook in from .zshrc / .bashrc. csh and
+ * tcsh get what login(1) gives them instead of -l: a "-" before their name.
+ */
+function loginShellInvocation(shell: string, command: string): ShellInvocation {
+  const name = path.basename(shell);
+  if (CSH_SHELLS.has(name)) return { args: ['-ic', command], argv0: `-${name}` };
+  return { args: ['-ilc', command] };
+}
+
 /**
  * Start `shell` as an interactive login shell, the way a terminal would, and
  * capture the environment it ends up with. Rejects when the shell or env
@@ -33,10 +52,10 @@ export function userShell(): string {
  */
 export function readLoginShellEnv(shell: string, timeoutMs = SHELL_ENV_TIMEOUT_MS): Promise<ShellEnv> {
   return new Promise((resolve, reject) => {
-    // -i as well as -l: version managers usually hook in from .zshrc / .bashrc.
-    // `command` keeps an alias or function named env from standing in for it.
+    // `command` keeps an alias or function named env from standing in for it
     const probe = `printf '%s' '${ENV_START}'; command env -0 && printf '%s' '${ENV_END}'`;
-    const child = spawn(shell, ['-ilc', probe], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const { args, argv0 } = loginShellInvocation(shell, probe);
+    const child = spawn(shell, args, { argv0, stdio: ['ignore', 'pipe', 'pipe'] });
 
     const timer = setTimeout(() => {
       // An interactive shell ignores SIGTERM

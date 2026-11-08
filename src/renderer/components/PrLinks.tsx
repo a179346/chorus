@@ -96,7 +96,7 @@ interface PrUrlInputProps {
   onAdd: (pr: PrRef) => void;
   /** A failure from outside the field, e.g. main rejecting the link. */
   error?: string | null;
-  inputRef?: React.Ref<HTMLInputElement>;
+  inputRef: React.RefObject<HTMLInputElement | null>;
 }
 
 /** URL field + Add button. Enter adds; on an empty field Enter falls through (e.g. to submit a form). */
@@ -106,7 +106,10 @@ export function PrUrlInput({ value, onChange, linked, onAdd, error, inputRef }: 
     draft.kind === 'invalid' ? INVALID_URL_MESSAGE : draft.kind === 'duplicate' ? 'Already linked' : error;
 
   const add = () => {
-    if (draft.kind === 'ok') onAdd(draft.pr);
+    if (draft.kind !== 'ok') return;
+    onAdd(draft.pr);
+    // Ready for the next URL; the Add button disables once the field clears
+    inputRef.current?.focus();
   };
 
   return (
