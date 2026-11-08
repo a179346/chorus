@@ -41,9 +41,10 @@ export function findNextNeedingAttention(
 
 /**
  * The renderer's copy of session state. Loads the initial list, merges
- * SESSION_STATE pushes from main in one place (generically — any field the
- * main process commits lands here without a per-field case), and exposes
- * every session operation the UI needs.
+ * SESSION_STATE pushes from main in one place, and exposes every session
+ * operation the UI needs. Pushes carry only SESSION_SYNC_FIELDS, merged
+ * generically without a per-field case; any other field keeps the value the
+ * session arrived with, so a field the UI must see change belongs in that list.
  */
 export function useSessions() {
   const [sessions, setSessions] = useState<Session[]>([]);

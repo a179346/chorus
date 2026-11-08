@@ -9,9 +9,13 @@ export type SessionStatus =
   | 'error'
   | 'ended';
 
-/** A linked PR's state on GitHub; 'unknown' until a lookup succeeds. */
+/**
+ * A linked PR's state on GitHub; 'unknown' until a lookup succeeds.
+ * 'not-found' means gh can't see it — a mistyped URL, or no access.
+ */
 export type PrStage =
   | 'unknown'
+  | 'not-found'
   | 'draft'
   | 'ready'
   | 'merged'
@@ -46,8 +50,6 @@ export interface Session {
   hasUserInput: boolean;
   /** In the order they were linked. */
   prs: LinkedPr[];
-  /** PRs the user unlinked; transcript detection must not link them again. */
-  unlinkedPrs: PrRef[];
 }
 
 export interface SessionConfig {
@@ -85,6 +87,7 @@ export type SessionStateUpdate = { sessionId: string } & Partial<
 
 // ─── Persistence (subset of Session saved to disk) ──────
 
+/** What this version writes to disk for a session. */
 export interface PersistedSession {
   id: string;
   name: string;
@@ -100,7 +103,20 @@ export interface PersistedSession {
   lastActiveAt: number;
   hasUserInput: boolean;
   prs: LinkedPr[];
-  unlinkedPrs: PrRef[];
+}
+
+/**
+ * A saved session as read back from disk. This or any older release may have
+ * written it, so fields added after v1.0.0 can be missing.
+ */
+export interface StoredSession extends Omit<PersistedSession, 'contextLimit' | 'prs'> {
+  /** Since v1.5.0. */
+  contextLimit?: number | null;
+  /** After v1.6.0; v1.4.0–v1.6.0 stored one PR as `pr` / `stage` / `stageUpdatedAt`. */
+  prs?: LinkedPr[];
+  pr?: PrRef | null;
+  stage?: 'no-pr' | 'draft' | 'ready' | 'merged' | 'closed';
+  stageUpdatedAt?: number | null;
 }
 
 // ─── Toolkit ─────────────────────────────────────────────

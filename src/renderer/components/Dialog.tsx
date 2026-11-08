@@ -1,4 +1,6 @@
 import React, { useEffect, useRef } from 'react';
+import { useBackdropDismiss } from '../use-backdrop-dismiss';
+import { useFocusReturn } from '../use-focus-return';
 import { useModalKeys } from '../use-modal-keys';
 
 interface DialogProps {
@@ -12,26 +14,20 @@ interface DialogProps {
 }
 
 /**
- * Modal shell: dimmed backdrop, Escape to close, Tab trapped inside.
- * The backdrop closes the dialog only when the click also started on it,
- * so a text selection dragged out of a field doesn't throw the form away.
+ * Modal shell: dimmed backdrop, Escape to close, Tab trapped inside, and focus
+ * handed back on close. The backdrop closes the dialog only when a click both
+ * starts and ends on it, so a text selection dragged out of a field doesn't
+ * throw the form away.
  */
 export function Dialog({ title, label, onClose, width = 420, role = 'dialog', children }: DialogProps): React.ReactElement {
   const dialogRef = useRef<HTMLDivElement>(null);
-  const pressStartedOnBackdrop = useRef(false);
+  const backdrop = useBackdropDismiss(onClose);
 
   useModalKeys(dialogRef, onClose);
+  useFocusReturn(dialogRef);
 
   return (
-    <div
-      className="dialog-overlay"
-      onMouseDown={(e) => {
-        pressStartedOnBackdrop.current = e.target === e.currentTarget;
-      }}
-      onClick={(e) => {
-        if (pressStartedOnBackdrop.current && e.target === e.currentTarget) onClose();
-      }}
-    >
+    <div className="dialog-overlay" {...backdrop}>
       <div ref={dialogRef} className="dialog" style={{ width }} role={role} aria-modal="true" aria-label={label}>
         <div className="dialog-title">{title}</div>
         {children}

@@ -19,6 +19,8 @@ export function ExitedSessionBanner({ session, error, onRestart }: ExitedSession
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent): void => {
       if (e.key !== 'Enter' || e.shiftKey || e.metaKey || e.altKey || e.ctrlKey) return;
+      // An IME confirming its text, or a held-down Enter, isn't a request to restart
+      if (e.isComposing || e.repeat) return;
       const focused = terminals.focused();
       if (focused?.kind !== 'pty' || focused.sessionId !== session.id) return;
       // Capture phase: stop the keystroke before xterm forwards it to the dead PTY

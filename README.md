@@ -35,7 +35,7 @@ Each session shows a color-coded indicator — idle, thinking, generating, needs
 
 ### Unread indicators
 
-When a session finishes while you're focused on another one, it gets marked as unread. Press `⌘J` to jump to the next session that's unread or waiting on you.
+When a session finishes while you're focused on another one, it gets marked as unread. Press `⌘J` — or click the **N need you** pill above the session list — to jump to the next session that's unread or waiting on you.
 
 ### Keyboard first
 
@@ -43,7 +43,7 @@ Press `⌘K` for the command palette: type a few letters to jump to any session,
 
 ### System notifications
 
-Switch away from Chorus entirely — read docs, review a PR, grab coffee — and get a native macOS notification the moment a session goes idle or asks for permission (with Claude's own description of what it needs). Click the notification to jump straight to that session. A dock badge shows how many sessions need attention.
+Switch away from Chorus entirely — read docs, review a PR, grab coffee — and get a native macOS notification the moment a session goes idle or asks for permission (with Claude's own description of what it needs). Click the notification to jump straight to that session; it clears itself once you've looked at that session. A dock badge counts the sessions with output you haven't seen yet.
 
 ### Restart and reopen
 

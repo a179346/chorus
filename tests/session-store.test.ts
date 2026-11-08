@@ -108,9 +108,10 @@ describe('SessionStore', () => {
   });
 
   describe('persistence', () => {
-    it('should persist non-ended sessions: index + individual files', () => {
+    it('should persist every session, including ones whose claude exited: index + individual files', () => {
       store.addSession(makeSession({ id: 'a', status: 'idle' }));
       store.addSession(makeSession({ id: 'b', status: 'ended' }));
+      store.addSession(makeSession({ id: 'c', status: 'error' }));
       store.persistSessions();
 
       // Find the index file write (sessions.json)
@@ -118,17 +119,13 @@ describe('SessionStore', () => {
       const indexWrite = writeCalls.find((c) => String(c[0]).includes('sessions.json.tmp'));
       expect(indexWrite).toBeDefined();
       const index = JSON.parse(indexWrite![1] as string);
-      expect(index.sessionIds).toEqual(['a']);
+      expect(index.sessionIds).toEqual(['a', 'b', 'c']);
 
-      // Find the session file write (session-a.json)
-      const sessionWrite = writeCalls.find((c) => String(c[0]).includes('session-a.json.tmp'));
-      expect(sessionWrite).toBeDefined();
-      const saved = JSON.parse(sessionWrite![1] as string);
-      expect(saved.id).toBe('a');
-
-      // Should NOT write session-b (ended)
-      const sessionBWrite = writeCalls.find((c) => String(c[0]).includes('session-b.json.tmp'));
-      expect(sessionBWrite).toBeUndefined();
+      for (const id of ['a', 'b', 'c']) {
+        const sessionWrite = writeCalls.find((c) => String(c[0]).includes(`session-${id}.json.tmp`));
+        expect(sessionWrite).toBeDefined();
+        expect(JSON.parse(sessionWrite![1] as string).id).toBe(id);
+      }
     });
 
     it('should load persisted sessions from index + individual files', () => {
@@ -154,6 +151,14 @@ describe('SessionStore', () => {
       const persisted = store.loadPersistedSessions();
       expect(persisted).toEqual([]);
     });
+
+    it.each([['null'], ['{}'], ['[]'], ['{"sessionIds":{}}']])(
+      'should return empty array if the sessions index is %s',
+      (content) => {
+        vi.mocked(fs.readFileSync).mockReturnValue(content);
+        expect(store.loadPersistedSessions()).toEqual([]);
+      },
+    );
 
     it('should skip sessions with missing individual files', () => {
       vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
@@ -355,6 +360,17 @@ describe('SessionStore', () => {
       expect(store.loadRecentlyClosed()).toEqual([]);
     });
 
+    it.each([['null'], ['{}'], ['{"sessions":{}}']])(
+      'should treat a file holding %s as an empty list',
+      (content) => {
+        vi.mocked(fs.readFileSync).mockReturnValue(content);
+        expect(store.loadRecentlyClosed()).toEqual([]);
+
+        store.rememberClosed(makeSession({ id: 'c' }));
+        expect(writtenClosedIds()).toEqual(['c']);
+      },
+    );
+
     it('should put the newly closed session first', () => {
       storedClosed(['a', 'b']);
       store.rememberClosed(makeSession({ id: 'c' }));
@@ -447,18 +463,27 @@ describe('toPersisted / fromPersisted', () => {
     hasUserInput: true,
   };
 
-  it('round-trips linked and unlinked PRs', () => {
+  it('round-trips linked PRs', () => {
     const prs = [
       { owner: 'o', repo: 'r', number: 1, stage: 'merged' as const, stageUpdatedAt: 5 },
-      { owner: 'o', repo: 'r', number: 2, stage: 'ready' as const, stageUpdatedAt: 6 },
+      { owner: 'o', repo: 'r', number: 2, stage: 'not-found' as const, stageUpdatedAt: 6 },
     ];
-    const unlinkedPrs = [{ owner: 'o', repo: 'r', number: 3 }];
-    const session = fromPersisted({ ...base, prs, unlinkedPrs });
+    const session = fromPersisted({ ...base, prs });
 
     expect(session.prs).toEqual(prs);
-    expect(session.unlinkedPrs).toEqual(unlinkedPrs);
-    expect(toPersisted(session)).toMatchObject({ prs, unlinkedPrs });
-    expect(toPersisted(session)).not.toHaveProperty('pr');
+    expect(toPersisted(session)).toEqual({ ...base, prs });
+  });
+
+  it('ignores keys this version no longer writes', () => {
+    const stored = JSON.parse(JSON.stringify({ ...base, prs: [], unlinkedPrs: [{ owner: 'o', repo: 'r', number: 3 }] }));
+
+    expect(toPersisted(fromPersisted(stored))).toEqual({ ...base, prs: [] });
+  });
+
+  it('reads a file from before v1.5.0 without a context limit', () => {
+    const { contextLimit: _omitted, ...stored } = base;
+
+    expect(fromPersisted(stored).contextLimit).toBeNull();
   });
 
   it('migrates a file from before multiple PRs into a one-PR list', () => {
@@ -468,7 +493,6 @@ describe('toPersisted / fromPersisted', () => {
     const session = fromPersisted(legacy);
 
     expect(session.prs).toEqual([{ owner: 'o', repo: 'r', number: 7, stage: 'draft', stageUpdatedAt: 9 }]);
-    expect(session.unlinkedPrs).toEqual([]);
   });
 
   it("migrates a legacy PR whose stage was never resolved ('no-pr') as unknown", () => {

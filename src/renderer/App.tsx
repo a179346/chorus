@@ -16,7 +16,8 @@ import { WelcomeScreen } from './components/WelcomeScreen';
 import { CommandPalette } from './components/CommandPalette';
 import { buildPaletteItems } from './palette-items';
 import { applyThemeCss, getTheme, DEFAULT_THEME_ID } from './themes';
-import { terminals } from './terminal-host';
+import { terminals, type TerminalAddress } from './terminal-host';
+import { FocusFallbackContext } from './use-focus-return';
 import { useSessions, type NewSessionInput } from './use-sessions';
 import { hasExited } from './session-presentation';
 import { invoke, ipcErrorMessage, on, IpcChannels } from './ipc';
@@ -61,12 +62,13 @@ export function App(): React.ReactElement {
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [prDialogSessionId, setPrDialogSessionId] = useState<string | null>(null);
-  const [restartError, setRestartError] = useState<{ sessionId: string; message: string } | null>(null);
+  const [restartErrors, setRestartErrors] = useState<ReadonlyMap<string, string>>(new Map());
   const restartingRef = useRef<Set<string>>(new Set());
   const [currentTheme, setCurrentTheme] = useState(DEFAULT_THEME_ID);
   const [ptySearch, setPtySearch] = useState<{ sessionId: string; key: number } | null>(null);
   const [shellSearch, setShellSearch] = useState<{ sessionId: string; key: number } | null>(null);
   const searchKeyRef = useRef(0);
+  const focusBeforePaletteRef = useRef<TerminalAddress | null>(null);
 
   // Panel sizes
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
@@ -106,7 +108,7 @@ export function App(): React.ReactElement {
     });
 
     void invoke(IpcChannels.TOOLKIT_LIST, {}).then(setToolkitCommands);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [setActiveSessionId]);
 
   // ─── Preload terminals for every session ───────────
   // Background sessions emit PTY data immediately on app restart (claude --resume
@@ -130,18 +132,29 @@ export function App(): React.ReactElement {
     });
   }, [terminalFontFamily, claudeFontSize, shellFontSize]);
 
-  // Searches the focused terminal: the shell when it has focus, else Claude's
-  const openFind = useCallback(() => {
-    const currentId = activeSessionIdRef.current;
-    if (!currentId) return;
-    const k = ++searchKeyRef.current;
-    const focused = terminals.focused();
-    if (focused && focused.sessionId === currentId && focused.kind === 'shell') {
-      setShellSearch({ sessionId: focused.sessionId, key: k });
-    } else {
-      setPtySearch({ sessionId: currentId, key: k });
-    }
-  }, [activeSessionIdRef]);
+  // Find bars belong to the session they were opened in, so a switch by any
+  // path closes them. Reset while rendering, so they never paint over the new session.
+  const [findBarsSessionId, setFindBarsSessionId] = useState(activeSessionId);
+  if (findBarsSessionId !== activeSessionId) {
+    setFindBarsSessionId(activeSessionId);
+    setPtySearch(null);
+    setShellSearch(null);
+  }
+
+  /** Searches the shell when it is the focused terminal, else Claude's. */
+  const openFind = useCallback(
+    (focused: TerminalAddress | null) => {
+      const currentId = activeSessionIdRef.current;
+      if (!currentId) return;
+      const k = ++searchKeyRef.current;
+      if (focused && focused.sessionId === currentId && focused.kind === 'shell') {
+        setShellSearch({ sessionId: currentId, key: k });
+      } else {
+        setPtySearch({ sessionId: currentId, key: k });
+      }
+    },
+    [activeSessionIdRef],
+  );
 
   // ─── Menu event listeners ──────────────────────────
   useEffect(() => {
@@ -159,9 +172,11 @@ export function App(): React.ReactElement {
         const currentId = activeSessionIdRef.current;
         if (currentId) setPrDialogSessionId(currentId);
       }),
-      on(IpcChannels.MENU_FIND, openFind),
+      on(IpcChannels.MENU_FIND, () => openFind(terminals.focused())),
       on(IpcChannels.MENU_PREFERENCES, () => setShowPreferences(true)),
       on(IpcChannels.MENU_COMMAND_PALETTE, () => {
+        // The palette takes focus; its Find action searches the terminal that had it
+        focusBeforePaletteRef.current = terminals.focused();
         setPaletteOpen((open) => {
           if (open) return false;
           // Over another dialog, Escape would close both; let that one finish first
@@ -170,7 +185,7 @@ export function App(): React.ReactElement {
       }),
     ];
     return () => cleanups.forEach((c) => c());
-  }, [switchToIndex, switchRelative, switchToNextNeedingAttention, openFind]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [switchToIndex, switchRelative, switchToNextNeedingAttention, openFind, activeSessionIdRef]);
 
   // ─── Persist panel sizes (debounced) ────────────────
   const savePanelSizes = useCallback(
@@ -191,15 +206,6 @@ export function App(): React.ReactElement {
   );
 
   // ─── Handlers ──────────────────────────────────────
-  const handleSelectSession = useCallback(
-    (id: string) => {
-      setPtySearch(null);
-      setShellSearch(null);
-      selectSession(id);
-    },
-    [selectSession]
-  );
-
   const handleNewSession = useCallback(
     async (config: NewSessionInput) => {
       await createSession(config);
@@ -208,12 +214,23 @@ export function App(): React.ReactElement {
     [createSession]
   );
 
+  const setRestartError = useCallback((sessionId: string, message: string | null) => {
+    setRestartErrors((prev) => {
+      const next = new Map(prev);
+      if (message === null) next.delete(sessionId);
+      else next.set(sessionId, message);
+      return next;
+    });
+  }, []);
+
   const handleEndSession = useCallback(
     async (id: string) => {
       await endSession(id);
       terminals.dispose(id);
+      // A reopened session keeps its id; it must not inherit an old failure
+      setRestartError(id, null);
     },
-    [endSession]
+    [endSession, setRestartError]
   );
 
   const handleRestartSession = useCallback(
@@ -221,7 +238,7 @@ export function App(): React.ReactElement {
       // Enter and the button can both fire before the new status arrives
       if (restartingRef.current.has(id)) return;
       restartingRef.current.add(id);
-      setRestartError(null);
+      setRestartError(id, null);
       try {
         await restartSession(id);
         // The resumed claude replays its history; start from a clean screen.
@@ -229,12 +246,12 @@ export function App(): React.ReactElement {
         terminals.reset('pty', id);
         requestAnimationFrame(() => terminals.focus('pty', id));
       } catch (err) {
-        setRestartError({ sessionId: id, message: ipcErrorMessage(err) });
+        setRestartError(id, ipcErrorMessage(err));
       } finally {
         restartingRef.current.delete(id);
       }
     },
-    [restartSession]
+    [restartSession, setRestartError]
   );
 
   const requestEndSession = useCallback(
@@ -250,6 +267,11 @@ export function App(): React.ReactElement {
       const sid = activeSessionIdRef.current;
       if (sid && document.activeElement === document.body) terminals.focus('pty', sid);
     });
+  }, [activeSessionIdRef]);
+
+  const focusActiveTerminal = useCallback(() => {
+    const sid = activeSessionIdRef.current;
+    if (sid) terminals.focus('pty', sid);
   }, [activeSessionIdRef]);
 
   const handleRenameSession = useCallback(
@@ -286,7 +308,7 @@ export function App(): React.ReactElement {
         requestAnimationFrame(() => terminals.focus('pty', sid));
       }
     },
-    [] // eslint-disable-line react-hooks/exhaustive-deps
+    [activeSessionIdRef]
   );
 
   const handleToolkitAdd = useCallback(
@@ -376,186 +398,192 @@ export function App(): React.ReactElement {
     [savePanelSizes]
   );
 
+  // A session's terminals attach only once main has listed it: before that it
+  // has no PTY, so the size they fit to would never reach one.
+  const terminalSessionId = activeSession?.id ?? null;
+
   // ─── Render ─────────────────────────────────────────
   return (
-    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      {/* Main layout: left/right split */}
-      <SplitPane
-        direction="horizontal"
-        initialSize={sidebarWidth}
-        minPrimary={250}
-        minSecondary={400}
-        primaryIndex={1}
-        onResize={handleSidebarResize}
-      >
-        {/* LEFT PANE: status bar + terminal + shell */}
-        <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', position: 'relative' }}>
-          <StatusBar session={activeSession} />
+    <FocusFallbackContext.Provider value={focusActiveTerminal}>
+      <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {/* Main layout: left/right split */}
+        <SplitPane
+          direction="horizontal"
+          initialSize={sidebarWidth}
+          minPrimary={250}
+          minSecondary={400}
+          primaryIndex={1}
+          onResize={handleSidebarResize}
+        >
+          {/* LEFT PANE: status bar + terminal + shell */}
+          <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', position: 'relative' }}>
+            <StatusBar session={activeSession} />
 
-          {sessionsLoaded && sessions.length === 0 ? (
-            <WelcomeScreen onNewSession={() => setShowNewSession(true)} />
-          ) : (
-            <SplitPane
-              direction="vertical"
-              initialSize={shellCollapsed ? SHELL_HEADER_HEIGHT : shellHeight}
-              minPrimary={SHELL_HEADER_HEIGHT}
-              minSecondary={200}
-              maxPrimaryRatio={0.6}
-              primaryIndex={1}
-              onResize={handleShellResize}
-              collapsed={shellCollapsed}
-              collapsedSize={SHELL_HEADER_HEIGHT}
-            >
-              {/* Claude Code terminal */}
-              <div style={{ width: '100%', height: '100%', background: 'var(--bg-terminal)', position: 'relative' }}>
-                {ptySearch && (
-                  <SearchBar
-                    key={ptySearch.key}
-                    type="pty"
-                    sessionId={ptySearch.sessionId}
-                    onClose={() => setPtySearch(null)}
-                  />
-                )}
-                <TerminalView sessionId={activeSessionId} type="pty" fontFamily={terminalFontFamily} fontSize={claudeFontSize} />
-                {activeSession && hasExited(activeSession) && (
-                  <ExitedSessionBanner
-                    session={activeSession}
-                    error={restartError?.sessionId === activeSession.id ? restartError.message : null}
-                    onRestart={handleRestartSession}
-                  />
-                )}
-              </div>
-
-              {/* Shell terminal (collapsible) */}
-              <ShellPanel collapsed={shellCollapsed} onToggle={handleShellToggle}>
-                <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-                  {shellSearch && (
+            {sessionsLoaded && sessions.length === 0 ? (
+              <WelcomeScreen onNewSession={() => setShowNewSession(true)} />
+            ) : (
+              <SplitPane
+                direction="vertical"
+                initialSize={shellCollapsed ? SHELL_HEADER_HEIGHT : shellHeight}
+                minPrimary={SHELL_HEADER_HEIGHT}
+                minSecondary={200}
+                maxPrimaryRatio={0.6}
+                primaryIndex={1}
+                onResize={handleShellResize}
+                collapsed={shellCollapsed}
+                collapsedSize={SHELL_HEADER_HEIGHT}
+              >
+                {/* Claude Code terminal */}
+                <div style={{ width: '100%', height: '100%', background: 'var(--bg-terminal)', position: 'relative' }}>
+                  {ptySearch && (
                     <SearchBar
-                      key={shellSearch.key}
-                      type="shell"
-                      sessionId={shellSearch.sessionId}
-                      onClose={() => setShellSearch(null)}
+                      key={ptySearch.key}
+                      type="pty"
+                      sessionId={ptySearch.sessionId}
+                      onClose={() => setPtySearch(null)}
                     />
                   )}
-                  <TerminalView sessionId={activeSessionId} type="shell" visible={!shellCollapsed} fontFamily={terminalFontFamily} fontSize={shellFontSize} />
+                  <TerminalView sessionId={terminalSessionId} type="pty" fontFamily={terminalFontFamily} fontSize={claudeFontSize} />
+                  {activeSession && hasExited(activeSession) && (
+                    <ExitedSessionBanner
+                      session={activeSession}
+                      error={restartErrors.get(activeSession.id) ?? null}
+                      onRestart={handleRestartSession}
+                    />
+                  )}
                 </div>
-              </ShellPanel>
-            </SplitPane>
-          )}
-        </div>
 
-        {/* RIGHT PANE: sessions + toolkit */}
-        <SplitPane
-          direction="vertical"
-          initialSize={toolkitHeight}
-          minPrimary={100}
-          minSecondary={150}
-          primaryIndex={1}
-          onResize={handleToolkitResize}
-        >
-          {/* Session list */}
-          <SessionList
-            sessions={sessions}
-            loading={!sessionsLoaded}
-            activeSessionId={activeSessionId}
-            renamingSessionId={renamingSessionId}
-            onSelectSession={handleSelectSession}
-            onNewSession={() => setShowNewSession(true)}
-            onStartRename={setRenamingSessionId}
-            onRenameSession={handleRenameSession}
-            onCancelRename={handleCancelRename}
-            onEndSession={requestEndSession}
-            onRestartSession={handleRestartSession}
-            onToggleNotify={toggleNotify}
-            onReorderSessions={reorderSessions}
-            onManagePrs={setPrDialogSessionId}
-            onJumpToAttention={switchToNextNeedingAttention}
-          />
+                {/* Shell terminal (collapsible) */}
+                <ShellPanel collapsed={shellCollapsed} onToggle={handleShellToggle}>
+                  <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+                    {shellSearch && (
+                      <SearchBar
+                        key={shellSearch.key}
+                        type="shell"
+                        sessionId={shellSearch.sessionId}
+                        onClose={() => setShellSearch(null)}
+                      />
+                    )}
+                    <TerminalView sessionId={terminalSessionId} type="shell" visible={!shellCollapsed} fontFamily={terminalFontFamily} fontSize={shellFontSize} />
+                  </div>
+                </ShellPanel>
+              </SplitPane>
+            )}
+          </div>
 
-          {/* Toolkit */}
-          <ToolkitPanel
-            commands={toolkitCommands}
-            onExecute={handleToolkitExecute}
-            onAdd={handleToolkitAdd}
-            onUpdate={handleToolkitUpdate}
-            onDelete={handleToolkitDelete}
-          />
+          {/* RIGHT PANE: sessions + toolkit */}
+          <SplitPane
+            direction="vertical"
+            initialSize={toolkitHeight}
+            minPrimary={100}
+            minSecondary={150}
+            primaryIndex={1}
+            onResize={handleToolkitResize}
+          >
+            {/* Session list */}
+            <SessionList
+              sessions={sessions}
+              loading={!sessionsLoaded}
+              activeSessionId={activeSessionId}
+              renamingSessionId={renamingSessionId}
+              onSelectSession={selectSession}
+              onNewSession={() => setShowNewSession(true)}
+              onStartRename={setRenamingSessionId}
+              onRenameSession={handleRenameSession}
+              onCancelRename={handleCancelRename}
+              onEndSession={requestEndSession}
+              onRestartSession={handleRestartSession}
+              onToggleNotify={toggleNotify}
+              onReorderSessions={reorderSessions}
+              onManagePrs={setPrDialogSessionId}
+              onJumpToAttention={switchToNextNeedingAttention}
+            />
+
+            {/* Toolkit */}
+            <ToolkitPanel
+              commands={toolkitCommands}
+              onExecute={handleToolkitExecute}
+              onAdd={handleToolkitAdd}
+              onUpdate={handleToolkitUpdate}
+              onDelete={handleToolkitDelete}
+            />
+          </SplitPane>
         </SplitPane>
-      </SplitPane>
 
-      {/* New session dialog */}
-      <NewSessionDialog
-        open={showNewSession}
-        onClose={() => setShowNewSession(false)}
-        onSubmit={handleNewSession}
-      />
-
-      {/* Preferences dialog */}
-      <PreferencesDialog
-        open={showPreferences}
-        fontFamily={terminalFontFamily}
-        theme={currentTheme}
-        claudeFontSize={claudeFontSize}
-        shellFontSize={shellFontSize}
-        onClose={() => setShowPreferences(false)}
-        onSave={handleSavePreferences}
-        onPreviewTheme={handlePreviewTheme}
-      />
-
-      {/* Linked pull requests dialog */}
-      {prDialogSession && (
-        <PullRequestsDialog
-          session={prDialogSession}
-          onLink={(url) => linkPr(prDialogSession.id, url)}
-          onUnlink={(pr) => unlinkPr(prDialogSession.id, pr)}
-          onClose={closePrDialog}
+        {/* New session dialog */}
+        <NewSessionDialog
+          open={showNewSession}
+          onClose={() => setShowNewSession(false)}
+          onSubmit={handleNewSession}
         />
-      )}
 
-      {/* End session confirmation dialog */}
-      {sessionToEnd && (
-        <ConfirmDialog
-          title="End Session"
-          message={
-            <>
-              End <strong>{sessionToEnd.name}</strong>? This stops its Claude Code process and removes it from the list.{' '}
-              {sessionToEnd.hasUserInput
-                ? 'You can bring it back with ⌘⇧T.'
-                : "It has no conversation yet, so it can't be reopened."}
-            </>
-          }
-          confirmLabel="End Session"
-          onConfirm={handleConfirmEndSession}
-          onCancel={() => setEndSessionConfirm(null)}
+        {/* Preferences dialog */}
+        <PreferencesDialog
+          open={showPreferences}
+          fontFamily={terminalFontFamily}
+          theme={currentTheme}
+          claudeFontSize={claudeFontSize}
+          shellFontSize={shellFontSize}
+          onClose={() => setShowPreferences(false)}
+          onSave={handleSavePreferences}
+          onPreviewTheme={handlePreviewTheme}
         />
-      )}
 
-      {paletteOpen && (
-        <CommandPalette
-          items={buildPaletteItems({
-            sessions,
-            activeSession,
-            toolkitCommands,
-            shellCollapsed,
-            actions: {
-              selectSession: handleSelectSession,
-              newSession: () => setShowNewSession(true),
-              nextNeedingAttention: switchToNextNeedingAttention,
-              renameSession: setRenamingSessionId,
-              toggleNotify,
-              managePrs: setPrDialogSessionId,
-              restartSession: (id) => void handleRestartSession(id),
-              findInTerminal: openFind,
-              endSession: requestEndSession,
-              toggleShell: handleShellToggle,
-              openPreferences: () => setShowPreferences(true),
-              runToolkitCommand: handleToolkitExecute,
-            },
-          })}
-          onClose={() => setPaletteOpen(false)}
-        />
-      )}
+        {/* Linked pull requests dialog */}
+        {prDialogSession && (
+          <PullRequestsDialog
+            session={prDialogSession}
+            onLink={(url) => linkPr(prDialogSession.id, url)}
+            onUnlink={(pr) => unlinkPr(prDialogSession.id, pr)}
+            onClose={closePrDialog}
+          />
+        )}
 
-    </div>
+        {/* End session confirmation dialog */}
+        {sessionToEnd && (
+          <ConfirmDialog
+            title="End Session"
+            message={
+              <>
+                End <strong>{sessionToEnd.name}</strong>? This stops its Claude Code process and removes it from the list.{' '}
+                {sessionToEnd.hasUserInput
+                  ? 'You can bring it back with ⌘⇧T.'
+                  : "It has no conversation yet, so it can't be reopened."}
+              </>
+            }
+            confirmLabel="End Session"
+            onConfirm={handleConfirmEndSession}
+            onCancel={() => setEndSessionConfirm(null)}
+          />
+        )}
+
+        {paletteOpen && (
+          <CommandPalette
+            items={buildPaletteItems({
+              sessions,
+              activeSession,
+              toolkitCommands,
+              shellCollapsed,
+              actions: {
+                selectSession,
+                newSession: () => setShowNewSession(true),
+                nextNeedingAttention: switchToNextNeedingAttention,
+                renameSession: setRenamingSessionId,
+                toggleNotify,
+                managePrs: setPrDialogSessionId,
+                restartSession: (id) => void handleRestartSession(id),
+                findInTerminal: () => openFind(focusBeforePaletteRef.current),
+                endSession: requestEndSession,
+                toggleShell: handleShellToggle,
+                openPreferences: () => setShowPreferences(true),
+                runToolkitCommand: handleToolkitExecute,
+              },
+            })}
+            onClose={() => setPaletteOpen(false)}
+          />
+        )}
+
+      </div>
+    </FocusFallbackContext.Provider>
   );
 }

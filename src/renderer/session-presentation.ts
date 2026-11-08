@@ -4,6 +4,7 @@ import {
   GitPullRequestArrow,
   GitMerge,
   GitPullRequestClosed,
+  TriangleAlert,
 } from 'lucide-react';
 import type { LinkedPr, PrStage, Session, SessionStatus } from '../shared/types';
 import { prLabel } from '../shared/pr-ref';
@@ -78,6 +79,12 @@ export const STAGE_ICON: Record<PrStage, {
     background: 'rgba(var(--tint-rgb), 0.08)',
     label: 'Status unknown',
   },
+  'not-found': {
+    Icon: TriangleAlert,
+    color: 'var(--accent-yellow)',
+    background: 'rgba(var(--tint-rgb), 0.08)',
+    label: 'Not found',
+  },
   draft: {
     Icon: GitPullRequestDraft,
     color: 'var(--text-secondary)',
@@ -109,9 +116,10 @@ export function prTooltip(pr: LinkedPr): string {
   return `${prLabel(pr)} · ${STAGE_ICON[pr.stage].label}`;
 }
 
-// Open PRs lead: they still need something from you. 'unknown' only shows
-// when no PR has resolved yet.
-const STAGE_PRIORITY: readonly PrStage[] = ['ready', 'draft', 'merged', 'closed', 'unknown'];
+// Open PRs lead: they still need something from you, and so does a PR gh
+// can't find (fix access or remove it). 'unknown' only shows when no PR has
+// resolved yet.
+const STAGE_PRIORITY: readonly PrStage[] = ['ready', 'draft', 'not-found', 'merged', 'closed', 'unknown'];
 
 /** The single stage that stands for a session's PRs where there is room for one icon. */
 export function summaryStage(prs: readonly LinkedPr[]): PrStage | null {

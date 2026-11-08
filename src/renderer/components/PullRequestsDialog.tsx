@@ -4,7 +4,7 @@ import type { PrRef, Session } from '../../shared/types';
 import { prLabel, prUrl } from '../../shared/pr-ref';
 import { STAGE_ICON } from '../session-presentation';
 import { ipcErrorMessage } from '../ipc';
-import { PrIdentity, PrRemoveButton, PrUrlInput, openPrInBrowser } from './PrLinks';
+import { PrIdentity, PrRemoveButton, PrUrlInput, openPrInBrowser, usePrRemovalFocus } from './PrLinks';
 import { Dialog } from './Dialog';
 
 interface PullRequestsDialogProps {
@@ -19,6 +19,7 @@ export function PullRequestsDialog({ session, onLink, onUnlink, onClose }: PullR
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const removalFocus = usePrRemovalFocus(session.prs, inputRef);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -36,9 +37,11 @@ export function PullRequestsDialog({ session, onLink, onUnlink, onClose }: PullR
 
   const handleRemove = async (pr: PrRef) => {
     setError(null);
+    removalFocus.willRemove(pr);
     try {
       await onUnlink(pr);
     } catch (err) {
+      removalFocus.cancel();
       setError(ipcErrorMessage(err));
     }
   };
@@ -78,7 +81,11 @@ export function PullRequestsDialog({ session, onLink, onUnlink, onClose }: PullR
                 >
                   <ExternalLink size={12} />
                 </button>
-                <PrRemoveButton pr={pr} onRemove={() => void handleRemove(pr)} />
+                <PrRemoveButton
+                  pr={pr}
+                  buttonRef={removalFocus.removeButtonRef(pr)}
+                  onRemove={() => void handleRemove(pr)}
+                />
               </li>
             );
           })}

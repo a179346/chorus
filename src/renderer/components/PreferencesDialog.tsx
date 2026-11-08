@@ -71,7 +71,7 @@ export function PreferencesDialog({ open, fontFamily, theme, claudeFontSize, she
     <Dialog title="Preferences" label="Preferences" onClose={handleClose} width={460}>
       <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         {/* Theme picker */}
-        <div className="field" role="radiogroup" aria-label="Theme">
+        <div className="field" role="group" aria-label="Theme">
           <span className="field-label">Theme</span>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
             {THEMES.map((t) => {
@@ -80,8 +80,7 @@ export function PreferencesDialog({ open, fontFamily, theme, claudeFontSize, she
                 <button
                   key={t.id}
                   type="button"
-                  role="radio"
-                  aria-checked={isActive}
+                  aria-pressed={isActive}
                   aria-label={t.name}
                   onClick={() => handleThemeSelect(t.id)}
                   style={{

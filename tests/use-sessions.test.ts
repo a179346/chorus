@@ -19,7 +19,6 @@ function makeSession(id: string, overrides: Partial<Session> = {}): Session {
     lastActiveAt: 0,
     hasUserInput: true,
     prs: [],
-    unlinkedPrs: [],
     ...overrides,
   };
 }

@@ -86,7 +86,7 @@ const contentStyle: React.CSSProperties = {
   flexDirection: 'column',
   alignItems: 'center',
   padding: 32,
-  animation: 'popIn 320ms var(--ease-out)',
+  animation: 'popIn 200ms var(--ease-out)',
 };
 
 const titleStyle: React.CSSProperties = {

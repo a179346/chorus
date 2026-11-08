@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Search } from 'lucide-react';
 import { filterPaletteItems, type Matchable } from '../palette-match';
+import { useBackdropDismiss } from '../use-backdrop-dismiss';
+import { useFocusReturn } from '../use-focus-return';
 import { Keys } from './Kbd';
 
 export interface PaletteItem extends Matchable {
@@ -21,19 +23,23 @@ interface CommandPaletteProps {
  */
 export function CommandPalette({ items, onClose }: CommandPaletteProps): React.ReactElement {
   const [query, setQuery] = useState('');
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  // By id, so the highlight stays on its item when session updates reorder the list
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const paletteRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const backdrop = useBackdropDismiss(onClose);
+
+  useFocusReturn(paletteRef);
 
   const results = useMemo(() => filterPaletteItems(items, query), [items, query]);
-  // Session updates can shrink the list under the selection
-  const selected = Math.min(selectedIndex, results.length - 1);
+  // No highlight yet, or its item dropped out of the list: the top result has it
+  const selectedIndex = Math.max(0, results.findIndex((item) => item.id === selectedId));
+  const selectedItem: PaletteItem | undefined = results[selectedIndex];
 
   useEffect(() => {
-    const previous = document.activeElement;
     inputRef.current?.focus();
 
     // Another dialog taking focus (e.g. a menu shortcut fired) closes the palette
@@ -41,27 +47,28 @@ export function CommandPalette({ items, onClose }: CommandPaletteProps): React.R
       if (e.target instanceof Node && !paletteRef.current?.contains(e.target)) onCloseRef.current();
     };
     document.addEventListener('focusin', handleFocusIn);
-    return () => {
-      document.removeEventListener('focusin', handleFocusIn);
-      const focusWasLost = !document.activeElement || document.activeElement === document.body;
-      if (focusWasLost && previous instanceof HTMLElement) previous.focus();
-    };
+    return () => document.removeEventListener('focusin', handleFocusIn);
   }, []);
 
   useEffect(() => {
     listRef.current
-      ?.querySelector(`[data-index="${selected}"]`)
+      ?.querySelector(`[data-index="${selectedIndex}"]`)
       ?.scrollIntoView({ block: 'nearest' });
-  }, [selected]);
+  }, [selectedIndex]);
 
   const choose = (item: PaletteItem): void => {
     onClose();
     item.run();
   };
 
+  const search = (text: string): void => {
+    setQuery(text);
+    setSelectedId(null);
+  };
+
   const move = (step: 1 | -1): void => {
     if (results.length === 0) return;
-    setSelectedIndex((selected + step + results.length) % results.length);
+    setSelectedId(results[(selectedIndex + step + results.length) % results.length].id);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
@@ -75,34 +82,39 @@ export function CommandPalette({ items, onClose }: CommandPaletteProps): React.R
       move(-1);
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      const item = results[selected];
-      if (item) choose(item);
+      if (selectedItem) choose(selectedItem);
     } else if (e.key === 'Escape') {
       e.preventDefault();
       onClose();
     }
   };
 
-  const activeId = results[selected] ? `palette-item-${results[selected].id}` : undefined;
+  const activeId = selectedItem ? `palette-item-${selectedItem.id}` : undefined;
 
   return (
-    <div
-      className="palette-overlay"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div ref={paletteRef} className="palette" role="dialog" aria-modal="true" aria-label="Command palette">
+    <div className="palette-overlay" {...backdrop}>
+      <div
+        ref={paletteRef}
+        className="palette"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette"
+        // A press anywhere but the input leaves focus in it, so typing and ↵ keep working
+        onMouseDown={(e) => {
+          if (e.target !== inputRef.current) e.preventDefault();
+        }}
+      >
         <div className="palette-search">
           <Search size={15} />
           <input
             ref={inputRef}
             className="palette-input"
-            value={query}
+            // Uncontrolled, so an IME's unfinished text stays in the field without being searched for
             onChange={(e) => {
-              setQuery(e.target.value);
-              setSelectedIndex(0);
+              if (e.nativeEvent instanceof InputEvent && e.nativeEvent.isComposing) return;
+              search(e.target.value);
             }}
+            onCompositionEnd={(e) => search(e.currentTarget.value)}
             onKeyDown={handleKeyDown}
             placeholder="Jump to a session or run a command…"
             spellCheck={false}
@@ -126,14 +138,12 @@ export function CommandPalette({ items, onClose }: CommandPaletteProps): React.R
                 <div
                   id={`palette-item-${item.id}`}
                   role="option"
-                  aria-selected={index === selected}
+                  aria-selected={index === selectedIndex}
                   data-index={index}
                   className="palette-item"
-                  // Keep focus in the input so ↵ and typing still work after a click
-                  onMouseDown={(e) => e.preventDefault()}
                   // Move, not enter: a list scrolling under a still pointer mustn't steal the selection
                   onMouseMove={() => {
-                    if (index !== selected) setSelectedIndex(index);
+                    if (index !== selectedIndex) setSelectedId(item.id);
                   }}
                   onClick={() => choose(item)}
                 >

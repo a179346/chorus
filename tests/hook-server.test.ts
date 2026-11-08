@@ -1,9 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import http from "node:http";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { HookServer, type HookEvent, type HookUpdate } from "../src/main/hook-server";
+import { HookServer, prsCreatedBy, type HookEvent, type HookUpdate } from "../src/main/hook-server";
 import type { PrRef } from "../src/shared/types";
 
 function postHookEvent(
@@ -143,6 +140,18 @@ describe("HookServer", () => {
       expect(updates[0].update.status).toBe("generating");
     });
 
+    it("PostToolUseFailure -> generating (a failing tool also ends a permission wait)", async () => {
+      await postHookEvent(server.getPort(), {
+        session_id: "s1",
+        hook_event_name: "PostToolUseFailure",
+        cwd: "/tmp",
+        tool_name: "Bash",
+        error: "Exit code 1",
+      });
+      await vi.waitFor(() => expect(updates).toHaveLength(1));
+      expect(updates[0].update.status).toBe("generating");
+    });
+
     it("UserPromptSubmit -> thinking", async () => {
       await postHookEvent(server.getPort(), {
         session_id: "s1",
@@ -240,27 +249,123 @@ describe("HookServer", () => {
   });
 });
 
+/** A Bash tool call that finished, as Claude Code reports it to the PostToolUse hook. */
+function bashSucceeded(command: string, stdout: string): HookEvent {
+  return {
+    session_id: "s1",
+    hook_event_name: "PostToolUse",
+    cwd: "/tmp",
+    tool_name: "Bash",
+    tool_input: { command },
+    tool_response: { stdout, stderr: "", interrupted: false },
+  };
+}
+
+/** A Bash tool call that exited non-zero, as reported to the PostToolUseFailure hook. */
+function bashFailed(command: string, error: string): HookEvent {
+  return {
+    session_id: "s1",
+    hook_event_name: "PostToolUseFailure",
+    cwd: "/tmp",
+    tool_name: "Bash",
+    tool_input: { command },
+    error,
+  };
+}
+
+describe("prsCreatedBy", () => {
+  it("reads the PR URL gh pr create prints", () => {
+    expect(prsCreatedBy(bashSucceeded("gh pr create --title foo", "https://github.com/myorg/myrepo/pull/42\n"))).toEqual([
+      { owner: "myorg", repo: "myrepo", number: 42 },
+    ]);
+  });
+
+  it("matches gh pr create chained after other commands", () => {
+    const event = bashSucceeded("cd .claude/worktrees/feat && gh pr create --draft", "https://github.com/o/r/pull/7");
+    expect(prsCreatedBy(event)).toEqual([{ owner: "o", repo: "r", number: 7 }]);
+  });
+
+  it("takes the last URL, which is the one gh prints for the new PR", () => {
+    const event = bashSucceeded("gh pr create", "see https://github.com/o/r/pull/1\nhttps://github.com/o/r/pull/2\n");
+    expect(prsCreatedBy(event)).toEqual([{ owner: "o", repo: "r", number: 2 }]);
+  });
+
+  it("reads the existing PR from gh's error when the branch already has one", () => {
+    const event = bashFailed(
+      "gh pr create --fill",
+      'Exit code 1\na pull request for branch "feat" into branch "main" already exists:\nhttps://github.com/o/r/pull/4',
+    );
+    expect(prsCreatedBy(event)).toEqual([{ owner: "o", repo: "r", number: 4 }]);
+  });
+
+  it("finds nothing when gh pr create fails without naming a PR", () => {
+    expect(prsCreatedBy(bashFailed("gh pr create", "Exit code 1\nno commits between main and feat"))).toEqual([]);
+  });
+
+  it.each(["gh pr list", "gh pr view 555", "gh pr ready 42", "git log --grep='gh pr create'"])(
+    "ignores PR URLs printed by `%s`",
+    (command) => {
+      expect(prsCreatedBy(bashSucceeded(command, "https://github.com/x/y/pull/555"))).toEqual([]);
+    },
+  );
+
+  it("ignores gh pr create before it has run", () => {
+    expect(
+      prsCreatedBy({ session_id: "s1", hook_event_name: "PreToolUse", cwd: "/tmp", tool_name: "Bash", tool_input: { command: "gh pr create" } }),
+    ).toEqual([]);
+  });
+
+  it("ignores other tools whose output mentions a PR", () => {
+    expect(
+      prsCreatedBy({
+        session_id: "s1",
+        hook_event_name: "PostToolUse",
+        cwd: "/tmp",
+        tool_name: "Read",
+        tool_input: { file_path: "/tmp/notes.md" },
+        tool_response: { stdout: "https://github.com/o/r/pull/9" },
+      }),
+    ).toEqual([]);
+  });
+
+  it.each(["mcp__github__create_pull_request", "mcp__plugin_github_github__create_pull_request"])(
+    "reads the PR from the %s MCP tool's result",
+    (toolName) => {
+      const event: HookEvent = {
+        session_id: "s1",
+        hook_event_name: "PostToolUse",
+        cwd: "/tmp",
+        tool_name: toolName,
+        tool_input: { owner: "o", repo: "r", title: "x" },
+        tool_response: [{ type: "text", text: '{"id":"1","url":"https://github.com/o/r/pull/55"}' }],
+      };
+      expect(prsCreatedBy(event)).toEqual([{ owner: "o", repo: "r", number: 55 }]);
+    },
+  );
+
+  it("ignores other GitHub MCP tools", () => {
+    expect(
+      prsCreatedBy({
+        session_id: "s1",
+        hook_event_name: "PostToolUse",
+        cwd: "/tmp",
+        tool_name: "mcp__github__get_pull_request",
+        tool_response: [{ type: "text", text: "https://github.com/o/r/pull/55" }],
+      }),
+    ).toEqual([]);
+  });
+});
+
 describe("HookServer PR detection", () => {
   let server: HookServer;
-  let dir: string;
+  let updates: HookUpdate[];
   let detected: Array<{ sessionId: string; prs: PrRef[] }>;
 
-  /** A transcript in which Claude ran `gh pr create` once per PR number. */
-  function writeTranscript(prNumbers: number[]): string {
-    const lines = prNumbers.flatMap((n) => [
-      { type: "assistant", message: { content: [{ type: "tool_use", id: `c${n}`, name: "Bash", input: { command: "gh pr create" } }] } },
-      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: `c${n}`, content: `https://github.com/o/r/pull/${n}` }] } },
-    ]);
-    const file = path.join(dir, "transcript.jsonl");
-    fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
-    return file;
-  }
-
   beforeEach(async () => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), "chorus-hook-"));
+    updates = [];
     detected = [];
     server = new HookServer(
-      () => {},
+      (_sessionId, update) => updates.push(update),
       (sessionId, prs) => detected.push({ sessionId, prs }),
     );
     await server.start();
@@ -268,37 +373,30 @@ describe("HookServer PR detection", () => {
 
   afterEach(() => {
     server.stop();
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it("reports every PR created in the transcript on Stop", async () => {
-    await postHookEvent(server.getPort(), {
-      session_id: "s1",
-      hook_event_name: "Stop",
-      cwd: "/tmp",
-      transcript_path: writeTranscript([1, 2]),
-    });
+  it("reports the PR as soon as gh pr create finishes", async () => {
+    await postHookEvent(server.getPort(), bashSucceeded("gh pr create", "https://github.com/o/r/pull/1\n"));
 
-    await vi.waitFor(() => expect(detected).toHaveLength(1), { timeout: 2000 });
-    expect(detected[0]).toEqual({
-      sessionId: "s1",
-      prs: [
-        { owner: "o", repo: "r", number: 1 },
-        { owner: "o", repo: "r", number: 2 },
-      ],
-    });
+    await vi.waitFor(() => expect(detected).toHaveLength(1));
+    expect(detected[0]).toEqual({ sessionId: "s1", prs: [{ owner: "o", repo: "r", number: 1 }] });
+    expect(updates).toEqual([{ status: "generating" }]);
   });
 
-  it("stays quiet when the transcript created no PR", async () => {
-    await postHookEvent(server.getPort(), {
-      session_id: "s1",
-      hook_event_name: "Stop",
-      cwd: "/tmp",
-      transcript_path: writeTranscript([]),
-    });
+  it("reports the existing PR when gh pr create fails because of it", async () => {
+    await postHookEvent(
+      server.getPort(),
+      bashFailed("gh pr create", "Exit code 1\na pull request already exists:\nhttps://github.com/o/r/pull/3"),
+    );
 
-    // The server waits 500ms for Claude to flush the transcript before reading it
-    await new Promise((resolve) => setTimeout(resolve, 700));
+    await vi.waitFor(() => expect(detected).toHaveLength(1));
+    expect(detected[0].prs).toEqual([{ owner: "o", repo: "r", number: 3 }]);
+  });
+
+  it("stays quiet for tool calls that created no PR", async () => {
+    await postHookEvent(server.getPort(), bashSucceeded("ls", "file1\nfile2"));
+
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
     expect(detected).toEqual([]);
   });
 });

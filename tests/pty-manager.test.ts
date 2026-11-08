@@ -24,6 +24,15 @@ function makeMockPty() {
 const { PtyManager } = await import('../src/main/pty-manager');
 const nodePty = vi.mocked(await import('node-pty'));
 
+/** The onData callback of the n-th spawned PTY. */
+function dataCallbackAt(spawnIndex: number): (data: string) => void {
+  return nodePty.spawn.mock.results[spawnIndex].value.onData.mock.calls[0][0];
+}
+
+function exitClaudeAt(spawnIndex: number, exitCode = 0): void {
+  nodePty.spawn.mock.results[spawnIndex].value.onExit.mock.calls[0][0]({ exitCode, signal: 0 });
+}
+
 function makeMockWindow(destroyed = false) {
   return {
     isDestroyed: vi.fn(() => destroyed),
@@ -138,6 +147,20 @@ describe('PtyManager', () => {
     it('should set up onExit listener for claude PTY', () => {
       const pair = manager.spawn('session-1', '/tmp/test', []);
       expect(pair.claude.onExit).toHaveBeenCalled();
+    });
+
+    it('kills the PTYs a session already has, so the two pairs never share its terminals', () => {
+      const exitHandler = vi.fn();
+      manager.setExitHandler(exitHandler);
+      const first = manager.spawn('session-1', '/tmp/test', []);
+      const second = manager.spawn('session-1', '/tmp/test', []);
+
+      expect(first.claude.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(first.shell.kill).toHaveBeenCalledWith('SIGTERM');
+      exitClaudeAt(0);
+      expect(exitHandler).not.toHaveBeenCalled();
+      manager.writeToClaude('session-1', 'hi');
+      expect(second.claude.write).toHaveBeenCalledWith('hi');
     });
 
     it('should propagate error when pty.spawn throws', () => {
@@ -285,6 +308,29 @@ describe('PtyManager', () => {
       });
     });
 
+    it('drops output from PTYs the session no longer has', () => {
+      const win = makeMockWindow();
+      manager.setMainWindow(win);
+      manager.spawn('session-1', '/tmp/test', []);
+      manager.kill('session-1');
+
+      dataCallbackAt(0)('claude after kill');
+      dataCallbackAt(1)('shell after kill');
+      expect(win.webContents.send).not.toHaveBeenCalled();
+    });
+
+    it('forwards only the current claude after a restart', () => {
+      const win = makeMockWindow();
+      manager.setMainWindow(win);
+      manager.spawn('session-1', '/tmp/test', []);
+      manager.restartClaude('session-1', '/tmp/test', []);
+
+      dataCallbackAt(0)('old claude');
+      dataCallbackAt(2)('new claude');
+      expect(win.webContents.send).toHaveBeenCalledTimes(1);
+      expect(win.webContents.send).toHaveBeenCalledWith('pty:data', { sessionId: 'session-1', data: 'new claude' });
+    });
+
     it('should not crash when mainWindow is null', () => {
       manager.setMainWindow(null);
       manager.spawn('session-1', '/tmp/test', []);
@@ -359,11 +405,6 @@ describe('PtyManager', () => {
   });
 
   describe('restartClaude', () => {
-    function exitClaude(spawnIndex: number, exitCode = 0): void {
-      const onExit = nodePty.spawn.mock.results[spawnIndex].value.onExit;
-      onExit.mock.calls[0][0]({ exitCode, signal: 0 });
-    }
-
     it('spawns a new claude with the given cwd and flags, keeping the shell', () => {
       const pair = manager.spawn('session-1', '/tmp/test', []);
       manager.restartClaude('session-1', '/tmp/worktree', ['--resume', 'abc']);
@@ -400,7 +441,7 @@ describe('PtyManager', () => {
       manager.restartClaude('session-1', '/tmp/test', []);
 
       expect(pair.claude.kill).toHaveBeenCalledWith('SIGTERM');
-      exitClaude(0);
+      exitClaudeAt(0);
       expect(exitHandler).not.toHaveBeenCalled();
     });
 
@@ -410,13 +451,13 @@ describe('PtyManager', () => {
       manager.spawn('session-1', '/tmp/test', []);
       manager.restartClaude('session-1', '/tmp/test', []);
 
-      exitClaude(2, 1);
+      exitClaudeAt(2, 1);
       expect(exitHandler).toHaveBeenCalledWith('session-1', 1);
     });
 
     it('does not signal a claude that already exited (its PID may be reused)', () => {
       const pair = manager.spawn('session-1', '/tmp/test', []);
-      exitClaude(0);
+      exitClaudeAt(0);
       manager.restartClaude('session-1', '/tmp/test', []);
 
       expect(pair.claude.kill).not.toHaveBeenCalled();

@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
-  flagName,
+  checkSessionFlags,
   formatFlagText,
-  initialPromptArgs,
+  newSessionArgs,
   parseFlagText,
-  unsupportedFlagError,
+  relaunchArgs,
 } from '../src/shared/claude-cli';
 
 describe('parseFlagText', () => {
@@ -67,65 +67,165 @@ describe('formatFlagText', () => {
   });
 });
 
-describe('flagName', () => {
-  it('names long flags, with or without an attached value', () => {
-    expect(flagName('--resume')).toBe('--resume');
-    expect(flagName('--resume=abc')).toBe('--resume');
+describe('checkSessionFlags', () => {
+  const errorOf = (args: string[]) => {
+    const check = checkSessionFlags(args);
+    return check.ok ? null : check.error;
+  };
+
+  it('accepts no flags', () => {
+    expect(checkSessionFlags([])).toEqual({ ok: true, flagNames: [] });
   });
 
-  it('names short flags, with or without an attached value', () => {
-    expect(flagName('-r')).toBe('-r');
-    expect(flagName('-rabc')).toBe('-r');
+  it('accepts flags with and without values, naming only the flags', () => {
+    expect(checkSessionFlags(['--chrome', '--effort', 'high', '--model=opus', '-dhooks', '--verbose'])).toEqual({
+      ok: true,
+      flagNames: ['--chrome', '--effort', '--model', '-d', '--verbose'],
+    });
   });
 
-  it('treats -- as a flag of its own', () => {
-    expect(flagName('--')).toBe('--');
+  it('takes the argument after a value flag as its value, even when it looks like a flag', () => {
+    expect(checkSessionFlags(['--append-system-prompt', '-p means print', '--model', '--resume'])).toEqual({
+      ok: true,
+      flagNames: ['--append-system-prompt', '--model'],
+    });
   });
 
-  it('returns null for plain values', () => {
-    expect(flagName('high')).toBeNull();
-    expect(flagName('-')).toBeNull();
+  it('gives an optional value only a following argument that is not a flag', () => {
+    expect(checkSessionFlags(['--debug', 'hooks,mcp', '--remote-control', '--verbose', '--debug'])).toEqual({
+      ok: true,
+      flagNames: ['--debug', '--remote-control', '--verbose', '--debug'],
+    });
   });
-});
 
-describe('unsupportedFlagError', () => {
-  it('accepts ordinary flags and their values', () => {
-    expect(unsupportedFlagError(['--chrome', '--effort', 'high', '--model', 'opus'])).toBeNull();
+  it('gives a variadic flag every argument up to the next flag', () => {
+    expect(checkSessionFlags(['--add-dir', '../a', '../b', '--allowed-tools', 'Bash(git *)', 'Edit', '--verbose'])).toEqual({
+      ok: true,
+      flagNames: ['--add-dir', '--allowed-tools', '--verbose'],
+    });
+  });
+
+  it('keeps an empty value with its flag', () => {
+    expect(errorOf(['--fallback-model', ''])).toBeNull();
+  });
+
+  it('rejects a leading word, which claude would take as a prompt or subcommand', () => {
+    expect(errorOf(['doctor', '--verbose'])).toBe("doctor isn't a flag — flags start with -");
+    expect(errorOf(['-'])).toBe("- isn't a flag — flags start with -");
+  });
+
+  it('names an empty argument that is not a value', () => {
+    expect(errorOf(['', '--model', 'x'])).toBe("The empty argument '' isn't a flag — flags start with -");
+  });
+
+  it('suggests --flag=value for a word after a flag not known to take a value', () => {
+    expect(errorOf(['--verbose', 'true'])).toBe("true isn't a flag — if it's the value of --verbose, write --verbose=true");
+    expect(errorOf(['--new-flag', 'a b'])).toBe(
+      "'a b' isn't a flag — if it's the value of --new-flag, write '--new-flag=a b'",
+    );
+  });
+
+  it('rejects a second word after a single value', () => {
+    expect(errorOf(['--model', 'opus', 'sonnet'])).toBe("sonnet isn't a flag — flags start with -");
+    expect(errorOf(['--add-dir=../a', '../b'])).toBe("../b isn't a flag — flags start with -");
+  });
+
+  it('rejects a value flag that ends the flags without its value', () => {
+    expect(errorOf(['--verbose', '--model'])).toBe('--model needs a value');
+    expect(errorOf(['--add-dir'])).toBe('--add-dir needs a value');
   });
 
   it.each([
-    ['--session-id', 'abc'],
-    ['--resume'],
-    ['-r'],
-    ['--continue'],
-    ['-c'],
-    ['--name=x'],
-    ['-nX'],
-    ['--worktree', 'w'],
-    ['-p'],
-    ['--background'],
-    ['--'],
-  ])('rejects flags Chorus manages or that end the interactive session: %j', (...args) => {
-    const name = flagName(args[0]);
-    expect(unsupportedFlagError(args)).toBe(`${name} isn't supported in Chorus sessions`);
+    [['--session-id', 'abc'], '--session-id'],
+    [['--resume'], '--resume'],
+    [['--resume=abc'], '--resume'],
+    [['-r'], '-r'],
+    [['-rabc'], '-r'],
+    [['--continue'], '--continue'],
+    [['-c'], '-c'],
+    [['--name=x'], '--name'],
+    [['-nX'], '-n'],
+    [['--worktree', 'w'], '--worktree'],
+    [['-p'], '-p'],
+    [['--background'], '--background'],
+    [['--environment', 'env_1'], '--environment'],
+    [['--pool', 'pool_1'], '--pool'],
+    [['--remote'], '--remote'],
+    [['--rewind-files', 'msg_1'], '--rewind-files'],
+    [['--init-only'], '--init-only'],
+    [['--attach-serve', 'abc'], '--attach-serve'],
+    [['--tmux'], '--tmux'],
+    [['--bare'], '--bare'],
+    [['--safe-mode'], '--safe-mode'],
+    [['--restricted'], '--restricted'],
+    [['--'], '--'],
+  ])('rejects flags Chorus manages, that end the interactive session, or that turn off its hooks: %j', (args, name) => {
+    expect(errorOf(args)).toBe(`${name} isn't supported in Chorus sessions`);
+  });
+
+  it('rejects an unsupported flag after valid ones', () => {
+    expect(errorOf(['--verbose', '--resume', 'abc'])).toBe("--resume isn't supported in Chorus sessions");
+  });
+
+  it('accepts --setting-sources only when it loads the local settings, where the hooks are', () => {
+    expect(errorOf(['--setting-sources', 'user, local'])).toBeNull();
+    expect(errorOf(['--setting-sources=local'])).toBeNull();
+    const error = "--setting-sources must include local, where Chorus's hooks are";
+    expect(errorOf(['--setting-sources', 'user,project'])).toBe(error);
+    expect(errorOf(['--setting-sources='])).toBe(error);
   });
 });
 
-describe('initialPromptArgs', () => {
-  it('passes nothing for a blank prompt', () => {
-    expect(initialPromptArgs(undefined)).toEqual([]);
-    expect(initialPromptArgs('  \n ')).toEqual([]);
+describe('newSessionArgs', () => {
+  const launch = { id: 'uuid-1', name: 'Fix login', newWorktree: null, flags: [] };
+
+  it('passes Chorus’s id and name', () => {
+    expect(newSessionArgs(launch)).toEqual(['--session-id', 'uuid-1', '--name', 'Fix login']);
   });
 
-  it('passes the trimmed prompt after --', () => {
-    expect(initialPromptArgs('  fix the\nlogin bug  ')).toEqual(['--', 'fix the\nlogin bug']);
+  it('asks claude to create a new worktree', () => {
+    expect(newSessionArgs({ ...launch, newWorktree: 'fix-login' })).toEqual([
+      '--session-id', 'uuid-1', '--name', 'Fix login', '--worktree', 'fix-login',
+    ]);
+  });
+
+  it('puts the user’s flags after Chorus’s own, so none can take one as its value', () => {
+    expect(newSessionArgs({ ...launch, flags: ['--chrome', '--effort', 'high'] })).toEqual([
+      '--session-id', 'uuid-1', '--name', 'Fix login', '--chrome', '--effort', 'high',
+    ]);
+  });
+
+  it('passes nothing more for a blank prompt', () => {
+    expect(newSessionArgs({ ...launch, prompt: '  \n ' })).toEqual(newSessionArgs(launch));
+  });
+
+  it('passes the trimmed prompt last, after --', () => {
+    expect(newSessionArgs({ ...launch, flags: ['--add-dir', '../a'], prompt: '  fix the\nlogin bug  ' })).toEqual([
+      '--session-id', 'uuid-1', '--name', 'Fix login', '--add-dir', '../a', '--', 'fix the\nlogin bug',
+    ]);
   });
 
   it('keeps a prompt that starts with - as the prompt', () => {
-    expect(initialPromptArgs('-v is broken')).toEqual(['--', '-v is broken']);
+    expect(newSessionArgs({ ...launch, prompt: '-v is broken' }).slice(-2)).toEqual(['--', '-v is broken']);
   });
 
   it('pads a one-word prompt so claude does not run it as a subcommand', () => {
-    expect(initialPromptArgs('doctor')).toEqual(['--', 'doctor ']);
+    expect(newSessionArgs({ ...launch, prompt: 'doctor' }).slice(-2)).toEqual(['--', 'doctor ']);
+  });
+});
+
+describe('relaunchArgs', () => {
+  const session = { id: 'uuid-1', name: 'Fix login', flags: ['--chrome', '--model', 'opus'] };
+
+  it('resumes a session the user has prompted, before the user’s flags', () => {
+    expect(relaunchArgs({ ...session, hasUserInput: true })).toEqual([
+      '--resume', 'uuid-1', '--chrome', '--model', 'opus',
+    ]);
+  });
+
+  it('reuses the id of a session that has no conversation yet', () => {
+    expect(relaunchArgs({ ...session, hasUserInput: false })).toEqual([
+      '--session-id', 'uuid-1', '--name', 'Fix login', '--chrome', '--model', 'opus',
+    ]);
   });
 });

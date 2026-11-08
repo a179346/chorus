@@ -5,16 +5,16 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { IpcChannels, IpcErrorCodes } from "../shared/ipc";
 import type { IpcInvokeMap } from "../shared/ipc";
-import type { PersistedSession, PrRef, Session, SessionConfig } from "../shared/types";
+import type { PrRef, Session, SessionConfig, StoredSession } from "../shared/types";
 import { parsePrUrl } from "../shared/pr-ref";
-import { initialPromptArgs, unsupportedFlagError } from "../shared/claude-cli";
+import { checkSessionFlags, newSessionArgs, relaunchArgs } from "../shared/claude-cli";
 import { SessionStore, fromPersisted } from "./session-store";
 import { SessionState } from "./session-state";
 import { StageMonitor } from "./stage-monitor";
 import { PtyManager } from "./pty-manager";
 import { HookServer } from "./hook-server";
 import { HookInstaller } from "./hook-installer";
-import { fallbackPath, readLoginShellEnv, resolveShellEnv } from "./shell-env";
+import { fallbackPath, readLoginShellEnv, resolveShellEnv, userShell } from "./shell-env";
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 declare const MAIN_WINDOW_VITE_NAME: string;
@@ -80,12 +80,22 @@ function dismissSessionNotification(sessionId: string): void {
 /** Bring the window forward and have the renderer switch to the session. */
 function revealSession(sessionId: string): void {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  const sessionExists = sessionStore.getSession(sessionId) !== null;
+  // Before focusing: the focus handler marks the active session read
+  if (sessionExists) sessionState.setActiveSession(sessionId);
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
-  if (sessionStore.getSession(sessionId)) {
+  if (sessionExists) {
     mainWindow.webContents.send(IpcChannels.SESSION_REVEAL, { id: sessionId });
   }
+}
+
+/** The user is looking at the session: refresh its PRs, and clear its unread mark and notification. */
+function markSessionSeen(sessionId: string): void {
+  stageMonitor.scheduleRefresh(sessionId);
+  sessionState.markRead(sessionId);
+  dismissSessionNotification(sessionId);
 }
 
 const sessionState = new SessionState(sessionStore, {
@@ -110,7 +120,7 @@ const stageMonitor = new StageMonitor({
 
 const hookServer = new HookServer(
   (sessionId, update) => sessionState.applyHookUpdate(sessionId, update),
-  (sessionId, prs) => stageMonitor.handlePrsDetected(sessionId, prs),
+  (sessionId, prs) => stageMonitor.linkPrs(sessionId, prs),
   (sessionId) => sessionStore.getSession(sessionId)?.contextLimit ?? null,
 );
 
@@ -121,14 +131,31 @@ ptyManager.setExitHandler((sessionId, exitCode) =>
   sessionState.handleClaudeExit(sessionId, exitCode),
 );
 
-// Saved sessions are restored once process.env holds the login-shell
-// environment. Until then the store is empty: whatever lists or spawns
-// sessions waits on sessionsReady, and quitting must not save over them.
-let sessionsRestored = false;
-let markSessionsReady: () => void = () => {};
-const sessionsReady = new Promise<void>((resolve) => {
-  markSessionsReady = resolve;
-});
+/**
+ * Restoring the saved sessions, which runs once process.env holds the
+ * login-shell environment. Until then the store is empty: whatever lists or
+ * spawns sessions waits for `done`. Saving the store on quit is only safe once
+ * the restore `succeeded`; otherwise it would erase the saved sessions.
+ */
+class SessionRestore {
+  private outcome: "pending" | "succeeded" | "failed" = "pending";
+  private markDone: () => void = () => {};
+  /** Resolves once the restore has run, whether or not it succeeded. */
+  readonly done = new Promise<void>((resolve) => {
+    this.markDone = resolve;
+  });
+
+  get succeeded(): boolean {
+    return this.outcome === "succeeded";
+  }
+
+  finish(outcome: "succeeded" | "failed"): void {
+    this.outcome = outcome;
+    this.markDone();
+  }
+}
+
+const sessionRestore = new SessionRestore();
 
 // ─── Shell Environment ──────────────────────────────────────
 
@@ -137,7 +164,7 @@ const sessionsReady = new Promise<void>((resolve) => {
  * the packaged app needs this: `npm start` already inherits the terminal's.
  */
 async function adoptLoginShellEnv(): Promise<void> {
-  const shell = process.env.SHELL || "/bin/zsh";
+  const shell = userShell();
   const env = await resolveShellEnv(() => readLoginShellEnv(shell), confirmShellEnvRetry);
   if (env) {
     Object.assign(process.env, env);
@@ -213,8 +240,8 @@ async function createSessionFromConfig(
   const cwd = validateCwd(config.cwd);
   const worktree = config.worktree || null;
   const prs = (config.prUrls ?? []).map(requirePrRef);
-  const flagError = unsupportedFlagError(config.flags);
-  if (flagError) throw ipcError(IpcErrorCodes.INVALID_FLAGS, flagError);
+  const flagsCheck = checkSessionFlags(config.flags);
+  if (!flagsCheck.ok) throw ipcError(IpcErrorCodes.INVALID_FLAGS, flagsCheck.error);
 
   const session: Session = {
     id,
@@ -232,7 +259,6 @@ async function createSessionFromConfig(
     lastActiveAt: now,
     hasUserInput: false,
     prs: [],
-    unlinkedPrs: [],
   };
 
   const worktreeCwd = sessionSpawnCwd(cwd, worktree);
@@ -241,15 +267,13 @@ async function createSessionFromConfig(
 
   const spawnCwd = worktreeDirExists ? worktreeCwd : cwd;
 
-  // Use --session-id so Claude Code uses our ID (enables precise resume later)
-  // If worktree specified, let Claude Code handle worktree creation via --worktree flag
-  const claudeArgs = [...config.flags, "--session-id", id, "--name", config.name];
-  if (worktree && !worktreeDirExists) {
-    claudeArgs.push("--worktree", worktree);
-  }
-  // Only this first launch gets the prompt: it isn't part of session.flags,
-  // so a restart or restore resumes the conversation instead of resending it
-  claudeArgs.push(...initialPromptArgs(config.prompt));
+  const claudeArgs = newSessionArgs({
+    id,
+    name: config.name,
+    newWorktree: worktree && !worktreeDirExists ? worktree : null,
+    flags: config.flags,
+    prompt: config.prompt,
+  });
 
   // Spawn PTYs (hooks must be on disk before claude starts)
   try {
@@ -277,35 +301,21 @@ function sessionSpawnCwd(cwd: string, worktree: string | null): string {
   return worktree ? path.join(cwd, ".claude", "worktrees", worktree) : cwd;
 }
 
-/**
- * Claude flags for launching an existing session again. Once the user has
- * prompted it, Claude has a transcript to --resume; before that, reuse the
- * session id so the session stays addressable by the same id.
- */
-function relaunchFlags(
-  session: Pick<Session, "id" | "name" | "flags" | "hasUserInput">,
-): string[] {
-  return session.hasUserInput
-    ? [...session.flags, "--resume", session.id]
-    : [...session.flags, "--session-id", session.id, "--name", session.name];
-}
-
 /** Spawn a saved session's PTYs, resuming its conversation, and register it. */
-function resumePersistedSession(ps: PersistedSession): Session {
-  const cwd = validateCwd(ps.cwd);
-  const spawnCwd = validateCwd(sessionSpawnCwd(cwd, ps.worktree));
+function resumeStoredSession(stored: StoredSession): Session {
+  const session = fromPersisted(stored, validateCwd(stored.cwd));
+  const spawnCwd = validateCwd(sessionSpawnCwd(session.cwd, session.worktree));
   hookInstaller.ensureInstalled(spawnCwd);
-  ptyManager.spawn(ps.id, spawnCwd, relaunchFlags(ps), cwd);
-  const session = fromPersisted(ps, cwd);
+  ptyManager.spawn(session.id, spawnCwd, relaunchArgs(session), session.cwd);
   sessionStore.addSession(session);
   return session;
 }
 
-function restoreSessions(): void {
-  const persisted = sessionStore.loadPersistedSessions().filter((ps) => ps.hasUserInput);
-  for (const ps of persisted) {
+function resumeSavedSessions(): void {
+  const stored = sessionStore.loadPersistedSessions().filter((s) => s.hasUserInput);
+  for (const s of stored) {
     try {
-      resumePersistedSession(ps);
+      resumeStoredSession(s);
     } catch {
       // Skip sessions that fail to restore (directory gone, spawn failure)
     }
@@ -314,33 +324,63 @@ function restoreSessions(): void {
 }
 
 /**
+ * Restore the saved sessions once the shell environment is in place, then
+ * let whatever waits on the restore through, even if it failed.
+ */
+async function restoreSessions(shellEnvAdopted: Promise<void>): Promise<void> {
+  try {
+    await shellEnvAdopted;
+    resumeSavedSessions();
+    sessionRestore.finish("succeeded");
+  } catch (err) {
+    sessionRestore.finish("failed");
+    void dialog.showMessageBox({
+      type: "error",
+      message: "Couldn't restore your sessions",
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
  * Reopen an ended session (the most recently closed one when no id is given)
  * and hand it to the renderer. Failures surface as a native dialog because
  * this runs from the menu, outside any renderer request.
  */
 async function reopenClosedSession(id?: string): Promise<void> {
-  await sessionsReady;
-  const ps = id
-    ? sessionStore.loadRecentlyClosed().find((s) => s.id === id)
-    : sessionStore.loadRecentlyClosed()[0];
-  if (!ps) return;
+  await sessionRestore.done;
+  const recentlyClosed = sessionStore.loadRecentlyClosed();
+  const stored = id ? recentlyClosed.find((s) => s.id === id) : recentlyClosed[0];
+  if (!stored) return;
 
+  // Listed yet still open (its End Session was cut short): reopening would run a second claude on its id
+  if (sessionStore.getSession(stored.id)) {
+    sessionStore.forgetClosed(stored.id);
+    createMenu();
+    revealSession(stored.id);
+    return;
+  }
+
+  let session: Session;
   try {
-    const session = resumePersistedSession(ps);
-    sessionStore.forgetClosed(ps.id);
-    sessionStore.persistSessions();
-    mainWindow?.webContents.send(IpcChannels.SESSION_OPENED, session);
+    session = resumeStoredSession(stored);
   } catch (err) {
     // A vanished directory never comes back; a spawn failure may be transient
     if (err instanceof IpcHandlerError && err.code === IpcErrorCodes.INVALID_DIRECTORY) {
-      sessionStore.forgetClosed(ps.id);
+      sessionStore.forgetClosed(stored.id);
     }
     void dialog.showMessageBox({
       type: "error",
-      message: `Couldn't reopen "${ps.name}"`,
+      message: `Couldn't reopen "${stored.name}"`,
       detail: err instanceof Error ? err.message : String(err),
     });
+    createMenu();
+    return;
   }
+
+  mainWindow?.webContents.send(IpcChannels.SESSION_OPENED, session);
+  sessionStore.forgetClosed(stored.id);
+  sessionStore.persistSessions();
   createMenu();
 }
 
@@ -395,9 +435,7 @@ function createWindow(): void {
 
   mainWindow.on("focus", () => {
     const activeId = sessionState.activeSessionId;
-    if (!activeId) return;
-    stageMonitor.scheduleRefresh(activeId);
-    sessionState.markRead(activeId);
+    if (activeId) markSessionSeen(activeId);
   });
 
   mainWindow.on("closed", () => {
@@ -614,7 +652,7 @@ const invokeHandlers: InvokeHandlers = {
   // --- Session management ---
 
   [IpcChannels.SESSION_CREATE]: async (config) => {
-    await sessionsReady;
+    await sessionRestore.done;
     const session = await createSessionFromConfig(config);
     sessionState.setActiveSession(session.id);
     sessionStore.saveAppState({
@@ -630,7 +668,7 @@ const invokeHandlers: InvokeHandlers = {
   },
 
   [IpcChannels.SESSION_LIST]: async () => {
-    await sessionsReady;
+    await sessionRestore.done;
     return sessionStore.getAllSessions();
   },
 
@@ -638,7 +676,8 @@ const invokeHandlers: InvokeHandlers = {
 
   [IpcChannels.SESSION_RENAME]: ({ id, name }) => {
     requireSession(id);
-    return sessionState.commit(id, { name })!;
+    sessionState.commit(id, { name });
+    return requireSession(id);
   },
 
   [IpcChannels.SESSION_END]: ({ id }) => {
@@ -650,7 +689,6 @@ const invokeHandlers: InvokeHandlers = {
       sessionStore.rememberClosed({ ...session, unread: false });
       createMenu();
     }
-    sessionStore.updateSession(id, { status: "ended" });
     stageMonitor.forget(id);
     sessionStore.removeSession(id);
     sessionStore.persistSessions();
@@ -662,14 +700,15 @@ const invokeHandlers: InvokeHandlers = {
     const spawnCwd = validateCwd(sessionSpawnCwd(session.cwd, session.worktree));
     try {
       hookInstaller.ensureInstalled(spawnCwd);
-      ptyManager.restartClaude(id, spawnCwd, relaunchFlags(session));
+      ptyManager.restartClaude(id, spawnCwd, relaunchArgs(session));
     } catch (err) {
       throw ipcError(
         IpcErrorCodes.PTY_SPAWN_FAILED,
         `Failed to restart Claude Code: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    return sessionState.commit(id, { status: "creating" })!;
+    sessionState.commit(id, { status: "creating" });
+    return requireSession(id);
   },
 
   [IpcChannels.SESSION_LINK_PR]: ({ id, url }) => {
@@ -689,14 +728,14 @@ const invokeHandlers: InvokeHandlers = {
     sessionState.setActiveSession(id);
     sessionStore.saveAppState({ lastActiveSessionId: id });
     session.lastActiveAt = Date.now();
-    stageMonitor.scheduleRefresh(id);
-    sessionState.markRead(id);
+    markSessionSeen(id);
     return session;
   },
 
   [IpcChannels.SESSION_TOGGLE_NOTIFY]: ({ id }) => {
     const session = requireSession(id);
-    return sessionState.commit(id, { notifyOnIdle: !session.notifyOnIdle })!;
+    sessionState.commit(id, { notifyOnIdle: !session.notifyOnIdle });
+    return requireSession(id);
   },
 
   [IpcChannels.SESSION_REORDER]: ({ sessionIds }) => {
@@ -822,17 +861,12 @@ app.whenReady().then(async () => {
     }
   });
 
-  await shellEnvAdopted;
-  restoreSessions();
-  sessionsRestored = true;
-  markSessionsReady();
-
+  await restoreSessions(shellEnvAdopted);
   stageMonitor.start();
 });
 
 app.on("before-quit", () => {
-  // Saving the still-empty store would erase every saved session
-  if (sessionsRestored) {
+  if (sessionRestore.succeeded) {
     sessionStore.persistSessions();
     sessionStore.cleanupOrphanedSessionFiles();
   }

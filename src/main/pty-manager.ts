@@ -2,6 +2,7 @@ import * as pty from 'node-pty';
 import type { BrowserWindow } from 'electron';
 import { IpcChannels } from '../shared/ipc';
 import type { PtyDataPayload } from '../shared/types';
+import { userShell } from './shell-env';
 
 interface PtyPair {
   claude: pty.IPty;
@@ -30,7 +31,9 @@ export class PtyManager {
   }
 
   /**
-   * Spawn a claude PTY and a shell PTY for a session. `claudeArgs` reach claude unchanged.
+   * Spawn a claude PTY and a shell PTY for a session, killing any the session
+   * already has: two pairs would mix their output in its terminals.
+   * `claudeArgs` reach claude unchanged.
    */
   spawn(
     sessionId: string,
@@ -38,10 +41,11 @@ export class PtyManager {
     claudeArgs: string[],
     shellCwd?: string,
   ): PtyPair {
+    this.kill(sessionId);
     const claudePty = this.spawnClaude(sessionId, cwd, claudeArgs, DEFAULT_COLS, DEFAULT_ROWS);
 
     // Shell uses the original cwd, not the worktree
-    const shellPty = pty.spawn(process.env.SHELL ?? '/bin/zsh', [], {
+    const shellPty = pty.spawn(userShell(), [], {
       name: 'xterm-256color',
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
@@ -49,6 +53,7 @@ export class PtyManager {
       env: process.env as Record<string, string>,
     });
     shellPty.onData((data: string) => {
+      if (!this.isCurrent(sessionId, 'shell', shellPty)) return;
       this.sendToRenderer(IpcChannels.SHELL_DATA, { sessionId, data });
     });
     shellPty.onExit(() => this.exited.add(shellPty));
@@ -139,18 +144,27 @@ export class PtyManager {
     });
 
     claudePty.onData((data: string) => {
+      if (!this.isCurrent(sessionId, 'claude', claudePty)) return;
       this.sendToRenderer(IpcChannels.PTY_DATA, { sessionId, data });
     });
 
     claudePty.onExit(({ exitCode }) => {
       this.exited.add(claudePty);
-      // Only the session's current claude reports exits; one that was killed
-      // or replaced by a restart is no longer current.
-      if (this.ptys.get(sessionId)?.claude !== claudePty) return;
+      if (!this.isCurrent(sessionId, 'claude', claudePty)) return;
       this.exitHandler?.(sessionId, exitCode);
     });
 
     return claudePty;
+  }
+
+  /**
+   * Whether `p` is still the session's PTY of this kind. Only the current one
+   * reaches the session's terminal and reports exits: one that was killed or
+   * replaced (by a restart or a respawn) may live on for a moment, but it
+   * no longer speaks for the session.
+   */
+  private isCurrent(sessionId: string, kind: keyof PtyPair, p: pty.IPty): boolean {
+    return this.ptys.get(sessionId)?.[kind] === p;
   }
 
   /** SIGTERM, then SIGKILL after 2s if it is still running. */

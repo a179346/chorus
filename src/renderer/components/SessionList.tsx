@@ -140,7 +140,7 @@ export function SessionList({
         {attentionCount > 0 && (
           <button
             type="button"
-            style={attentionPillStyle}
+            className="attention-pill"
             onClick={onJumpToAttention}
             title="Jump to the next session needing attention (⌘J)"
           >
@@ -161,7 +161,9 @@ export function SessionList({
 
       {/* Session cards */}
       <div style={listStyle}>
-        {loading ? null : sessions.length === 0 ? (
+        {loading ? (
+          <div style={restoringStyle}>Restoring sessions…</div>
+        ) : sessions.length === 0 ? (
           <div style={emptyStyle}>
             <span>No sessions yet</span>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -508,9 +510,16 @@ function PrSummaryChip({ prs, onClick }: PrSummaryChipProps): React.ReactElement
   const { Icon, color, background } = STAGE_ICON[stage];
   const title = prs.length === 1 ? prTooltip(prs[0]) : `${prs.length} pull requests`;
   return (
-    <button type="button" title={title} aria-label={title} onClick={onClick} style={{ ...prSummaryChipStyle, color, background }}>
+    <button
+      type="button"
+      className="pr-chip"
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+      style={{ height: 18, padding: '0 4px', color, background }}
+    >
       <Icon size={12} />
-      {prs.length > 1 && <span style={{ fontSize: 10, lineHeight: 1 }}>{prs.length}</span>}
+      {prs.length > 1 && <span>{prs.length}</span>}
     </button>
   );
 }
@@ -532,18 +541,6 @@ const countStyle: React.CSSProperties = {
   fontVariantNumeric: 'tabular-nums',
 };
 
-const attentionPillStyle: React.CSSProperties = {
-  padding: '1px 7px',
-  borderRadius: 999,
-  background: 'rgba(var(--accent-rgb), 0.16)',
-  color: 'var(--accent-primary)',
-  fontSize: 10,
-  fontWeight: 600,
-  lineHeight: '16px',
-  whiteSpace: 'nowrap',
-  animation: 'fadeIn 150ms ease',
-};
-
 const listStyle: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
@@ -562,6 +559,12 @@ const emptyStyle: React.CSSProperties = {
   flex: 1,
   color: 'var(--text-dimmed)',
   fontSize: 11,
+};
+
+// Fades in late so a quick restore never flashes it
+const restoringStyle: React.CSSProperties = {
+  ...emptyStyle,
+  animation: 'fadeIn 200ms ease 400ms both',
 };
 
 const nameStyle: React.CSSProperties = {
@@ -596,16 +599,6 @@ const inlineEditStyle: React.CSSProperties = {
   fontFamily: 'var(--font-ui)',
   fontSize: 12,
   fontWeight: 500,
-};
-
-const prSummaryChipStyle: React.CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 3,
-  flexShrink: 0,
-  height: 18,
-  borderRadius: 'var(--radius-sm)',
-  padding: '0 4px',
 };
 
 const sheetStyle: React.CSSProperties = {

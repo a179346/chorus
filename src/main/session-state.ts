@@ -34,7 +34,6 @@ const PERSISTED_FIELDS: ReadonlySet<keyof Session> = new Set<keyof Session>([
   'contextLimit',
   'hasUserInput',
   'prs',
-  'unlinkedPrs',
 ]);
 
 function notificationBody(update: HookUpdate): string {

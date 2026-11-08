@@ -12,19 +12,20 @@ import { SortableContext, rectSortingStrategy, useSortable } from '@dnd-kit/sort
 import { CSS } from '@dnd-kit/utilities';
 import type { PrRef } from '../../shared/types';
 import { prLabel, prUrl } from '../../shared/pr-ref';
-import { invoke, IpcChannels } from '../ipc';
+import { invoke, ipcErrorMessage, IpcChannels } from '../ipc';
 import { basename } from '../session-presentation';
 import { readPrDraft } from '../pr-draft';
 import { TOGGLE_LABELS, customFlagText, readCustomFlags, readToggles, toggleFlags } from '../session-flags';
 import type { NewSessionInput } from '../use-sessions';
-import { PrIdentity, PrRemoveButton, PrUrlInput } from './PrLinks';
+import { PrIdentity, PrRemoveButton, PrUrlInput, usePrRemovalFocus } from './PrLinks';
 import { Dialog } from './Dialog';
 import { Checkbox } from './Checkbox';
 
 interface NewSessionDialogProps {
   open: boolean;
   onClose: () => void;
-  onSubmit: (config: NewSessionInput) => void;
+  /** Resolves once the session exists; a rejection is shown in the dialog. */
+  onSubmit: (config: NewSessionInput) => Promise<void>;
 }
 
 export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogProps): React.ReactElement | null {
@@ -40,7 +41,12 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
   const [chrome, setChrome] = useState(false);
   const [customFlags, setCustomFlags] = useState('');
   const [notifyOnIdle, setNotifyOnIdle] = useState(false);
+  // Creating can wait on the login-shell environment for many seconds
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
+  const prInputRef = useRef<HTMLInputElement>(null);
+  const prRemovalFocus = usePrRemovalFocus(prs, prInputRef);
 
   useEffect(() => {
     if (!open) return;
@@ -62,6 +68,7 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
     setPrs([]);
     setPrDraft('');
     setPrompt('');
+    setSubmitError(null);
     setTimeout(() => nameRef.current?.focus(), 50);
   }, [open]);
 
@@ -108,22 +115,30 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
   const pendingPr = useMemo(() => readPrDraft(prDraft, prs), [prDraft, prs]);
   const customFlagsDraft = useMemo(() => readCustomFlags(customFlags), [customFlags]);
   const canSubmit =
-    !!name.trim() && !!cwd.trim() && pendingPr.kind !== 'invalid' && customFlagsDraft.kind === 'ok';
+    !submitting && !!name.trim() && !!cwd.trim() && pendingPr.kind !== 'invalid' && customFlagsDraft.kind === 'ok';
 
   const handleSubmit = useCallback(
-    (e: React.FormEvent) => {
+    async (e: React.FormEvent) => {
       e.preventDefault();
       if (!canSubmit || customFlagsDraft.kind !== 'ok') return;
       const allPrs = pendingPr.kind === 'ok' ? [...prs, pendingPr.pr] : prs;
-      onSubmit({
-        name: name.trim(),
-        cwd: cwd.trim(),
-        worktree: worktree.trim(),
-        flags: [...toggleFlags({ autoMode, skipPermissions, chrome }), ...customFlagsDraft.args],
-        notifyOnIdle,
-        prUrls: allPrs.map(prUrl),
-        prompt: prompt.trim(),
-      });
+      setSubmitting(true);
+      setSubmitError(null);
+      try {
+        await onSubmit({
+          name: name.trim(),
+          cwd: cwd.trim(),
+          worktree: worktree.trim(),
+          flags: [...toggleFlags({ autoMode, skipPermissions, chrome }), ...customFlagsDraft.args],
+          notifyOnIdle,
+          prUrls: allPrs.map(prUrl),
+          prompt: prompt.trim(),
+        });
+      } catch (err) {
+        setSubmitError(ipcErrorMessage(err));
+      } finally {
+        setSubmitting(false);
+      }
     },
     [canSubmit, name, cwd, worktree, autoMode, skipPermissions, chrome, customFlagsDraft, notifyOnIdle, prs, pendingPr, prompt, onSubmit]
   );
@@ -133,7 +148,7 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
   return (
     <Dialog title="New Session" label="New Session" onClose={onClose} width={460}>
       <form
-        onSubmit={handleSubmit}
+        onSubmit={(e) => void handleSubmit(e)}
         onKeyDown={(e) => {
           if (e.key !== 'Enter' || !e.metaKey || e.nativeEvent.isComposing) return;
           e.preventDefault();
@@ -150,7 +165,6 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="my-session"
-            autoFocus
           />
         </div>
 
@@ -222,10 +236,18 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
               <div style={{ flex: 1, minWidth: 0 }}>
                 <PrIdentity pr={pr} />
               </div>
-              <PrRemoveButton pr={pr} onRemove={() => setPrs(prs.filter((p) => p !== pr))} />
+              <PrRemoveButton
+                pr={pr}
+                buttonRef={prRemovalFocus.removeButtonRef(pr)}
+                onRemove={() => {
+                  prRemovalFocus.willRemove(pr);
+                  setPrs(prs.filter((p) => p !== pr));
+                }}
+              />
             </div>
           ))}
           <PrUrlInput
+            inputRef={prInputRef}
             value={prDraft}
             onChange={setPrDraft}
             linked={prs}
@@ -276,12 +298,14 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
           {customFlagsDraft.kind === 'invalid' && <span className="field-error">{customFlagsDraft.error}</span>}
         </div>
 
+        {submitError && <span className="field-error" role="alert">{submitError}</span>}
+
         <div className="dialog-actions">
           <button type="button" className="btn" onClick={onClose}>
             Cancel
           </button>
           <button type="submit" className="btn btn-primary" disabled={!canSubmit} title="Create (⌘↵)">
-            Create
+            {submitting ? 'Creating…' : 'Create'}
             <span className="btn-kbd">⌘↵</span>
           </button>
         </div>
@@ -321,7 +345,8 @@ function FavoriteChip({ dir, selected, onSelect }: FavoriteChipProps): React.Rea
       {...attributes}
       {...listeners}
     >
-      {basename(dir)}
+      {/* .btn is a flex container, so the ellipsis needs a box of its own */}
+      <span style={favoriteChipLabelStyle}>{basename(dir)}</span>
     </button>
   );
 }
@@ -342,8 +367,13 @@ const favoriteChipStyle: React.CSSProperties = {
   fontFamily: 'var(--font-mono)',
   fontSize: 10,
   maxWidth: '100%',
+};
+
+const favoriteChipLabelStyle: React.CSSProperties = {
+  minWidth: 0,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
 };
 
 const optionsGridStyle: React.CSSProperties = {

@@ -237,15 +237,14 @@ function CommandFormDialog({ initial, onSubmit, onClose }: CommandFormDialogProp
 
         <div className="field">
           <span className="field-label">Icon</span>
-          <div role="radiogroup" aria-label="Icon" style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+          <div role="group" aria-label="Icon" style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
             {ICON_OPTIONS.map((opt) => {
               const selected = icon === opt.value;
               return (
                 <button
                   key={opt.value}
                   type="button"
-                  role="radio"
-                  aria-checked={selected}
+                  aria-pressed={selected}
                   aria-label={opt.label}
                   title={opt.label}
                   className="btn"

@@ -13,6 +13,11 @@ import { invoke, on, IpcChannels } from './ipc';
 
 export type TerminalKind = 'pty' | 'shell';
 
+export interface TerminalAddress {
+  kind: TerminalKind;
+  sessionId: string;
+}
+
 export interface SearchResult {
   resultIndex: number;
   resultCount: number;
@@ -318,7 +323,7 @@ function reset(kind: TerminalKind, sessionId: string): void {
   cache.get(keyOf(kind, sessionId))?.terminal.reset();
 }
 
-function focused(): { kind: TerminalKind; sessionId: string } | null {
+function focused(): TerminalAddress | null {
   if (!focusedKey) return null;
   const [kind, ...rest] = focusedKey.split(':');
   return { kind: kind as TerminalKind, sessionId: rest.join(':') };

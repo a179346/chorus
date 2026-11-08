@@ -4,9 +4,8 @@ import os from 'node:os';
 import type {
   Session,
   PersistedSession,
+  StoredSession,
   LinkedPr,
-  PrRef,
-  PrStage,
   AppState,
   NewSessionDefaults,
   TerminalSettings,
@@ -88,9 +87,20 @@ function sessionFilePath(id: string): string {
 
 // ─── Sessions ─────────────────────────────────────────────
 
-/** sessions.json now only stores an array of session IDs. */
+/** sessions.json only stores the session IDs, in sidebar order. */
 interface SessionsIndex {
   sessionIds: string[];
+}
+
+/** Only the container is checked: Chorus alone writes the file. */
+function isSessionsIndex(data: unknown): data is SessionsIndex {
+  return typeof data === 'object' && data !== null && 'sessionIds' in data && Array.isArray(data.sessionIds);
+}
+
+/** The IDs in sessions.json; none when it is missing or holds something else. */
+function readSessionIds(): string[] {
+  const index = readJson<unknown>(SESSIONS_FILE, null);
+  return isSessionsIndex(index) ? index.sessionIds : [];
 }
 
 // The Session ⇄ PersistedSession mapping lives in this pair and nowhere else.
@@ -111,18 +121,10 @@ export function toPersisted(s: Session): PersistedSession {
     lastActiveAt: s.lastActiveAt,
     hasUserInput: s.hasUserInput,
     prs: s.prs,
-    unlinkedPrs: s.unlinkedPrs,
   };
 }
 
-/** How a session's PR was stored before sessions could link several. */
-interface LegacyPrFields {
-  pr?: PrRef | null;
-  stage?: Exclude<PrStage, 'unknown'> | 'no-pr';
-  stageUpdatedAt?: number | null;
-}
-
-function linkedPrsFromDisk(ps: PersistedSession & LegacyPrFields): LinkedPr[] {
+function linkedPrsFromDisk(ps: StoredSession): LinkedPr[] {
   if (ps.prs) return ps.prs;
   if (!ps.pr) return [];
   const stage = ps.stage && ps.stage !== 'no-pr' ? ps.stage : 'unknown';
@@ -130,40 +132,45 @@ function linkedPrsFromDisk(ps: PersistedSession & LegacyPrFields): LinkedPr[] {
 }
 
 /** Rebuild a runtime Session from disk. `cwd` may be re-resolved by the caller. */
-export function fromPersisted(
-  ps: PersistedSession & LegacyPrFields,
-  cwd: string = ps.cwd,
-): Session {
+export function fromPersisted(ps: StoredSession, cwd: string = ps.cwd): Session {
   return {
     id: ps.id,
     name: ps.name,
     cwd,
-    worktree: ps.worktree ?? null,
+    worktree: ps.worktree,
     status: 'creating',
-    model: ps.model ?? null,
-    contextUsage: ps.contextUsage ?? null,
+    model: ps.model,
+    contextUsage: ps.contextUsage,
     contextLimit: ps.contextLimit ?? null,
     flags: ps.flags,
-    notifyOnIdle: ps.notifyOnIdle ?? false,
-    unread: ps.unread ?? false,
+    notifyOnIdle: ps.notifyOnIdle,
+    unread: ps.unread,
     createdAt: ps.createdAt,
     lastActiveAt: ps.lastActiveAt,
     hasUserInput: ps.hasUserInput,
     prs: linkedPrsFromDisk(ps),
-    unlinkedPrs: ps.unlinkedPrs ?? [],
   };
+}
+
+/** recently-closed.json, most recently closed first. */
+interface RecentlyClosedFile {
+  sessions: StoredSession[];
+}
+
+/** Only the container is checked: Chorus alone writes the file. */
+function isRecentlyClosedFile(data: unknown): data is RecentlyClosedFile {
+  return typeof data === 'object' && data !== null && 'sessions' in data && Array.isArray(data.sessions);
 }
 
 export class SessionStore {
   private sessions: Map<string, Session> = new Map();
 
   /** Load persisted sessions from disk. Reads the index, then each session file. */
-  loadPersistedSessions(): PersistedSession[] {
-    const index = readJson<SessionsIndex>(SESSIONS_FILE, { sessionIds: [] });
-    const results: PersistedSession[] = [];
+  loadPersistedSessions(): StoredSession[] {
+    const results: StoredSession[] = [];
 
-    for (const id of index.sessionIds) {
-      const session = readJson<PersistedSession | null>(sessionFilePath(id), null);
+    for (const id of readSessionIds()) {
+      const session = readJson<StoredSession | null>(sessionFilePath(id), null);
       if (session) {
         results.push(session);
       }
@@ -223,23 +230,20 @@ export class SessionStore {
     this.persistSessionIndex();
   }
 
-  /** Persist current sessions to disk. Writes index + individual session files. */
+  /**
+   * Persist current sessions to disk. Writes index + individual session files.
+   * A session whose claude exited is kept too: it relaunches on restore.
+   */
   persistSessions(): void {
-    const activeSessions = this.getAllSessions().filter((s) => s.status !== 'ended');
-
-    // Write each session file
-    for (const s of activeSessions) {
+    for (const s of this.getAllSessions()) {
       writeJson(sessionFilePath(s.id), toPersisted(s));
     }
-
-    // Write index
-    writeJson(SESSIONS_FILE, { sessionIds: activeSessions.map((s) => s.id) });
+    this.persistSessionIndex();
   }
 
   /** Delete session-*.json files whose ID is not in the current index. */
   cleanupOrphanedSessionFiles(): void {
-    const index = readJson<SessionsIndex>(SESSIONS_FILE, { sessionIds: [] });
-    const activeIds = new Set(index.sessionIds);
+    const activeIds = new Set(readSessionIds());
     try {
       const files = fs.readdirSync(CHORUS_DIR);
       for (const file of files) {
@@ -255,15 +259,16 @@ export class SessionStore {
   }
 
   private persistSessionIndex(): void {
-    const activeSessions = this.getAllSessions().filter((s) => s.status !== 'ended');
-    writeJson(SESSIONS_FILE, { sessionIds: activeSessions.map((s) => s.id) });
+    const index: SessionsIndex = { sessionIds: this.getAllSessions().map((s) => s.id) };
+    writeJson(SESSIONS_FILE, index);
   }
 
   // ─── Recently closed ──────────────────────────────────────
 
   /** Ended sessions that can be resumed, most recently closed first. */
-  loadRecentlyClosed(): PersistedSession[] {
-    return readJson<{ sessions: PersistedSession[] }>(RECENTLY_CLOSED_FILE, { sessions: [] }).sessions;
+  loadRecentlyClosed(): StoredSession[] {
+    const file = readJson<unknown>(RECENTLY_CLOSED_FILE, null);
+    return isRecentlyClosedFile(file) ? file.sessions : [];
   }
 
   /** Remember an ended session so it can be reopened later. */

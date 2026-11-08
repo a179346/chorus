@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fallbackPath, readLoginShellEnv, resolveShellEnv } from '../src/main/shell-env';
+import { fallbackPath, readLoginShellEnv, resolveShellEnv, userShell } from '../src/main/shell-env';
 
 // Stand-in shells: each gets `-ilc <probe command>` exactly as a real shell would
 let dir: string;
@@ -45,6 +45,20 @@ describe('readLoginShellEnv', () => {
     for (const name of ['_', 'PWD', 'OLDPWD', 'SHLVL']) {
       expect(env).not.toHaveProperty(name);
     }
+  });
+
+  it('returns once the environment is printed, though an rc-file job keeps the output open', async () => {
+    // The background sleep inherits stdout, so the pipe stays open until it ends
+    const shell = fakeShell('background-job.sh', 'sleep 4 &\nexec /bin/sh -c "$2"');
+    const env = await readLoginShellEnv(shell, 2500);
+    expect(env.PATH).toBeTruthy();
+  });
+
+  it('runs the real env, not an alias or function an rc file defines', async () => {
+    const shell = fakeShell('env-function.sh', `env() { printf 'HIJACKED=1\\0'; }\neval "$2"`);
+    const env = await readLoginShellEnv(shell);
+    expect(env).not.toHaveProperty('HIJACKED');
+    expect(env.PATH).toBeTruthy();
   });
 
   it('gives up on a shell that takes longer than the timeout', async () => {
@@ -94,6 +108,22 @@ describe('resolveShellEnv', () => {
     const read = vi.fn().mockRejectedValue(new Error('slow'));
     expect(await resolveShellEnv(read, async () => false)).toBeNull();
     expect(read).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('userShell', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('is $SHELL', () => {
+    vi.stubEnv('SHELL', '/opt/homebrew/bin/fish');
+    expect(userShell()).toBe('/opt/homebrew/bin/fish');
+  });
+
+  it('falls back to zsh when $SHELL is unset or empty', () => {
+    vi.stubEnv('SHELL', '');
+    expect(userShell()).toBe('/bin/zsh');
   });
 });
 
