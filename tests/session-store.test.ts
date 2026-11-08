@@ -10,7 +10,7 @@ vi.mock('node:os', () => ({
   homedir: () => '/mock-home',
 }));
 
-const { SessionStore, toPersisted, fromPersisted, RECENTLY_CLOSED_LIMIT } = await import('../src/main/session-store');
+const { SessionStore, toPersisted, fromPersisted, lastClosedByUser, RECENTLY_CLOSED_LIMIT } = await import('../src/main/session-store');
 
 function makeSession(overrides: Partial<import('../src/shared/types').Session> = {}): import('../src/shared/types').Session {
   return {
@@ -555,6 +555,15 @@ describe('SessionStore', () => {
         expect(JSON.parse(disk.get(path.join('/mock-home', '.chorus', 'sessions.json'))!).sessionIds).toEqual(['kept']);
       });
 
+      it('are passed over when reopening the latest session the user closed', () => {
+        onDisk('recently-closed.json', { sessions: [{ ...STORED, id: 'closed' }] });
+        store.moveUnrestorableToRecentlyClosed([{ ...STORED, id: 'f1' }]);
+        expect(lastClosedByUser(store.loadRecentlyClosed())).toMatchObject({ id: 'closed' });
+
+        store.forgetClosed('closed');
+        expect(lastClosedByUser(store.loadRecentlyClosed())).toBeUndefined();
+      });
+
       it('stay saved, to be restored next time, when Recently Closed cannot be written', () => {
         onDisk('sessions.json', { sessionIds: ['f1'] });
         onDisk('session-f1.json', { ...STORED, id: 'f1' });
@@ -614,7 +623,7 @@ describe('SessionStore', () => {
       expect(store.loadToolkitCommands()).toEqual([{ id: 'a', label: 'A', command: '/a' }]);
     });
 
-    it('should give repeated and missing ids unique ones, the same on every load', () => {
+    it('should keep each id on the first entry that has it, then derive the missing and repeated ones, the same on every load', () => {
       vi.mocked(fs.readFileSync).mockReturnValue(
         JSON.stringify({
           commands: [
@@ -623,13 +632,13 @@ describe('SessionStore', () => {
             { label: 'Three', command: '/3' },
             { id: '', label: 'Four', command: '/4' },
             { id: 'dup-2', label: 'Five', command: '/5' },
+            { id: 'command', label: 'Six', command: '/6' },
           ],
         }),
       );
       const ids = store.loadToolkitCommands().map((c) => c.id);
 
-      expect(new Set(ids).size).toBe(ids.length);
-      expect(ids[0]).toBe('dup');
+      expect(ids).toEqual(['dup', 'dup-3', 'command-2', 'command-3', 'dup-2', 'command']);
       expect(store.loadToolkitCommands().map((c) => c.id)).toEqual(ids);
     });
 
@@ -652,8 +661,13 @@ describe('SessionStore', () => {
       ];
       const NEW = { id: 'c', label: 'C', command: '/c' };
 
+      // Reads see what the last write wrote, so each edit starts from the one before
       function toolkitOnDisk(file: unknown): void {
-        vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(file));
+        let content = JSON.stringify(file);
+        vi.mocked(fs.readFileSync).mockImplementation(() => content);
+        vi.mocked(fs.writeFileSync).mockImplementation((_file, data) => {
+          content = String(data);
+        });
       }
 
       function writtenToolkit(): unknown {
@@ -683,17 +697,52 @@ describe('SessionStore', () => {
       it('find a command by the id it was loaded with', () => {
         const commands = [{ label: 'One', command: '/1' }, { label: 'Two', command: '/2' }];
         toolkitOnDisk({ commands });
-        const [, second] = store.loadToolkitCommands();
+        const [first, second] = store.loadToolkitCommands();
 
         store.deleteToolkitCommand(second.id);
 
-        expect(writtenToolkit()).toEqual({ commands: [commands[0]] });
+        expect(writtenToolkit()).toEqual({ commands: [{ ...commands[0], id: first.id }] });
       });
 
-      it('change nothing for an id no command has', () => {
+      it('write in the ids of commands that go by derived ones', () => {
+        const commands = [
+          { label: 'One', command: '/1' },
+          { id: 'x', label: 'X', command: '/x' },
+          { id: 'x', label: 'X again', command: '/x2' },
+        ];
+        toolkitOnDisk({ commands });
+
+        store.addToolkitCommand(NEW);
+
+        expect(writtenToolkit()).toEqual({
+          commands: [{ ...commands[0], id: 'command' }, commands[1], { ...commands[2], id: 'x-2' }, NEW],
+        });
+      });
+
+      it('keep each id on the command it was loaded for, through edits of the other commands', () => {
+        toolkitOnDisk({
+          commands: [{ label: 'One', command: '/1' }, { label: 'Two', command: '/2' }, { label: 'Three', command: '/3' }],
+        });
+        const [one, two, three] = store.loadToolkitCommands();
+
+        store.deleteToolkitCommand(one.id);
+        expect(store.loadToolkitCommands()).toEqual([two, three]);
+
+        store.updateToolkitCommand({ ...two, label: 'Two!' });
+        // Running a command finds it by id in the loaded commands
+        expect(store.loadToolkitCommands().find((c) => c.id === three.id)).toEqual(three);
+        store.deleteToolkitCommand(three.id);
+
+        expect(store.loadToolkitCommands()).toEqual([{ ...two, label: 'Two!' }]);
+      });
+
+      it('refuse to update or delete an id no command has, leaving the file alone', () => {
         toolkitOnDisk({ commands: HAND_WRITTEN });
-        store.updateToolkitCommand({ ...NEW, id: 'missing' });
-        expect(writtenToolkit()).toEqual({ commands: HAND_WRITTEN });
+        const refusal = /toolkit\.json: no command in it has the id "missing"/;
+
+        expect(() => store.updateToolkitCommand({ ...NEW, id: 'missing' })).toThrow(refusal);
+        expect(() => store.deleteToolkitCommand('missing')).toThrow(refusal);
+        expect(fs.writeFileSync).not.toHaveBeenCalled();
       });
 
       it('start the toolkit when there is no file', () => {

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Search } from 'lucide-react';
 import { filterPaletteItems, type Matchable } from '../palette-match';
 import { useBackdropDismiss } from '../use-backdrop-dismiss';
+import { useCloseOnFocusOutside } from '../use-close-on-focus-outside';
 import { useFocusReturn } from '../use-focus-return';
 import { Keys } from './Kbd';
 
@@ -28,11 +29,10 @@ export function CommandPalette({ items, onClose }: CommandPaletteProps): React.R
   const paletteRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
   const backdrop = useBackdropDismiss(onClose);
 
   const isReturningFocus = useFocusReturn(paletteRef);
+  useCloseOnFocusOutside(paletteRef, isReturningFocus, onClose);
 
   const results = useMemo(() => filterPaletteItems(items, query), [items, query]);
   // No highlight yet, or its item dropped out of the list: the top result has it
@@ -41,16 +41,7 @@ export function CommandPalette({ items, onClose }: CommandPaletteProps): React.R
 
   useEffect(() => {
     inputRef.current?.focus();
-
-    // Another dialog taking focus (e.g. a menu shortcut fired) closes the palette;
-    // focus going back where it came from as the palette closes doesn't
-    const handleFocusIn = (e: FocusEvent): void => {
-      if (isReturningFocus()) return;
-      if (e.target instanceof Node && !paletteRef.current?.contains(e.target)) onCloseRef.current();
-    };
-    document.addEventListener('focusin', handleFocusIn);
-    return () => document.removeEventListener('focusin', handleFocusIn);
-  }, [isReturningFocus]);
+  }, []);
 
   useEffect(() => {
     listRef.current

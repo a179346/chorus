@@ -125,9 +125,10 @@ export interface IpcInvokeMap {
   [IpcChannels.TOOLKIT_LIST]: { payload: ToolkitListPayload; response: ToolkitCommand[] };
   [IpcChannels.TOOLKIT_EXECUTE]: { payload: ToolkitExecutePayload; response: void };
   [IpcChannels.TOOLKIT_SAVE]: { payload: ToolkitSavePayload; response: void };
-  [IpcChannels.TOOLKIT_ADD]: { payload: ToolkitCommand; response: ToolkitCommand };
-  [IpcChannels.TOOLKIT_UPDATE]: { payload: ToolkitCommand; response: ToolkitCommand };
-  [IpcChannels.TOOLKIT_DELETE]: { payload: SessionIdPayload; response: void };
+  // Each toolkit edit responds with the whole toolkit as it now is, hand edits to toolkit.json included
+  [IpcChannels.TOOLKIT_ADD]: { payload: ToolkitCommand; response: ToolkitCommand[] };
+  [IpcChannels.TOOLKIT_UPDATE]: { payload: ToolkitCommand; response: ToolkitCommand[] };
+  [IpcChannels.TOOLKIT_DELETE]: { payload: SessionIdPayload; response: ToolkitCommand[] };
   [IpcChannels.APP_GET_STATE]: { payload: void; response: AppState };
   [IpcChannels.APP_SAVE_STATE]: { payload: Partial<AppState>; response: void };
   [IpcChannels.APP_GET_NEW_SESSION_DEFAULTS]: { payload: void; response: NewSessionDefaults };

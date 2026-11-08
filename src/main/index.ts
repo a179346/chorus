@@ -9,7 +9,7 @@ import { isExitedStatus } from "../shared/types";
 import type { PrRef, Session, SessionConfig, StoredSession } from "../shared/types";
 import { parsePrUrl } from "../shared/pr-ref";
 import { checkSessionFlags, newSessionArgs, relaunchArgs } from "../shared/claude-cli";
-import { SessionStore, fromPersisted } from "./session-store";
+import { SessionStore, fromPersisted, lastClosedByUser } from "./session-store";
 import { SessionState } from "./session-state";
 import { StageMonitor } from "./stage-monitor";
 import { PtyManager } from "./pty-manager";
@@ -393,14 +393,16 @@ async function restoreSessions(shellEnvAdopted: Promise<void>): Promise<void> {
 }
 
 /**
- * Reopen a closed session (the most recently closed one when no id is given)
- * and hand it to the renderer. Failures surface as a native dialog because
- * this runs from the menu, outside any renderer request.
+ * Reopen a closed session and hand it to the renderer. Without an id (⌘⇧T),
+ * it is the latest one the user closed; one whose restore failed, which
+ * nobody closed, is reopened by id from the Recently Closed submenu. Failures
+ * surface as a native dialog because this runs from the menu, outside any
+ * renderer request.
  */
 async function reopenClosedSession(id?: string): Promise<void> {
   await sessionRestore.done;
   const recentlyClosed = sessionStore.loadRecentlyClosed();
-  const stored = id ? recentlyClosed.find((s) => s.id === id) : recentlyClosed[0];
+  const stored = id ? recentlyClosed.find((s) => s.id === id) : lastClosedByUser(recentlyClosed);
   if (!stored) return;
 
   try {
@@ -417,8 +419,10 @@ async function reopenClosedSession(id?: string): Promise<void> {
 
 /**
  * Say why a closed session didn't reopen, and let the user remove it from
- * Recently Closed. It stays by default: what failed may come back (an
- * unmounted volume, say) and reopening then works.
+ * Recently Closed. It stays unless the user chooses Remove (Escape keeps it):
+ * what failed may come back (an unmounted volume, say) and reopening then
+ * works. There's no default button: on macOS, Escape's button can't take
+ * Return too, and Remove isn't safe to.
  */
 async function reportReopenFailure(stored: StoredSession, err: unknown): Promise<void> {
   const { response } = await dialog.showMessageBox({
@@ -426,7 +430,6 @@ async function reportReopenFailure(stored: StoredSession, err: unknown): Promise
     message: `Couldn't reopen "${stored.name}"`,
     detail: err instanceof Error ? err.message : String(err),
     buttons: ["Keep", "Remove from Recently Closed"],
-    defaultId: 0,
     cancelId: 0,
   });
   if (response !== 1) return;
@@ -586,7 +589,7 @@ function createMenu(): void {
         {
           label: "Reopen Closed Session",
           accelerator: "CmdOrCtrl+Shift+T",
-          enabled: recentlyClosed.length > 0,
+          enabled: lastClosedByUser(recentlyClosed) !== undefined,
           click: () => void reopenClosedSession(),
         },
         {
@@ -849,16 +852,17 @@ const invokeHandlers: InvokeHandlers = {
 
   [IpcChannels.TOOLKIT_ADD]: (command) => {
     sessionStore.addToolkitCommand(command);
-    return command;
+    return sessionStore.loadToolkitCommands();
   },
 
   [IpcChannels.TOOLKIT_UPDATE]: (command) => {
     sessionStore.updateToolkitCommand(command);
-    return command;
+    return sessionStore.loadToolkitCommands();
   },
 
   [IpcChannels.TOOLKIT_DELETE]: ({ id }) => {
     sessionStore.deleteToolkitCommand(id);
+    return sessionStore.loadToolkitCommands();
   },
 
   // --- App state ---

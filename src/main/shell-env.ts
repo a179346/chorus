@@ -26,8 +26,11 @@ export function userShell(): string {
   return process.env.SHELL || '/bin/zsh';
 }
 
-/** Shells that take -l only as their sole argument, so it can't go with -c. */
-const CSH_SHELLS: ReadonlySet<string> = new Set(['csh', 'tcsh']);
+/**
+ * csh and tcsh, versioned names (tcsh-6.24) included, take -l only as their
+ * sole argument, so it can't go with -c.
+ */
+const CSH_SHELL_NAME = /^t?csh(?![a-z])/;
 
 interface ShellInvocation {
   args: string[];
@@ -41,7 +44,7 @@ interface ShellInvocation {
  */
 function loginShellInvocation(shell: string, command: string): ShellInvocation {
   const name = path.basename(shell);
-  if (CSH_SHELLS.has(name)) return { args: ['-ic', command], argv0: `-${name}` };
+  if (CSH_SHELL_NAME.test(name)) return { args: ['-ic', command], argv0: `-${name}` };
   return { args: ['-ilc', command] };
 }
 

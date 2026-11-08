@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { useCloseOnFocusOutside } from '../use-close-on-focus-outside';
 import { focusIsLost, useFocusReturn } from '../use-focus-return';
 
 const VIEWPORT_MARGIN = 8;
@@ -25,6 +26,7 @@ export function Menu({ x, y, label, width, anchorRef, onClose, children }: MenuP
   const [position, setPosition] = useState({ left: x, top: y });
 
   const isReturningFocus = useFocusReturn(menuRef);
+  useCloseOnFocusOutside(menuRef, isReturningFocus, onClose);
 
   // Before paint, so the menu never flashes at its unclamped spot, and again
   // whenever its items change size while it's open
@@ -94,10 +96,9 @@ export function Menu({ x, y, label, width, anchorRef, onClose, children }: MenuP
       className="menu"
       style={{ ...position, width, maxHeight: `calc(100vh - ${2 * VIEWPORT_MARGIN}px)` }}
       onKeyDown={handleKeyDown}
-      // Focus leaving for anywhere else (another window, a dialog or palette opened over it) closes it;
-      // focus going back where it came from as the menu closes doesn't
+      // Focus leaving the page (another window) fires no focusin, so blur covers it
       onBlur={(e) => {
-        if (!isReturningFocus() && !e.currentTarget.contains(e.relatedTarget)) onClose();
+        if (e.relatedTarget === null) onClose();
       }}
       // Hover already moves focus; a press on a divider or the padding mustn't drop it
       onMouseDown={(e) => e.preventDefault()}

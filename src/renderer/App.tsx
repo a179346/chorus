@@ -333,26 +333,24 @@ export function App(): React.ReactElement {
     [activeSessionIdRef, focusActiveClaude]
   );
 
+  // Each edit answers with main's fresh list, whose ids are the ones toolkit.json now holds
   const handleToolkitAdd = useCallback(
     async (command: Omit<ToolkitCommand, 'id'>) => {
-      const added = await invoke(IpcChannels.TOOLKIT_ADD, { ...command, id: crypto.randomUUID() } as ToolkitCommand);
-      setToolkitCommands((prev) => [...prev, added]);
+      setToolkitCommands(await invoke(IpcChannels.TOOLKIT_ADD, { ...command, id: crypto.randomUUID() }));
     },
     []
   );
 
   const handleToolkitUpdate = useCallback(
     async (command: ToolkitCommand) => {
-      const updated = await invoke(IpcChannels.TOOLKIT_UPDATE, command);
-      setToolkitCommands((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+      setToolkitCommands(await invoke(IpcChannels.TOOLKIT_UPDATE, command));
     },
     []
   );
 
   const handleToolkitDelete = useCallback(
     async (commandId: string) => {
-      await invoke(IpcChannels.TOOLKIT_DELETE, { id: commandId });
-      setToolkitCommands((prev) => prev.filter((c) => c.id !== commandId));
+      setToolkitCommands(await invoke(IpcChannels.TOOLKIT_DELETE, { id: commandId }));
     },
     []
   );

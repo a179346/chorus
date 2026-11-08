@@ -212,6 +212,7 @@ describe('checkSessionFlags', () => {
     [['--deep-link-repo', 'o/r'], '--deep-link-repo'],
     [['--agent-id', 'a1'], '--agent-id'],
     [['--team-name=t'], '--team-name'],
+    [['--managed-settings', '{"disableAllHooks":true}'], '--managed-settings'],
     [['--'], '--'],
   ])('rejects flags Chorus manages, that end the interactive session, that a launching host sets, or that turn off its hooks: %j', (args, name) => {
     expect(errorOf(args)).toBe(`${name} isn't supported in Chorus sessions`);

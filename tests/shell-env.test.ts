@@ -92,7 +92,7 @@ describe('readLoginShellEnv', () => {
     expect((await readLoginShellEnv(shell)).PATH).toBeTruthy();
   });
 
-  it.each(['csh', 'tcsh'])('starts %s without -l, which it takes only on its own', async (name) => {
+  it.each(['csh', 'tcsh', 'tcsh-6.24'])('starts %s without -l, which it takes only on its own', async (name) => {
     const shell = fakeShell(name, '[ "$1" = -ic ] || exit 2\nexec /bin/sh -c "$2"');
     expect((await readLoginShellEnv(shell)).PATH).toBeTruthy();
   });

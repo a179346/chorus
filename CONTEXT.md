@@ -70,7 +70,8 @@ session is created (see claude CLI arguments below).
 
 A packaged app opened from the Dock or at login gets launchd's minimal
 environment. `readLoginShellEnv` starts `$SHELL` as an interactive login shell
-asynchronously (`-ilc`; csh and tcsh, which take `-l` only on its own, get
+asynchronously (`-ilc`; csh and tcsh, versioned names like `tcsh-6.24`
+included, which take `-l` only on its own, get
 `-ic` and a `-` before their name in argv[0], as login(1) gives them) and
 captures its environment from `command env -0` between start/end markers (the
 end marker only follows a successful env, so a failed env rejects instead of
@@ -89,8 +90,10 @@ banner until the user restarts it — and the ones that can't be restored
 every restorable session is running. Each leaves the saved sessions only after
 that write succeeds (otherwise it is retried next launch), and stays in Recently
 Closed, outside its limit of ten, until it is reopened or removed. A reopen
-that fails says why and offers to remove the session; by default it stays,
-since a missing volume may come back.
+that fails says why and offers to remove the session; it stays unless the
+user picks Remove (Escape keeps it), since a missing volume may come back. ⌘⇧T
+reopens the latest session the user closed, passing over ones whose restore
+failed; those are reopened from the Recently Closed submenu.
 Until the restore has run, the `SessionRestore` gate holds back everything
 that lists or spawns sessions; it opens even if the restore fails (a dialog
 says so). The store never drops a saved session it hasn't restored or removed:
@@ -124,6 +127,11 @@ derives from it:
 Adding a channel = extend the map, add the handler (compiler errors until you
 do), call `invoke`/`on`. No preload or `.d.ts` edits.
 
+Toolkit edits (`TOOLKIT_ADD`/`UPDATE`/`DELETE`) respond with the whole toolkit
+as it now is, and the renderer replaces its list with it. An edit first writes
+each command's id into toolkit.json, so a derived id (`command`, `x-2`) never
+moves to another command; updating or deleting an id no command has is refused.
+
 ## claude CLI arguments (`src/shared/claude-cli.ts`)
 
 The one place that knows claude's argument syntax. `checkSessionFlags` reads a
@@ -143,7 +151,8 @@ also rejects flags Chorus manages (`--session-id`/`--resume`/`--name`/
 `--worktree`…), flags that end the interactive session in this terminal (`-p`,
 `--bg`, `--cloud`, `--environment`, `--tmux`, `--rewind-files`…), flags a
 host or team lead sets when it launches claude (`--session-mirror`,
-`--reply-on-resume`, `--deep-link-*`, `--agent-id`, `--team-name`…), and flags
+`--reply-on-resume`, `--managed-settings`, `--deep-link-*`, `--agent-id`,
+`--team-name`…), and flags
 that turn off the hooks (`--bare`, `--safe-mode`, `--restricted`,
 `--project-config-root`, and a `--setting-sources` without `local` or naming
 anything but `user`/`project`/`local`); what a `--settings` file or JSON holds
@@ -179,8 +188,11 @@ Owns the renderer's session list and active-session state: subscribes to
 `SESSION_STATE` pushes (only `SESSION_SYNC_FIELDS`), and exposes the session
 verbs (create, end, restart, switch, next needing attention, rename, reorder,
 toggle notify, link/unlink PR). The active session is decided here: once both the session list and app state
-arrive, the saved last-active session if it came back, else the first; when the
-active session ends, the first remaining one, else none. Every change goes to
+arrive, sessions main pushed ahead of the list (a reopen as restore finishes)
+are kept, and the active one is a session picked meanwhile (revealed or
+reopened) if listed, else the saved last-active session if it came back, else
+the first; a created or reopened session becomes active; when the active
+session ends, the first remaining one, else none. Every change goes to
 main (`SESSION_SWITCH`, or `lastActiveSessionId: null` for none), which saves
 it and marks the shown session seen. Only a listed session is active. `App.tsx` keeps only UI state.
 
@@ -202,10 +214,18 @@ styles can't express pseudo-classes; layout stays inline. Modals go through
 on it, Escape, focus trap) and floating menus through `Menu` (viewport clamping
 and scrolling; arrow keys, Home and End while focus is in it; closes on Escape,
 Tab, a press outside it and its `anchorRef` (the trigger, whose own click
-toggles it), or focus leaving it), instead of each component
-re-rolling them. Menus, dialogs and the command palette hand focus back to what
-had it when they opened (`use-focus-return.ts`); when that element is gone
-(or the same update removes it right after focus went back),
+toggles it), focus moving anywhere outside it, or the window losing focus),
+instead of each component re-rolling them. Menus and the command palette close
+when focus moves outside them (`use-close-on-focus-outside.ts`), but not for
+focus going back where it came from as they close. A dialog's async submit
+(create, save, delete) goes through `useAsyncSubmit` (`use-async-submit.ts`):
+it runs once at a time; on success it stays pending until the owner closes the
+dialog, and on rejection it ends and the dialog shows why. The error clears on
+the next submit and, in forms, on any edit. While a submit is pending the dialog
+ignores Escape, the backdrop and Cancel (`aria-disabled`, not `disabled`, so
+focus stays in the form). Menus, dialogs and the command palette hand focus
+back to what had it when they opened (`use-focus-return.ts`); when that element
+is gone (or the same update removes it right after focus went back),
 `FocusFallbackContext` takes over: App focuses the active Claude terminal a
 frame later, only if nothing has taken focus by then (e.g. a find bar opened
 by a palette action).

@@ -12,10 +12,11 @@ import { SortableContext, rectSortingStrategy, useSortable } from '@dnd-kit/sort
 import { CSS } from '@dnd-kit/utilities';
 import type { PrRef } from '../../shared/types';
 import { prLabel, prUrl } from '../../shared/pr-ref';
-import { invoke, ipcErrorMessage, IpcChannels } from '../ipc';
+import { invoke, IpcChannels } from '../ipc';
 import { basename } from '../session-presentation';
 import { readPrDraft } from '../pr-draft';
 import { TOGGLE_LABELS, customFlagText, readCustomFlags, readToggles, toggleFlags } from '../session-flags';
+import { useAsyncSubmit } from '../use-async-submit';
 import type { NewSessionInput } from '../use-sessions';
 import { PrIdentity, PrRemoveButton, PrUrlInput, usePrRemovalFocus } from './PrLinks';
 import { Dialog } from './Dialog';
@@ -42,8 +43,13 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
   const [customFlags, setCustomFlags] = useState('');
   const [notifyOnIdle, setNotifyOnIdle] = useState(false);
   // Creating can wait on the login-shell environment for many seconds
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const {
+    run: submit,
+    pending: submitting,
+    error: submitError,
+    clearError: clearSubmitError,
+    reset: resetSubmit,
+  } = useAsyncSubmit(onSubmit);
   const nameRef = useRef<HTMLInputElement>(null);
   const prInputRef = useRef<HTMLInputElement>(null);
   const prRemovalFocus = usePrRemovalFocus(prs, prInputRef);
@@ -68,16 +74,16 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
     setPrs([]);
     setPrDraft('');
     setPrompt('');
-    setSubmitting(false);
-    setSubmitError(null);
+    // A create that succeeded last time left it pending
+    resetSubmit();
     // Right away, so keys typed just after opening land here and not in a terminal
     nameRef.current?.focus();
-  }, [open]);
+  }, [open, resetSubmit]);
 
   // An error describes the values that were submitted; any edit makes it stale
   useEffect(() => {
-    setSubmitError(null);
-  }, [name, cwd, worktree, prs, prDraft, prompt, autoMode, skipPermissions, chrome, customFlags, notifyOnIdle]);
+    clearSubmitError();
+  }, [name, cwd, worktree, prs, prDraft, prompt, autoMode, skipPermissions, chrome, customFlags, notifyOnIdle, clearSubmitError]);
 
   const handleSelectDir = useCallback(async () => {
     const dir = await invoke(IpcChannels.DIALOG_SELECT_DIRECTORY);
@@ -124,31 +130,20 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
   const formIsValid =
     !!name.trim() && !!cwd.trim() && pendingPr.kind !== 'invalid' && customFlagsDraft.kind === 'ok';
 
-  const handleSubmit = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault();
-      if (submitting || !formIsValid || customFlagsDraft.kind !== 'ok') return;
-      const allPrs = pendingPr.kind === 'ok' ? [...prs, pendingPr.pr] : prs;
-      setSubmitting(true);
-      setSubmitError(null);
-      try {
-        await onSubmit({
-          name: name.trim(),
-          cwd: cwd.trim(),
-          worktree: worktree.trim(),
-          flags: [...toggleFlags({ autoMode, skipPermissions, chrome }), ...customFlagsDraft.args],
-          notifyOnIdle,
-          prUrls: allPrs.map(prUrl),
-          prompt: prompt.trim(),
-        });
-      } catch (err) {
-        setSubmitError(ipcErrorMessage(err));
-      } finally {
-        setSubmitting(false);
-      }
-    },
-    [submitting, formIsValid, name, cwd, worktree, autoMode, skipPermissions, chrome, customFlagsDraft, notifyOnIdle, prs, pendingPr, prompt, onSubmit]
-  );
+  const handleSubmit = (e: React.FormEvent): void => {
+    e.preventDefault();
+    if (!formIsValid || customFlagsDraft.kind !== 'ok') return;
+    const allPrs = pendingPr.kind === 'ok' ? [...prs, pendingPr.pr] : prs;
+    void submit({
+      name: name.trim(),
+      cwd: cwd.trim(),
+      worktree: worktree.trim(),
+      flags: [...toggleFlags({ autoMode, skipPermissions, chrome }), ...customFlagsDraft.args],
+      notifyOnIdle,
+      prUrls: allPrs.map(prUrl),
+      prompt: prompt.trim(),
+    });
+  };
 
   // A pending create belongs to this form: let it finish so its result
   // (closing, or an error) can't land on a later one
@@ -161,7 +156,7 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
   return (
     <Dialog title="New Session" label="New Session" onClose={close} width={460}>
       <form
-        onSubmit={(e) => void handleSubmit(e)}
+        onSubmit={handleSubmit}
         onKeyDown={(e) => {
           if (e.key !== 'Enter' || !e.metaKey || e.nativeEvent.isComposing) return;
           e.preventDefault();

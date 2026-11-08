@@ -60,6 +60,7 @@ const UNSUPPORTED_FLAGS: ReadonlySet<string> = new Set([
   '--agent-type',
   '--agent-color',
   '--team-name',
+  '--managed-settings',
   // Turn off the hooks (as does a --setting-sources without local)
   '--bare',
   '--safe-mode',

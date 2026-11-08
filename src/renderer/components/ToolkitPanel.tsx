@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Ellipsis, Pencil, Plus, Trash2 } from 'lucide-react';
 import type { ToolkitCommand } from '../../shared/types';
-import { ipcErrorMessage } from '../ipc';
+import { useAsyncSubmit } from '../use-async-submit';
 import { Dialog, ConfirmDialog } from './Dialog';
 import { Menu, MenuItem, MenuDivider } from './Menu';
 import { ICON_OPTIONS, ToolkitIcon } from './ToolkitIcon';
@@ -53,11 +53,11 @@ export function ToolkitPanel({ commands, onExecute, onAdd, onUpdate, onDelete }:
     }
   }, [contextMenu, commands]);
 
-  const handleConfirmDelete = useCallback(async () => {
-    if (!deleteConfirm) return;
-    await onDelete(deleteConfirm);
-    setDeleteConfirm(null);
-  }, [deleteConfirm, onDelete]);
+  const deleteCommand = useCallback(async (commandId: string) => {
+    await onDelete(commandId);
+    // Only its own confirm: a later one for another command stays open
+    setDeleteConfirm((current) => (current === commandId ? null : current));
+  }, [onDelete]);
 
   const handleFormSubmit = useCallback(async (data: { label: string; command: string; icon: string }) => {
     if (editingCommand) {
@@ -134,6 +134,7 @@ export function ToolkitPanel({ commands, onExecute, onAdd, onUpdate, onDelete }:
       {/* Delete confirmation dialog */}
       {deleteConfirm && (
         <ConfirmDialog
+          key={deleteConfirm}
           title="Delete Command"
           message={
             <>
@@ -141,7 +142,7 @@ export function ToolkitPanel({ commands, onExecute, onAdd, onUpdate, onDelete }:
             </>
           }
           confirmLabel="Delete"
-          onConfirm={handleConfirmDelete}
+          onConfirm={() => deleteCommand(deleteConfirm)}
           onCancel={() => setDeleteConfirm(null)}
         />
       )}
@@ -207,34 +208,35 @@ function CommandFormDialog({ initial, onSubmit, onClose }: CommandFormDialogProp
   const [command, setCommand] = useState(initial?.command ?? '');
   const [icon, setIcon] = useState(initial?.icon ?? '');
   const labelRef = useRef<HTMLInputElement>(null);
-  const [error, setError] = useState<string | null>(null);
-  // Enter and a click can both land before main answers
-  const submittingRef = useRef(false);
+  const { run: submit, pending: submitting, error, clearError } = useAsyncSubmit(onSubmit);
 
   useEffect(() => {
     labelRef.current?.focus();
   }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  // An error describes the values that were submitted; any edit makes it stale
+  useEffect(() => {
+    clearError();
+  }, [label, command, icon, clearError]);
+
+  const handleSubmit = (e: React.FormEvent): void => {
     e.preventDefault();
-    if (!label.trim() || !command.trim() || submittingRef.current) return;
-    submittingRef.current = true;
-    setError(null);
-    try {
-      await onSubmit({ label: label.trim(), command: command.trim(), icon });
-    } catch (err) {
-      setError(ipcErrorMessage(err));
-    } finally {
-      submittingRef.current = false;
-    }
+    if (!label.trim() || !command.trim()) return;
+    void submit({ label: label.trim(), command: command.trim(), icon });
+  };
+
+  // A pending save belongs to this form: let it finish so its result
+  // (closing, or an error) can't land on a later one
+  const close = (): void => {
+    if (!submitting) onClose();
   };
 
   const isValid = label.trim() && command.trim();
   const title = initial ? 'Edit Command' : 'Add Command';
 
   return (
-    <Dialog title={title} label={title} onClose={onClose} width={400}>
-      <form onSubmit={(e) => void handleSubmit(e)} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <Dialog title={title} label={title} onClose={close} width={400}>
+      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div className="field">
           <label htmlFor="toolkit-label" className="field-label">Label</label>
           <input
@@ -292,10 +294,10 @@ function CommandFormDialog({ initial, onSubmit, onClose }: CommandFormDialogProp
         {error && <span className="field-error" role="alert">{error}</span>}
 
         <div className="dialog-actions">
-          <button type="button" className="btn" onClick={onClose}>
+          <button type="button" className="btn" onClick={close} aria-disabled={submitting}>
             Cancel
           </button>
-          <button type="submit" className="btn btn-primary" disabled={!isValid}>
+          <button type="submit" className="btn btn-primary" disabled={!isValid} aria-disabled={submitting}>
             {initial ? 'Save' : 'Add'}
           </button>
         </div>
