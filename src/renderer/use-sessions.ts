@@ -101,6 +101,8 @@ export function useSessions() {
   const activeSession = sessions.find((s) => s.id === wantedActiveId) ?? null;
   const activeSessionId = activeSession?.id ?? null;
 
+  // The session on screen, for App. The verbs below go by the latest pick
+  // instead: a reveal or reopen can land before the render that shows it.
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
 
@@ -188,9 +190,9 @@ export function useSessions() {
     async (id: string): Promise<void> => {
       await invoke(IpcChannels.SESSION_END, { id });
       setSessions(sessionsRef.current.filter((s) => s.id !== id));
-      if (activeSessionIdRef.current === id) activate(activeIdAfterEnd(sessionsRef.current, id));
+      if (wantedActiveIdRef.current === id) activate(activeIdAfterEnd(sessionsRef.current, id));
     },
-    [activate, setSessions, sessionsRef],
+    [activate, setSessions, sessionsRef, wantedActiveIdRef],
   );
 
   // The new status comes back through the SESSION_STATE merge
@@ -241,17 +243,17 @@ export function useSessions() {
     (offset: 1 | -1) => {
       const list = sessionsRef.current;
       if (list.length <= 1) return;
-      const idx = list.findIndex((s) => s.id === activeSessionIdRef.current);
+      const idx = list.findIndex((s) => s.id === wantedActiveIdRef.current);
       const next = (idx + offset + list.length) % list.length;
       selectSession(list[next].id);
     },
-    [selectSession, sessionsRef],
+    [selectSession, sessionsRef, wantedActiveIdRef],
   );
 
   const switchToNextNeedingAttention = useCallback(() => {
-    const target = findNextNeedingAttention(sessionsRef.current, activeSessionIdRef.current);
+    const target = findNextNeedingAttention(sessionsRef.current, wantedActiveIdRef.current);
     if (target) selectSession(target.id);
-  }, [selectSession, sessionsRef]);
+  }, [selectSession, sessionsRef, wantedActiveIdRef]);
 
   return {
     sessions,

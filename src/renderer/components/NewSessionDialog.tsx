@@ -23,13 +23,13 @@ import { Dialog } from './Dialog';
 import { Checkbox } from './Checkbox';
 
 interface NewSessionDialogProps {
-  open: boolean;
   onClose: () => void;
   /** Resolves once the session exists; a rejection is shown in the dialog. */
   onSubmit: (config: NewSessionInput) => Promise<void>;
 }
 
-export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogProps): React.ReactElement | null {
+/** The owner mounts it only while open, keyed per opening, so each opening starts from a blank form. */
+export function NewSessionDialog({ onClose, onSubmit }: NewSessionDialogProps): React.ReactElement {
   const [name, setName] = useState('');
   const [cwd, setCwd] = useState('');
   const [worktree, setWorktree] = useState('');
@@ -48,15 +48,12 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
     pending: submitting,
     error: submitError,
     clearError: clearSubmitError,
-    reset: resetSubmit,
   } = useAsyncSubmit(onSubmit);
   const nameRef = useRef<HTMLInputElement>(null);
   const prInputRef = useRef<HTMLInputElement>(null);
   const prRemovalFocus = usePrRemovalFocus(prs, prInputRef);
 
   useEffect(() => {
-    if (!open) return;
-    // Load defaults
     void invoke(IpcChannels.APP_GET_NEW_SESSION_DEFAULTS).then((defaults) => {
       setCwd(defaults.cwd || '');
       const toggles = readToggles(defaults.flags);
@@ -69,16 +66,9 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
     void invoke(IpcChannels.APP_GET_STATE).then((state) => {
       setFavorites(state.favoriteDirectories);
     });
-    setName('');
-    setWorktree('');
-    setPrs([]);
-    setPrDraft('');
-    setPrompt('');
-    // A create that succeeded last time left it pending
-    resetSubmit();
     // Right away, so keys typed just after opening land here and not in a terminal
     nameRef.current?.focus();
-  }, [open, resetSubmit]);
+  }, []);
 
   // An error describes the values that were submitted; any edit makes it stale
   useEffect(() => {
@@ -150,8 +140,6 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
   const close = useCallback(() => {
     if (!submitting) onClose();
   }, [submitting, onClose]);
-
-  if (!open) return null;
 
   return (
     <Dialog title="New Session" label="New Session" onClose={close} width={460}>

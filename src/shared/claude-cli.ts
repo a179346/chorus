@@ -31,7 +31,7 @@ const UNSUPPORTED_FLAGS: ReadonlySet<string> = new Set([
   // Not an interactive session in this terminal
   '-p', '--print',
   '--sdk-url',
-  '--bg', '--background',
+  '--bg', '--background', '--routine',
   '--cloud', '--remote',
   '--environment', '--pool',
   '--desktop',

@@ -198,6 +198,11 @@ function ipcError(code: string, message: string): IpcHandlerError {
   return new IpcHandlerError(code, message);
 }
 
+/** For a failure outside any renderer request (a menu action's), which has nowhere else to show. */
+function showErrorDialog(message: string, err: unknown): void {
+  void dialog.showMessageBox({ type: "error", message, detail: err instanceof Error ? err.message : String(err) });
+}
+
 function requireSession(id: string): Session {
   const session = sessionStore.getSession(id);
   if (!session)
@@ -394,9 +399,9 @@ async function restoreSessions(shellEnvAdopted: Promise<void>): Promise<void> {
 
 /**
  * Reopen a closed session and hand it to the renderer. Without an id (⌘⇧T),
- * it is the latest one the user closed; one whose restore failed, which
- * nobody closed, is reopened by id from the Recently Closed submenu. Failures
- * surface as a native dialog because this runs from the menu, outside any
+ * it is the latest one the user closed; one that couldn't be restored or
+ * reopened is reopened by id from the Recently Closed submenu. Failures
+ * surface as native dialogs because this runs from the menu, outside any
  * renderer request.
  */
 async function reopenClosedSession(id?: string): Promise<void> {
@@ -412,8 +417,13 @@ async function reopenClosedSession(id?: string): Promise<void> {
     return;
   }
 
-  sessionStore.forgetClosed(stored.id);
-  sessionStore.persistSessions();
+  // Saved before it leaves Recently Closed, so a failed write can't lose it
+  try {
+    sessionStore.persistSessions();
+    sessionStore.forgetClosed(stored.id);
+  } catch (err) {
+    showErrorDialog(`Reopened "${stored.name}", but couldn't take it off Recently Closed`, err);
+  }
   createMenu();
 }
 
@@ -421,7 +431,8 @@ async function reopenClosedSession(id?: string): Promise<void> {
  * Say why a closed session didn't reopen, and let the user remove it from
  * Recently Closed. It stays unless the user chooses Remove (Escape keeps it):
  * what failed may come back (an unmounted volume, say) and reopening then
- * works. There's no default button: on macOS, Escape's button can't take
+ * works. A kept one is passed over by ⌘⇧T, which would otherwise keep landing
+ * on it. There's no default button: on macOS, Escape's button can't take
  * Return too, and Remove isn't safe to.
  */
 async function reportReopenFailure(stored: StoredSession, err: unknown): Promise<void> {
@@ -432,8 +443,17 @@ async function reportReopenFailure(stored: StoredSession, err: unknown): Promise
     buttons: ["Keep", "Remove from Recently Closed"],
     cancelId: 0,
   });
-  if (response !== 1) return;
-  sessionStore.forgetClosed(stored.id);
+  const remove = response === 1;
+  try {
+    if (remove) {
+      sessionStore.forgetClosed(stored.id);
+    } else {
+      sessionStore.markRestoreFailed(stored.id);
+    }
+  } catch (writeErr) {
+    const failure = remove ? `Couldn't remove "${stored.name}" from Recently Closed` : "Couldn't update Recently Closed";
+    showErrorDialog(failure, writeErr);
+  }
   createMenu();
 }
 
@@ -726,14 +746,12 @@ const invokeHandlers: InvokeHandlers = {
   [IpcChannels.SESSION_CREATE]: async (config) => {
     await sessionRestore.done;
     const session = await createSessionFromConfig(config);
-    sessionState.setActiveSession(session.id);
     sessionStore.saveAppState({
       newSessionDefaults: {
         cwd: config.cwd,
         flags: config.flags,
         notifyOnIdle: config.notifyOnIdle ?? false,
       },
-      lastActiveSessionId: session.id,
     });
     sessionStore.persistSessions();
     return session;
@@ -844,26 +862,14 @@ const invokeHandlers: InvokeHandlers = {
   },
 
   [IpcChannels.TOOLKIT_EXECUTE]: ({ sessionId, commandId }) => {
-    const commands = sessionStore.loadToolkitCommands();
-    const cmd = commands.find((c) => c.id === commandId);
-    if (!cmd) return;
-    ptyManager.writeToClaude(sessionId, cmd.command);
+    ptyManager.writeToClaude(sessionId, sessionStore.requireToolkitCommand(commandId).command);
   },
 
-  [IpcChannels.TOOLKIT_ADD]: (command) => {
-    sessionStore.addToolkitCommand(command);
-    return sessionStore.loadToolkitCommands();
-  },
+  [IpcChannels.TOOLKIT_ADD]: (command) => sessionStore.addToolkitCommand(command),
 
-  [IpcChannels.TOOLKIT_UPDATE]: (command) => {
-    sessionStore.updateToolkitCommand(command);
-    return sessionStore.loadToolkitCommands();
-  },
+  [IpcChannels.TOOLKIT_UPDATE]: (command) => sessionStore.updateToolkitCommand(command),
 
-  [IpcChannels.TOOLKIT_DELETE]: ({ id }) => {
-    sessionStore.deleteToolkitCommand(id);
-    return sessionStore.loadToolkitCommands();
-  },
+  [IpcChannels.TOOLKIT_DELETE]: ({ id }) => sessionStore.deleteToolkitCommand(id),
 
   // --- App state ---
 

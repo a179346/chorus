@@ -4,14 +4,12 @@ import { ipcErrorMessage } from './ipc';
 export interface AsyncSubmit<Args extends unknown[]> {
   /** Starts the action, unless it's already pending. Never rejects: a failure lands in `error`. */
   run: (...args: Args) => Promise<void>;
-  /** From `run` until the action rejects, or after success until the owner closes the form. */
+  /** From `run` until the action rejects; after success, until the owner closes (unmounts) the form. */
   pending: boolean;
   /** Why the last run failed; cleared by the next run. */
   error: string | null;
   /** For an edit that makes the error stale. */
   clearError: () => void;
-  /** Back to idle, for a form that stays mounted while closed and is opened again. */
-  reset: () => void;
 }
 
 /**
@@ -45,11 +43,5 @@ export function useAsyncSubmit<Args extends unknown[]>(
 
   const clearError = useCallback(() => setError(null), []);
 
-  const reset = useCallback(() => {
-    runningRef.current = false;
-    setPending(false);
-    setError(null);
-  }, []);
-
-  return { run, pending, error, clearError, reset };
+  return { run, pending, error, clearError };
 }

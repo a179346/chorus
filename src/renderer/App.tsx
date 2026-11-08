@@ -32,9 +32,9 @@ function modalIsOpen(): boolean {
   return document.querySelector('[aria-modal="true"]') !== null;
 }
 
-/** A state updater that drops `id` and keeps anything else. */
-function forget(id: string) {
-  return (current: string | null): string | null => (current === id ? null : current);
+/** A state updater that drops `value` and keeps anything else. */
+function forget<T>(value: T) {
+  return (current: T | null): T | null => (current === value ? null : current);
 }
 
 export function App(): React.ReactElement {
@@ -62,7 +62,9 @@ export function App(): React.ReactElement {
   // ─── UI state ───────────────────────────────────────
   const [toolkitCommands, setToolkitCommands] = useState<ToolkitCommand[]>([]);
   const [shellCollapsed, setShellCollapsed] = useState(false);
-  const [showNewSession, setShowNewSession] = useState(false);
+  // Each opening of New Session gets a fresh form; null while it's closed
+  const [newSessionKey, setNewSessionKey] = useState<number | null>(null);
+  const newSessionOpeningsRef = useRef(0);
   const [showPreferences, setShowPreferences] = useState(false);
   const [terminalFontFamily, setTerminalFontFamily] = useState("'MesloLGS NF', 'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', 'Fira Code', monospace");
   const [claudeFontSize, setClaudeFontSize] = useState(DEFAULT_FONT_SIZE);
@@ -112,9 +114,16 @@ export function App(): React.ReactElement {
         terminals.setTheme(t.xtermTheme, t.searchDecorations);
       }
     });
-
-    void invoke(IpcChannels.TOOLKIT_LIST, {}).then(setToolkitCommands);
   }, []);
+
+  /** Shows the toolkit as toolkit.json now holds it. */
+  const relistToolkit = useCallback(async () => {
+    setToolkitCommands(await invoke(IpcChannels.TOOLKIT_LIST, {}));
+  }, []);
+
+  useEffect(() => {
+    void relistToolkit();
+  }, [relistToolkit]);
 
   // ─── Preload terminals for every session ───────────
   // Background sessions emit PTY data immediately on app restart (claude --resume
@@ -162,10 +171,18 @@ export function App(): React.ReactElement {
     [activeSessionIdRef],
   );
 
+  /** Opening it again while it's open keeps that form and what's typed in it. */
+  const openNewSession = useCallback(() => {
+    const key = ++newSessionOpeningsRef.current;
+    setNewSessionKey((current) => current ?? key);
+  }, []);
+
+  const closeNewSession = useCallback(() => setNewSessionKey(null), []);
+
   // ─── Menu event listeners ──────────────────────────
   useEffect(() => {
     const cleanups = [
-      on(IpcChannels.MENU_NEW_SESSION, () => setShowNewSession(true)),
+      on(IpcChannels.MENU_NEW_SESSION, openNewSession),
       on(IpcChannels.MENU_SWITCH_SESSION, ({ index }) => switchToIndex(index)),
       on(IpcChannels.MENU_PREV_SESSION, () => switchRelative(-1)),
       on(IpcChannels.MENU_NEXT_SESSION, () => switchRelative(1)),
@@ -191,7 +208,7 @@ export function App(): React.ReactElement {
       }),
     ];
     return () => cleanups.forEach((c) => c());
-  }, [switchToIndex, switchRelative, switchToNextNeedingAttention, openFind, activeSessionIdRef]);
+  }, [openNewSession, switchToIndex, switchRelative, switchToNextNeedingAttention, openFind, activeSessionIdRef]);
 
   // ─── Persist panel sizes (debounced) ────────────────
   const savePanelSizes = useCallback(
@@ -213,9 +230,10 @@ export function App(): React.ReactElement {
 
   // ─── Handlers ──────────────────────────────────────
   const handleNewSession = useCallback(
-    async (config: NewSessionInput) => {
+    async (formKey: number, config: NewSessionInput) => {
       await createSession(config);
-      setShowNewSession(false);
+      // Only its own form: one opened since stays open
+      setNewSessionKey(forget(formKey));
     },
     [createSession]
   );
@@ -324,13 +342,27 @@ export function App(): React.ReactElement {
     (commandId: string) => {
       const sid = activeSessionIdRef.current;
       if (sid) {
-        void invoke(IpcChannels.TOOLKIT_EXECUTE, { sessionId: sid, commandId });
+        // Refused when the command was changed or removed in toolkit.json by
+        // hand; there's no dialog to say so, but the reloaded list shows it
+        void invoke(IpcChannels.TOOLKIT_EXECUTE, { sessionId: sid, commandId }).catch(() => relistToolkit());
         // The command types into Claude, so Claude gets the keyboard — a frame
         // later, after a closing palette has handed focus back to its opener
         requestAnimationFrame(focusActiveClaude);
       }
     },
-    [activeSessionIdRef, focusActiveClaude]
+    [activeSessionIdRef, focusActiveClaude, relistToolkit]
+  );
+
+  /**
+   * A refused edit means the list is out of date (toolkit.json was edited by
+   * hand): reloads it, then passes the refusal on for the open dialog to show.
+   */
+  const relistAndRethrow = useCallback(
+    async (err: unknown): Promise<never> => {
+      await relistToolkit();
+      throw err;
+    },
+    [relistToolkit]
   );
 
   // Each edit answers with main's fresh list, whose ids are the ones toolkit.json now holds
@@ -343,16 +375,16 @@ export function App(): React.ReactElement {
 
   const handleToolkitUpdate = useCallback(
     async (command: ToolkitCommand) => {
-      setToolkitCommands(await invoke(IpcChannels.TOOLKIT_UPDATE, command));
+      setToolkitCommands(await invoke(IpcChannels.TOOLKIT_UPDATE, command).catch(relistAndRethrow));
     },
-    []
+    [relistAndRethrow]
   );
 
   const handleToolkitDelete = useCallback(
     async (commandId: string) => {
-      setToolkitCommands(await invoke(IpcChannels.TOOLKIT_DELETE, { id: commandId }));
+      setToolkitCommands(await invoke(IpcChannels.TOOLKIT_DELETE, { id: commandId }).catch(relistAndRethrow));
     },
-    []
+    [relistAndRethrow]
   );
 
   const handlePreviewTheme = useCallback((themeId: string) => {
@@ -439,7 +471,7 @@ export function App(): React.ReactElement {
               // Blank until saved sessions are back; the sidebar says it's loading
               <div style={loadingPaneStyle} />
             ) : sessions.length === 0 ? (
-              <WelcomeScreen onNewSession={() => setShowNewSession(true)} />
+              <WelcomeScreen onNewSession={openNewSession} />
             ) : (
               <SplitPane
                 direction="vertical"
@@ -506,7 +538,7 @@ export function App(): React.ReactElement {
               activeSessionId={activeSessionId}
               renamingSessionId={renamingSessionId}
               onSelectSession={selectSession}
-              onNewSession={() => setShowNewSession(true)}
+              onNewSession={openNewSession}
               onStartRename={setRenamingSessionId}
               onRenameSession={handleRenameSession}
               onCancelRename={handleCancelRename}
@@ -530,11 +562,13 @@ export function App(): React.ReactElement {
         </SplitPane>
 
         {/* New session dialog */}
-        <NewSessionDialog
-          open={showNewSession}
-          onClose={() => setShowNewSession(false)}
-          onSubmit={handleNewSession}
-        />
+        {newSessionKey !== null && (
+          <NewSessionDialog
+            key={newSessionKey}
+            onClose={closeNewSession}
+            onSubmit={(config) => handleNewSession(newSessionKey, config)}
+          />
+        )}
 
         {/* Preferences dialog */}
         <PreferencesDialog
@@ -577,7 +611,7 @@ export function App(): React.ReactElement {
               shellCollapsed,
               actions: {
                 selectSession,
-                newSession: () => setShowNewSession(true),
+                newSession: openNewSession,
                 nextNeedingAttention: switchToNextNeedingAttention,
                 renameSession: setRenamingSessionId,
                 toggleNotify,

@@ -189,6 +189,8 @@ describe('checkSessionFlags', () => {
     [['-p'], '-p'],
     [['--sdk-url', 'ws://localhost'], '--sdk-url'],
     [['--background'], '--background'],
+    [['--routine', 'nightly'], '--routine'],
+    [['--routine=nightly'], '--routine'],
     [['--environment', 'env_1'], '--environment'],
     [['--pool', 'pool_1'], '--pool'],
     [['--remote'], '--remote'],

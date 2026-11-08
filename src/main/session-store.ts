@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -21,7 +22,7 @@ const STATE_FILE = path.join(CHORUS_DIR, 'state.json');
 const TOOLKIT_FILE = path.join(CHORUS_DIR, 'toolkit.json');
 const RECENTLY_CLOSED_FILE = path.join(CHORUS_DIR, 'recently-closed.json');
 
-/** How many sessions the user closed stay reopenable; saved sessions that couldn't be restored stay as well. */
+/** How many sessions the user closed stay reopenable; ones that couldn't be restored or reopened stay as well. */
 export const RECENTLY_CLOSED_LIMIT = 10;
 
 const DEFAULT_WINDOW_BOUNDS: WindowBounds = {
@@ -161,8 +162,8 @@ interface RecentlyClosedFile {
 
 /**
  * A closed session as recently-closed.json holds it. `restoreFailed` marks a
- * saved session that couldn't be restored, which nobody chose to close: it
- * stays until it is reopened or removed, outside RECENTLY_CLOSED_LIMIT.
+ * session that couldn't be restored or reopened, and was kept: ⌘⇧T passes over
+ * it, and it stays until it is reopened or removed, outside RECENTLY_CLOSED_LIMIT.
  */
 type RecentlyClosedEntry = StoredSession & { restoreFailed?: boolean };
 
@@ -172,7 +173,7 @@ function withinLimit(entries: readonly RecentlyClosedEntry[]): RecentlyClosedEnt
   return entries.filter((entry) => entry.restoreFailed || latestClosed.has(entry));
 }
 
-/** The latest entry the user closed, passing over the ones whose restore failed. */
+/** The latest entry the user closed, passing over the ones that couldn't be restored or reopened. */
 export function lastClosedByUser(entries: readonly RecentlyClosedEntry[]): RecentlyClosedEntry | undefined {
   return entries.find((entry) => !entry.restoreFailed);
 }
@@ -187,7 +188,7 @@ function isRecentlyClosedFile(data: unknown): data is RecentlyClosedFile {
 /**
  * toolkit.json. People edit it by hand, so each command is checked as it is
  * read, and an edit leaves every other entry and key as written, apart from
- * writing in each command's id.
+ * writing in each command's id. An updated command is replaced whole.
  */
 interface ToolkitFile {
   commands: unknown[];
@@ -202,6 +203,25 @@ function readToolkitFile(): ToolkitFile | null {
   if (!fs.existsSync(TOOLKIT_FILE)) return { commands: [] };
   const file = readJson<unknown>(TOOLKIT_FILE, null);
   return isToolkitFile(file) ? file : null;
+}
+
+/**
+ * toolkit.json to edit, each command's id written into its entry (see
+ * withIdsWritten). Throws when the file isn't a toolkit: writing would lose
+ * what the user wrote in it.
+ */
+function readToolkitToEdit(): ToolkitFile {
+  const file = readToolkitFile();
+  if (!file) {
+    throw new Error(`Didn't change ${TOOLKIT_FILE}: it isn't JSON with a "commands" list. Fix or move it, then try again.`);
+  }
+  return { ...file, commands: withIdsWritten(file.commands) };
+}
+
+/** Write toolkit.json, and return its commands as loading it gives them. */
+function writeToolkit(file: ToolkitFile): ToolkitCommand[] {
+  writeJson(TOOLKIT_FILE, file);
+  return toToolkitCommands(file.commands);
 }
 
 /** A command as toolkit.json holds it: only its label and command are sure to be right. */
@@ -232,28 +252,33 @@ interface CommandEntry {
 
 /**
  * The entries that are commands, each with a unique id: the id is how a
- * command is run, edited or deleted. An entry keeps its own id unless an
- * earlier one has it; a missing or repeated id is then replaced by one
- * derived from it ("x-2", or "command" when there's none) that no entry has
- * as its own. Every load of the same file gives the same ids.
+ * command is run, edited or deleted. An entry goes by its own id when no other
+ * entry has it. Otherwise (it has none, or shares it with a pasted copy) it
+ * goes by one derived from its label and command, so adding, moving or
+ * deleting other entries by hand doesn't change it; only twins, with the same
+ * label and command, are told apart by order (`-2`, `-3`…). No derived id is
+ * any entry's own. Every load of the same file gives the same ids.
  */
 function toCommandEntries(entries: readonly unknown[]): CommandEntry[] {
   const commands = entries.flatMap((entry, entryIndex) => (isStoredToolkitCommand(entry) ? [{ entry, entryIndex }] : []));
-  const taken = new Set<string>();
-  const keptIds = commands.map(({ entry }) => {
-    const id = ownId(entry);
-    if (id === null || taken.has(id)) return null;
-    taken.add(id);
-    return id;
+  const ownIds = commands.flatMap(({ entry }) => ownId(entry) ?? []);
+  const repeatedIds = new Set(ownIds.filter((id, i) => ownIds.indexOf(id) !== i));
+  const taken = new Set(ownIds);
+  return commands.map((command) => {
+    const id = ownId(command.entry);
+    if (id !== null && !repeatedIds.has(id)) return { ...command, id };
+    return { ...command, id: takeDerivedId(contentId(command.entry), taken) };
   });
-  return commands.map((command, i) => ({
-    ...command,
-    id: keptIds[i] ?? takeDerivedId(ownId(command.entry) ?? 'command', taken),
-  }));
 }
 
 function ownId(entry: StoredToolkitCommand): string | null {
   return typeof entry.id === 'string' && entry.id !== '' ? entry.id : null;
+}
+
+/** `command-` and a hash of the entry's label and command: the same wherever the entry is. */
+function contentId({ label, command }: StoredToolkitCommand): string {
+  const hash = createHash('sha256').update(JSON.stringify([label, command])).digest('hex');
+  return `command-${hash.slice(0, 8)}`;
 }
 
 /** The first of `base`, `base-2`, `base-3`… not in `taken`, which it is added to. */
@@ -269,10 +294,14 @@ function toToolkitCommand({ entry: { label, command, icon }, id }: CommandEntry)
   return typeof icon === 'string' ? { id, label, command, icon } : { id, label, command };
 }
 
+function toToolkitCommands(entries: readonly unknown[]): ToolkitCommand[] {
+  return toCommandEntries(entries).map(toToolkitCommand);
+}
+
 /**
- * The entries with each command's id written into it. A derived id depends on
- * the entries around it; once written, adding or deleting entries can't move
- * it to another command.
+ * The entries with each command's id written into it. A derived id changes
+ * when the command's label or command is changed by hand, and a twin's when
+ * twins are moved; once written, it is the entry's own, which stays with it.
  */
 function withIdsWritten(entries: readonly unknown[]): unknown[] {
   const written = [...entries];
@@ -282,11 +311,13 @@ function withIdsWritten(entries: readonly unknown[]): unknown[] {
   return written;
 }
 
-/** Where the command with this id is among the entries; throws when no command has it. */
-function requireEntryIndex(entries: readonly unknown[], id: string): number {
-  const found = toCommandEntries(entries).find((command) => command.id === id);
-  if (!found) throw new Error(`Didn't change ${TOOLKIT_FILE}: no command in it has the id "${id}".`);
-  return found.entryIndex;
+function findCommandEntry(entries: readonly unknown[], id: string): CommandEntry | undefined {
+  return toCommandEntries(entries).find((command) => command.id === id);
+}
+
+/** For an id no command goes by: the list it came from is older than toolkit.json. */
+function commandChangedOutsideChorus(): Error {
+  return new Error(`This command was changed or removed outside Chorus, in ${TOOLKIT_FILE}.`);
 }
 
 // ─── Store ────────────────────────────────────────────────
@@ -449,6 +480,13 @@ export class SessionStore {
     this.writeRecentlyClosed(this.loadRecentlyClosed().filter((entry) => entry.id !== id));
   }
 
+  /** Mark a session that couldn't be reopened, and was kept, so that ⌘⇧T passes over it. */
+  markRestoreFailed(id: string): void {
+    this.writeRecentlyClosed(
+      this.loadRecentlyClosed().map((entry) => (entry.id === id ? { ...entry, restoreFailed: true } : entry)),
+    );
+  }
+
   /** Put these entries first, in place of any earlier entry for the same session. */
   private putFirstInRecentlyClosed(entries: readonly RecentlyClosedEntry[]): void {
     const ids = new Set(entries.map((entry) => entry.id));
@@ -492,45 +530,47 @@ export class SessionStore {
   /** The toolkit's commands; any entry that isn't a command is left out, and a file that isn't a toolkit has none. */
   loadToolkitCommands(): ToolkitCommand[] {
     const file = readToolkitFile();
-    return file ? toCommandEntries(file.commands).map(toToolkitCommand) : [];
+    return file ? toToolkitCommands(file.commands) : [];
   }
+
+  /** The command with this id; throws when toolkit.json no longer has it. */
+  requireToolkitCommand(id: string): ToolkitCommand {
+    const command = this.loadToolkitCommands().find((c) => c.id === id);
+    if (!command) throw commandChangedOutsideChorus();
+    return command;
+  }
+
+  // Each edit returns the toolkit's commands as they now are, hand-written ones included.
 
   /** Replace all of the toolkit's entries with these commands. */
-  saveToolkitCommands(commands: ToolkitCommand[]): void {
-    this.editToolkit(() => commands);
+  saveToolkitCommands(commands: ToolkitCommand[]): ToolkitCommand[] {
+    return this.editToolkit(() => commands);
   }
 
-  addToolkitCommand(command: ToolkitCommand): void {
-    this.editToolkit((entries) => [...entries, command]);
+  addToolkitCommand(command: ToolkitCommand): ToolkitCommand[] {
+    return this.editToolkit((entries) => [...entries, command]);
   }
 
-  /** Replace the command that has this one's id; throws when none has it. */
-  updateToolkitCommand(command: ToolkitCommand): void {
-    this.editToolkit((entries) => {
-      const index = requireEntryIndex(entries, command.id);
-      return entries.map((entry, i) => (i === index ? command : entry));
+  /** Replace the command that has this one's id, whole; throws when none has it. */
+  updateToolkitCommand(command: ToolkitCommand): ToolkitCommand[] {
+    return this.editToolkit((entries) => {
+      const updated = findCommandEntry(entries, command.id);
+      if (!updated) throw commandChangedOutsideChorus();
+      return entries.map((entry, i) => (i === updated.entryIndex ? command : entry));
     });
   }
 
-  /** Delete the command that has this id; throws when none has it. */
-  deleteToolkitCommand(id: string): void {
-    this.editToolkit((entries) => {
-      const index = requireEntryIndex(entries, id);
-      return entries.filter((_, i) => i !== index);
-    });
+  /** Delete the command that has this id. When none has it, it is already gone, and nothing is written. */
+  deleteToolkitCommand(id: string): ToolkitCommand[] {
+    const file = readToolkitToEdit();
+    const deleted = findCommandEntry(file.commands, id);
+    if (!deleted) return toToolkitCommands(file.commands);
+    return writeToolkit({ ...file, commands: file.commands.filter((_, i) => i !== deleted.entryIndex) });
   }
 
-  /**
-   * Write toolkit.json with `edit` applied to its entries, once each command's
-   * id is written into its entry (see withIdsWritten). Throws, leaving the
-   * file alone, when `edit` does, or when the file isn't a toolkit: writing
-   * would lose what the user wrote in it.
-   */
-  private editToolkit(edit: (entries: unknown[]) => unknown[]): void {
-    const file = readToolkitFile();
-    if (!file) {
-      throw new Error(`Didn't change ${TOOLKIT_FILE}: it isn't JSON with a "commands" list. Fix or move it, then try again.`);
-    }
-    writeJson(TOOLKIT_FILE, { ...file, commands: edit(withIdsWritten(file.commands)) });
+  /** Write toolkit.json with `edit` applied to its entries; throws, leaving the file alone, when `edit` does. */
+  private editToolkit(edit: (entries: unknown[]) => unknown[]): ToolkitCommand[] {
+    const file = readToolkitToEdit();
+    return writeToolkit({ ...file, commands: edit(file.commands) });
   }
 }

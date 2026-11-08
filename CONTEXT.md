@@ -91,14 +91,38 @@ every restorable session is running. Each leaves the saved sessions only after
 that write succeeds (otherwise it is retried next launch), and stays in Recently
 Closed, outside its limit of ten, until it is reopened or removed. A reopen
 that fails says why and offers to remove the session; it stays unless the
-user picks Remove (Escape keeps it), since a missing volume may come back. ⌘⇧T
-reopens the latest session the user closed, passing over ones whose restore
-failed; those are reopened from the Recently Closed submenu.
+user picks Remove (Escape keeps it), since a missing volume may come back, and
+is then marked like one whose restore failed. ⌘⇧T reopens the latest session
+the user closed, passing over ones that couldn't be restored or reopened;
+those are reopened from the Recently Closed submenu and stay outside the limit
+until reopened or removed. Once a reopen succeeds, the sessions are saved
+before it leaves Recently Closed; a write that fails there, or after the
+failure dialog's choice, is shown in a native dialog.
 Until the restore has run, the `SessionRestore` gate holds back everything
 that lists or spawns sessions; it opens even if the restore fails (a dialog
 says so). The store never drops a saved session it hasn't restored or removed:
 those stay in the index and keep their files through every write and the
 orphan cleanup, so `before-quit` can always save.
+
+### Toolkit commands (`session-store.ts`)
+
+toolkit.json is edited by hand too, so each command is checked as it is read,
+and an edit leaves every other entry and top-level key as written (an updated
+command is replaced whole). A command is run, edited and deleted by id. An
+entry goes by its own id when no other entry has it; otherwise (none, or shared
+with a pasted copy) by `command-<8 hex>` derived from its label and command, so
+adding, moving or deleting other entries by hand doesn't change it — only twins
+with the same label and command are told apart by order (`-2`, `-3`…), and no
+derived id is any entry's own. Loading never writes. Each edit first writes
+every command's id into its entry, so it stays put when the label or command is
+later changed by hand, and responds (`TOOLKIT_ADD`/`UPDATE`/`DELETE`) with the
+commands it wrote; the renderer replaces its list with them. An id no command
+goes by means toolkit.json changed outside Chorus: deleting it succeeds without
+writing (it's already gone) and returns the list; updating or running it
+(`TOOLKIT_EXECUTE`) is refused with a message saying so, and the renderer
+reloads the list (`TOOLKIT_LIST`) — an open dialog still shows why. A
+toolkit.json that isn't JSON with a `commands` list loads as empty and is never
+overwritten.
 
 ### index.ts — the composition root
 
@@ -126,11 +150,6 @@ derives from it:
 
 Adding a channel = extend the map, add the handler (compiler errors until you
 do), call `invoke`/`on`. No preload or `.d.ts` edits.
-
-Toolkit edits (`TOOLKIT_ADD`/`UPDATE`/`DELETE`) respond with the whole toolkit
-as it now is, and the renderer replaces its list with it. An edit first writes
-each command's id into toolkit.json, so a derived id (`command`, `x-2`) never
-moves to another command; updating or deleting an id no command has is refused.
 
 ## claude CLI arguments (`src/shared/claude-cli.ts`)
 
@@ -192,7 +211,9 @@ arrive, sessions main pushed ahead of the list (a reopen as restore finishes)
 are kept, and the active one is a session picked meanwhile (revealed or
 reopened) if listed, else the saved last-active session if it came back, else
 the first; a created or reopened session becomes active; when the active
-session ends, the first remaining one, else none. Every change goes to
+session ends, the first remaining one, else none. The verbs (end, switch, next
+needing attention) go by the latest pick at once, ahead of the re-render that
+shows it; `activeSessionIdRef` is the session on screen, for App. Every change goes to
 main (`SESSION_SWITCH`, or `lastActiveSessionId: null` for none), which saves
 it and marks the shown session seen. Only a listed session is active. `App.tsx` keeps only UI state.
 
@@ -220,7 +241,9 @@ when focus moves outside them (`use-close-on-focus-outside.ts`), but not for
 focus going back where it came from as they close. A dialog's async submit
 (create, save, delete) goes through `useAsyncSubmit` (`use-async-submit.ts`):
 it runs once at a time; on success it stays pending until the owner closes the
-dialog, and on rejection it ends and the dialog shows why. The error clears on
+dialog, which unmounts it (form dialogs are mounted only while open and keyed
+per opening, so each opening starts blank, and opening one that is already
+open keeps it), and on rejection it ends and the dialog shows why. The error clears on
 the next submit and, in forms, on any edit. While a submit is pending the dialog
 ignores Escape, the backdrop and Cancel (`aria-disabled`, not `disabled`, so
 focus stays in the form). Menus, dialogs and the command palette hand focus
