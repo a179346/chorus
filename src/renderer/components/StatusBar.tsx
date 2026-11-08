@@ -40,12 +40,14 @@ export function StatusBar({ session }: StatusBarProps): React.ReactElement {
         )}
         {session.prs.map((pr) => {
           const { Icon, color, background } = STAGE_ICON[pr.stage];
+          const label = `${prTooltip(pr)} — open on GitHub`;
           return (
             <button
               type="button"
               key={prLabel(pr)}
               className="pr-chip"
-              title={`${prTooltip(pr)} — open on GitHub`}
+              title={label}
+              aria-label={label}
               onClick={() => openPrInBrowser(pr)}
               style={{ padding: '2px 6px', background, color }}
             >

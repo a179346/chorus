@@ -7,6 +7,7 @@ const SCATTERED = 20;
 /** A hit in an item's secondary text counts for less than one in its title. */
 const SECONDARY_PENALTY = 30;
 
+/** Separates words in an item's text and in the query alike, so "api-refactor" finds "api refactor". */
 const WORD_BREAK = /[\s\-_./]/;
 
 /** Case- and Unicode-form-insensitive, so "café" typed either way matches. */
@@ -83,7 +84,7 @@ function itemScore(item: Matchable, words: readonly string[]): number | null {
  * its original order.
  */
 export function filterPaletteItems<T extends Matchable>(items: readonly T[], query: string): T[] {
-  const words = query.split(/\s+/).filter(Boolean);
+  const words = query.split(WORD_BREAK).filter(Boolean);
   if (words.length === 0) return [...items];
 
   const ranked = items

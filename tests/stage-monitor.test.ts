@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { StageMonitor, deriveStage, type GhResult } from '../src/main/stage-monitor';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { StageMonitor, deriveStage, runGhPrView, type GhResult } from '../src/main/stage-monitor';
 import type { LinkedPr, PrRef, Session } from '../src/shared/types';
 
 const PR1: PrRef = { owner: 'o', repo: 'r', number: 1 };
@@ -61,6 +64,34 @@ describe('deriveStage', () => {
 
   it('is case-insensitive on state', () => {
     expect(deriveStage({ state: 'open', isDraft: false, mergedAt: null })).toBe('ready');
+  });
+});
+
+describe('runGhPrView', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chorus-gh-'));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('asks gh about the PR on github.com, whichever host gh defaults to', async () => {
+    // A stand-in gh that records its arguments and reports a draft PR
+    const argsFile = path.join(dir, 'args');
+    const json = '{"state":"OPEN","isDraft":true,"mergedAt":null}';
+    fs.writeFileSync(path.join(dir, 'gh'), `#!/bin/sh\nprintf '%s\\n' "$@" > '${argsFile}'\necho '${json}'\n`, {
+      mode: 0o755,
+    });
+    vi.stubEnv('PATH', `${dir}:${process.env.PATH}`);
+
+    expect(await runGhPrView({ owner: 'o', repo: 'r', number: 42 })).toEqual({ type: 'ok', stage: 'draft' });
+    expect(fs.readFileSync(argsFile, 'utf8').trimEnd().split('\n')).toEqual([
+      'pr', 'view', '42', '-R', 'github.com/o/r', '--json', 'state,isDraft,mergedAt',
+    ]);
   });
 });
 
@@ -352,6 +383,18 @@ describe('StageMonitor', () => {
       // No link commit — only the stage change from the refresh itself
       expect(prsOf('s1')).toHaveLength(1);
       expect(commits.every((c) => c.updates.prs?.[0].stage === 'ready')).toBe(true);
+    });
+
+    it('does not look up a merged PR it is asked to link again', async () => {
+      sessions.set('s1', makeSession({ prs: [linked(PR1, { stage: 'merged' })] }));
+      const monitor = makeMonitor();
+
+      monitor.linkPrs('s1', [PR1, PR2]);
+
+      await vi.waitFor(() => expect(ghCalls).toEqual([PR2]));
+      await flush();
+      expect(ghCalls).toEqual([PR2]);
+      expect(prsOf('s1')[0].stage).toBe('merged');
     });
 
     it('skips PRs already linked, including duplicates within the request', () => {

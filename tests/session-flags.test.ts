@@ -67,8 +67,9 @@ describe('readCustomFlags', () => {
   it('applies claude’s rules for session flags', () => {
     expect(readCustomFlags('--verbose true')).toEqual({
       kind: 'invalid',
-      error: "true isn't a flag — if it's the value of --verbose, write --verbose=true",
+      error: "true isn't a flag — --verbose takes no value",
     });
+    expect(readCustomFlags('--verbose=true')).toEqual({ kind: 'invalid', error: '--verbose takes no value' });
     expect(readCustomFlags('--model')).toEqual({ kind: 'invalid', error: '--model needs a value' });
   });
 

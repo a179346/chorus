@@ -105,6 +105,20 @@ describe('checkSessionFlags', () => {
     });
   });
 
+  it('knows the value flags --help leaves out', () => {
+    expect(
+      checkSessionFlags([
+        '--append-system-prompt-file', 'prompt.md',
+        '--channels', 'plugin:a', 'server:b',
+        '--rc', '--thinking', 'disabled',
+        '--max-turns', '3',
+      ]),
+    ).toEqual({
+      ok: true,
+      flagNames: ['--append-system-prompt-file', '--channels', '--rc', '--thinking', '--max-turns'],
+    });
+  });
+
   it('keeps an empty value with its flag', () => {
     expect(errorOf(['--fallback-model', ''])).toBeNull();
   });
@@ -118,11 +132,22 @@ describe('checkSessionFlags', () => {
     expect(errorOf(['', '--model', 'x'])).toBe("The empty argument '' isn't a flag — flags start with -");
   });
 
-  it('suggests --flag=value for a word after a flag not known to take a value', () => {
-    expect(errorOf(['--verbose', 'true'])).toBe("true isn't a flag — if it's the value of --verbose, write --verbose=true");
+  it('says so when a word follows a flag that takes no value', () => {
+    expect(errorOf(['--verbose', 'true'])).toBe("true isn't a flag — --verbose takes no value");
+    expect(errorOf(['--chrome', 'yes'])).toBe("yes isn't a flag — --chrome takes no value");
+  });
+
+  it('rejects a value attached to a flag that takes none, which claude would refuse', () => {
+    expect(errorOf(['--verbose=true'])).toBe('--verbose takes no value');
+    expect(errorOf(['--enable-auto-mode=1'])).toBe('--enable-auto-mode takes no value');
+    expect(errorOf(['--no-chrome='])).toBe('--no-chrome takes no value');
+  });
+
+  it('suggests --flag=value for a word after a flag it doesn’t know', () => {
     expect(errorOf(['--new-flag', 'a b'])).toBe(
       "'a b' isn't a flag — if it's the value of --new-flag, write '--new-flag=a b'",
     );
+    expect(errorOf(['--new-flag=a b'])).toBeNull();
   });
 
   it('rejects a second word after a single value', () => {
@@ -137,6 +162,9 @@ describe('checkSessionFlags', () => {
 
   it.each([
     [['--session-id', 'abc'], '--session-id'],
+    [['--resume-session-at', 'msg_1'], '--resume-session-at'],
+    [['--session-began-as-copy', '1'], '--session-began-as-copy'],
+    [['--parent-session-id', 'abc'], '--parent-session-id'],
     [['--resume'], '--resume'],
     [['--resume=abc'], '--resume'],
     [['-r'], '-r'],
@@ -147,6 +175,7 @@ describe('checkSessionFlags', () => {
     [['-nX'], '-n'],
     [['--worktree', 'w'], '--worktree'],
     [['-p'], '-p'],
+    [['--sdk-url', 'ws://localhost'], '--sdk-url'],
     [['--background'], '--background'],
     [['--environment', 'env_1'], '--environment'],
     [['--pool', 'pool_1'], '--pool'],
@@ -158,6 +187,7 @@ describe('checkSessionFlags', () => {
     [['--bare'], '--bare'],
     [['--safe-mode'], '--safe-mode'],
     [['--restricted'], '--restricted'],
+    [['--project-config-root', '..'], '--project-config-root'],
     [['--'], '--'],
   ])('rejects flags Chorus manages, that end the interactive session, or that turn off its hooks: %j', (args, name) => {
     expect(errorOf(args)).toBe(`${name} isn't supported in Chorus sessions`);
@@ -174,6 +204,15 @@ describe('checkSessionFlags', () => {
     expect(errorOf(['--setting-sources', 'user,project'])).toBe(error);
     expect(errorOf(['--setting-sources='])).toBe(error);
   });
+
+  it.each(['local,', 'local,,user', 'Local', 'local,managed'])(
+    'rejects --setting-sources %j, which claude refuses to start with',
+    (sources) => {
+      expect(errorOf(['--setting-sources', sources])).toBe(
+        '--setting-sources takes a comma-separated list of user, project and local',
+      );
+    },
+  );
 });
 
 describe('newSessionArgs', () => {
@@ -215,17 +254,34 @@ describe('newSessionArgs', () => {
 });
 
 describe('relaunchArgs', () => {
-  const session = { id: 'uuid-1', name: 'Fix login', flags: ['--chrome', '--model', 'opus'] };
+  const session = { id: 'uuid-1', name: 'Fix login', worktree: 'fix-login', flags: ['--chrome', '--model', 'opus'] };
+  const inPlace = { recreateWorktree: false };
 
   it('resumes a session the user has prompted, before the user’s flags', () => {
-    expect(relaunchArgs({ ...session, hasUserInput: true })).toEqual([
+    expect(relaunchArgs({ ...session, hasUserInput: true }, inPlace)).toEqual([
       '--resume', 'uuid-1', '--chrome', '--model', 'opus',
     ]);
   });
 
   it('reuses the id of a session that has no conversation yet', () => {
-    expect(relaunchArgs({ ...session, hasUserInput: false })).toEqual([
+    expect(relaunchArgs({ ...session, hasUserInput: false }, inPlace)).toEqual([
       '--session-id', 'uuid-1', '--name', 'Fix login', '--chrome', '--model', 'opus',
+    ]);
+  });
+
+  it('asks claude to create the session’s worktree again when it is gone', () => {
+    const recreate = { recreateWorktree: true };
+    expect(relaunchArgs({ ...session, hasUserInput: true }, recreate)).toEqual([
+      '--resume', 'uuid-1', '--worktree', 'fix-login', '--chrome', '--model', 'opus',
+    ]);
+    expect(relaunchArgs({ ...session, hasUserInput: false }, recreate)).toEqual([
+      '--session-id', 'uuid-1', '--name', 'Fix login', '--worktree', 'fix-login', '--chrome', '--model', 'opus',
+    ]);
+  });
+
+  it('has no worktree to recreate for a session without one', () => {
+    expect(relaunchArgs({ ...session, worktree: null, hasUserInput: true }, { recreateWorktree: true })).toEqual([
+      '--resume', 'uuid-1', '--chrome', '--model', 'opus',
     ]);
   });
 });

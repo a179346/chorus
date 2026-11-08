@@ -11,7 +11,8 @@ const SHELL_ENV_TIMEOUT_MS = 20_000;
 
 // Printed around the environment: whatever rc files print is skipped, and the
 // end marks it complete without waiting for the shell's output to close,
-// which a background job started by an rc file can hold open.
+// which a background job started by an rc file can hold open. The end is
+// printed only if env succeeded, so a failed env can't pass for an empty one.
 const ENV_START = '__CHORUS_SHELL_ENV_START__';
 const ENV_END = '__CHORUS_SHELL_ENV_END__';
 
@@ -27,14 +28,14 @@ export function userShell(): string {
 
 /**
  * Start `shell` as an interactive login shell, the way a terminal would, and
- * capture the environment it ends up with. Rejects when the shell fails, takes
- * longer than `timeoutMs`, or prints no environment.
+ * capture the environment it ends up with. Rejects when the shell or env
+ * fails, takes longer than `timeoutMs`, or prints no environment.
  */
 export function readLoginShellEnv(shell: string, timeoutMs = SHELL_ENV_TIMEOUT_MS): Promise<ShellEnv> {
   return new Promise((resolve, reject) => {
     // -i as well as -l: version managers usually hook in from .zshrc / .bashrc.
     // `command` keeps an alias or function named env from standing in for it.
-    const probe = `printf '%s' '${ENV_START}'; command env -0; printf '%s' '${ENV_END}'`;
+    const probe = `printf '%s' '${ENV_START}'; command env -0 && printf '%s' '${ENV_END}'`;
     const child = spawn(shell, ['-ilc', probe], { stdio: ['ignore', 'pipe', 'pipe'] });
 
     const timer = setTimeout(() => {

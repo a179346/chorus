@@ -8,8 +8,11 @@ const GH_RETRY_AFTER_MS = 5 * 60 * 1000;
 const STAGE_DEBOUNCE_MS = 1000;
 const STAGE_POLL_INTERVAL_MS = 60_000;
 
+/** The stages gh can report for a PR it found; `not-found` stands for one it didn't. */
+type FoundPrStage = Exclude<PrStage, 'not-found'>;
+
 export type GhResult =
-  | { type: 'ok'; stage: PrStage }
+  | { type: 'ok'; stage: FoundPrStage }
   | { type: 'not-found' }
   | { type: 'unavailable' }
   | { type: 'error' };
@@ -21,7 +24,7 @@ export function deriveStage(json: {
   state?: unknown;
   isDraft?: unknown;
   mergedAt?: unknown;
-}): PrStage {
+}): FoundPrStage {
   const state = typeof json.state === 'string' ? json.state.toUpperCase() : '';
   const isDraft = json.isDraft === true;
   const merged = json.mergedAt !== null && json.mergedAt !== undefined && json.mergedAt !== '';
@@ -50,7 +53,9 @@ export function runGhPrView(pr: PrRef): Promise<GhResult> {
           'view',
           String(pr.number),
           '-R',
-          `${pr.owner}/${pr.repo}`,
+          // Linked PRs are on github.com; a bare owner/repo would go to GH_HOST,
+          // or to an Enterprise host gh is logged in to
+          `github.com/${pr.owner}/${pr.repo}`,
           '--json',
           'state,isDraft,mergedAt',
         ],
@@ -203,7 +208,8 @@ export class StageMonitor {
 
   /**
    * Link PRs — ones Claude created, or the user added — to the session,
-   * skipping those already linked, and look all of them up.
+   * skipping those already linked, and look up each of them whose stage can
+   * still change.
    */
   linkPrs(sessionId: string, prs: PrRef[]): void {
     const session = this.getSession(sessionId);
@@ -216,7 +222,8 @@ export class StageMonitor {
     }
     if (linked.length !== session.prs.length) this.commit(sessionId, { prs: linked });
 
-    void this.refreshPrs(sessionId, prs);
+    const requested = linked.filter((p) => prs.some((pr) => samePr(p, pr)));
+    void this.refreshPrs(sessionId, requested.filter(canChangeStage));
   }
 
   /** Stop tracking a PR. */

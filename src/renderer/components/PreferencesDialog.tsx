@@ -37,8 +37,12 @@ export function PreferencesDialog({ open, fontFamily, theme, claudeFontSize, she
     setSelectedTheme(theme);
     setClaudeSize(String(claudeFontSize));
     setShellSize(String(shellFontSize));
-    setTimeout(() => inputRef.current?.focus(), 50);
   }, [open, fontFamily, theme, claudeFontSize, shellFontSize]);
+
+  // Right away, so keys typed just after opening land here and not in a terminal
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
 
   const handleClose = useCallback(() => {
     onPreviewTheme(theme); // restore original theme
@@ -80,20 +84,12 @@ export function PreferencesDialog({ open, fontFamily, theme, claudeFontSize, she
                 <button
                   key={t.id}
                   type="button"
+                  className="theme-swatch"
                   aria-pressed={isActive}
                   aria-label={t.name}
                   onClick={() => handleThemeSelect(t.id)}
-                  style={{
-                    padding: 0,
-                    borderRadius: 'var(--radius-md)',
-                    border: '1px solid var(--border-default)',
-                    outline: isActive ? `2px solid ${t.preview.accent}` : 'none',
-                    outlineOffset: 1,
-                    cursor: 'pointer',
-                    overflow: 'hidden',
-                    background: 'none',
-                    transition: 'outline-color var(--transition-fast)',
-                  }}
+                  // The selection ring is drawn in currentColor: the theme's own accent
+                  style={{ color: t.preview.accent }}
                 >
                   <div style={{
                     height: 38,

@@ -68,9 +68,16 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
     setPrs([]);
     setPrDraft('');
     setPrompt('');
+    setSubmitting(false);
     setSubmitError(null);
-    setTimeout(() => nameRef.current?.focus(), 50);
+    // Right away, so keys typed just after opening land here and not in a terminal
+    nameRef.current?.focus();
   }, [open]);
+
+  // An error describes the values that were submitted; any edit makes it stale
+  useEffect(() => {
+    setSubmitError(null);
+  }, [name, cwd, worktree, prs, prDraft, prompt, autoMode, skipPermissions, chrome, customFlags, notifyOnIdle]);
 
   const handleSelectDir = useCallback(async () => {
     const dir = await invoke(IpcChannels.DIALOG_SELECT_DIRECTORY);
@@ -143,10 +150,16 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
     [canSubmit, name, cwd, worktree, autoMode, skipPermissions, chrome, customFlagsDraft, notifyOnIdle, prs, pendingPr, prompt, onSubmit]
   );
 
+  // A pending create belongs to this form: let it finish so its result
+  // (closing, or an error) can't land on a later one
+  const close = useCallback(() => {
+    if (!submitting) onClose();
+  }, [submitting, onClose]);
+
   if (!open) return null;
 
   return (
-    <Dialog title="New Session" label="New Session" onClose={onClose} width={460}>
+    <Dialog title="New Session" label="New Session" onClose={close} width={460}>
       <form
         onSubmit={(e) => void handleSubmit(e)}
         onKeyDown={(e) => {
@@ -301,7 +314,7 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
         {submitError && <span className="field-error" role="alert">{submitError}</span>}
 
         <div className="dialog-actions">
-          <button type="button" className="btn" onClick={onClose}>
+          <button type="button" className="btn" onClick={close} disabled={submitting}>
             Cancel
           </button>
           <button type="submit" className="btn btn-primary" disabled={!canSubmit} title="Create (⌘↵)">

@@ -39,6 +39,11 @@ export function findNextNeedingAttention(
   return null;
 }
 
+/** Once the saved sessions are listed: the wanted one if it came back, else the first. */
+export function activeIdAfterLoad(list: readonly Session[], wantedId: string | null): string | null {
+  return list.some((s) => s.id === wantedId) ? wantedId : list[0]?.id ?? null;
+}
+
 /**
  * The renderer's copy of session state. Loads the initial list, merges
  * SESSION_STATE pushes from main in one place, and exposes every session
@@ -51,7 +56,14 @@ export function useSessions() {
   // Main answers the first list only after restoring saved sessions, which
   // waits on the login-shell environment
   const [sessionsLoaded, setSessionsLoaded] = useState(false);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  // May name a session that isn't listed: App restores the last active id
+  // before the list arrives. Only a listed one becomes the active session, so
+  // nothing acts on a session main doesn't have (a terminal attached before
+  // its PTY exists would never send it its size).
+  const [wantedActiveId, setActiveSessionId] = useState<string | null>(null);
+
+  const activeSession = sessions.find((s) => s.id === wantedActiveId) ?? null;
+  const activeSessionId = activeSession?.id ?? null;
 
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
@@ -63,7 +75,7 @@ export function useSessions() {
     void invoke(IpcChannels.SESSION_LIST).then((list) => {
       setSessions(list);
       setSessionsLoaded(true);
-      setActiveSessionId((current) => current ?? list[0]?.id ?? null);
+      setActiveSessionId((wanted) => activeIdAfterLoad(list, wanted));
     });
   }, []);
 
@@ -184,8 +196,6 @@ export function useSessions() {
     const target = findNextNeedingAttention(sessionsRef.current, activeSessionIdRef.current);
     if (target) selectSession(target.id);
   }, [selectSession]);
-
-  const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null;
 
   return {
     sessions,

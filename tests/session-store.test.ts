@@ -199,6 +199,97 @@ describe('SessionStore', () => {
       expect(saved).toHaveProperty('flags');
     });
 
+    describe('saved sessions not restored', () => {
+      const STORED = { name: 'S', cwd: '/tmp', worktree: null, flags: [], model: null, contextUsage: null, createdAt: 1, lastActiveAt: 1 };
+
+      function savedOnDisk(ids: string[]): void {
+        vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+          const filePath = String(p);
+          if (filePath.endsWith('sessions.json')) return JSON.stringify({ sessionIds: ids });
+          const id = ids.find((i) => filePath.endsWith(`session-${i}.json`));
+          if (id) return JSON.stringify({ ...STORED, id });
+          throw new Error('ENOENT');
+        });
+      }
+
+      function writtenIndex(): string[] {
+        const indexWrite = vi.mocked(fs.writeFileSync).mock.calls.filter((c) => String(c[0]).includes('sessions.json.tmp')).at(-1);
+        expect(indexWrite).toBeDefined();
+        return JSON.parse(indexWrite![1] as string).sessionIds;
+      }
+
+      it('stay in the index when other sessions are written', () => {
+        savedOnDisk(['a', 'b']);
+        store.loadPersistedSessions();
+        store.addSession(makeSession({ id: 'a' }));
+        store.addSession(makeSession({ id: 'new' }));
+        store.persistSessions();
+
+        expect(writtenIndex()).toEqual(['a', 'new', 'b']);
+        // Only listed sessions are written; b's file is left as it is
+        expect(vi.mocked(fs.writeFileSync).mock.calls.some((c) => String(c[0]).includes('session-b.json'))).toBe(false);
+      });
+
+      it('stay in the index when a write comes before any restore', () => {
+        savedOnDisk(['a', 'b']);
+        store.addSession(makeSession({ id: 'new' }));
+        store.persistSessions();
+
+        expect(writtenIndex()).toEqual(['new', 'a', 'b']);
+      });
+
+      it('stay in the index through a reorder and a removal', () => {
+        savedOnDisk(['a', 'b']);
+        store.loadPersistedSessions();
+        store.addSession(makeSession({ id: 'x' }));
+        store.addSession(makeSession({ id: 'y' }));
+
+        store.reorderSessions(['y', 'x']);
+        expect(writtenIndex()).toEqual(['y', 'x', 'a', 'b']);
+
+        vi.mocked(fs.unlinkSync).mockImplementation(() => {});
+        store.removeSession('x');
+        expect(writtenIndex()).toEqual(['y', 'a', 'b']);
+      });
+
+      it('leave the index, and lose their file, when removed', () => {
+        vi.mocked(fs.unlinkSync).mockImplementation(() => {});
+        savedOnDisk(['a', 'b']);
+        store.loadPersistedSessions();
+        store.removeSession('a');
+
+        expect(writtenIndex()).toEqual(['b']);
+        expect(vi.mocked(fs.unlinkSync)).toHaveBeenCalledWith(expect.stringContaining('session-a.json'));
+      });
+
+      it('leave out ids whose file is gone once loaded', () => {
+        vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+          const filePath = String(p);
+          if (filePath.endsWith('sessions.json')) return JSON.stringify({ sessionIds: ['a', 'gone'] });
+          if (filePath.endsWith('session-a.json')) return JSON.stringify({ ...STORED, id: 'a' });
+          throw new Error('ENOENT');
+        });
+        store.loadPersistedSessions();
+        store.persistSessions();
+
+        expect(writtenIndex()).toEqual(['a']);
+      });
+
+      it('keep their files through the orphan cleanup', () => {
+        vi.mocked(fs.unlinkSync).mockImplementation(() => {});
+        vi.mocked(fs.readdirSync).mockReturnValue(
+          ['session-a.json', 'session-b.json', 'session-orphan.json', 'state.json'] as any,
+        );
+        savedOnDisk(['b']);
+        store.loadPersistedSessions();
+        store.addSession(makeSession({ id: 'a' }));
+        store.cleanupOrphanedSessionFiles();
+
+        const deleted = vi.mocked(fs.unlinkSync).mock.calls.map((c) => path.basename(String(c[0])));
+        expect(deleted).toEqual(['session-orphan.json']);
+      });
+    });
+
     it('should delete session file and update index on removeSession', () => {
       vi.mocked(fs.unlinkSync).mockImplementation(() => {});
       store.addSession(makeSession({ id: 'a', status: 'idle' }));
@@ -421,6 +512,46 @@ describe('SessionStore', () => {
       expect(cmds).toEqual([]);
     });
 
+    it.each([['null'], ['[]'], ['{}'], ['{"commands":{}}']])('should treat a toolkit file holding %s as empty', (content) => {
+      vi.mocked(fs.readFileSync).mockReturnValue(content);
+      expect(store.loadToolkitCommands()).toEqual([]);
+    });
+
+    it('should leave out entries that are not commands', () => {
+      vi.mocked(fs.readFileSync).mockReturnValue(
+        JSON.stringify({
+          commands: [null, 'x', { id: 'a' }, { id: 'b', label: 'B', command: 7 }, { id: 'c', label: 'C', command: '/c' }],
+        }),
+      );
+      expect(store.loadToolkitCommands()).toEqual([{ id: 'c', label: 'C', command: '/c' }]);
+    });
+
+    it('should drop an icon that is not a name', () => {
+      vi.mocked(fs.readFileSync).mockReturnValue(
+        JSON.stringify({ commands: [{ id: 'a', label: 'A', command: '/a', icon: null }] }),
+      );
+      expect(store.loadToolkitCommands()).toEqual([{ id: 'a', label: 'A', command: '/a' }]);
+    });
+
+    it('should give repeated and missing ids unique ones, the same on every load', () => {
+      vi.mocked(fs.readFileSync).mockReturnValue(
+        JSON.stringify({
+          commands: [
+            { id: 'dup', label: 'One', command: '/1' },
+            { id: 'dup', label: 'Two', command: '/2' },
+            { label: 'Three', command: '/3' },
+            { id: '', label: 'Four', command: '/4' },
+            { id: 'dup-2', label: 'Five', command: '/5' },
+          ],
+        }),
+      );
+      const ids = store.loadToolkitCommands().map((c) => c.id);
+
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(ids[0]).toBe('dup');
+      expect(store.loadToolkitCommands().map((c) => c.id)).toEqual(ids);
+    });
+
     it('should save toolkit commands', () => {
       const commands = [
         { id: 'cmd-1', label: 'Test', command: '/test' },
@@ -461,6 +592,7 @@ describe('toPersisted / fromPersisted', () => {
     createdAt: 1,
     lastActiveAt: 1,
     hasUserInput: true,
+    exitStatus: null,
   };
 
   it('round-trips linked PRs', () => {
@@ -478,6 +610,29 @@ describe('toPersisted / fromPersisted', () => {
     const stored = JSON.parse(JSON.stringify({ ...base, prs: [], unlinkedPrs: [{ owner: 'o', repo: 'r', number: 3 }] }));
 
     expect(toPersisted(fromPersisted(stored))).toEqual({ ...base, prs: [] });
+  });
+
+  it.each([['ended' as const], ['error' as const]])('saves that claude exited (%s) and restores the session exited', (status) => {
+    const saved = toPersisted({ ...fromPersisted({ ...base, prs: [] }), status });
+
+    expect(saved.exitStatus).toBe(status);
+    expect(fromPersisted(saved).status).toBe(status);
+  });
+
+  it.each([['idle' as const], ['thinking' as const], ['creating' as const]])(
+    'saves a session whose claude runs (%s) as running, to be relaunched',
+    (status) => {
+      const saved = toPersisted({ ...fromPersisted({ ...base, prs: [] }), status });
+
+      expect(saved.exitStatus).toBeNull();
+      expect(fromPersisted(saved).status).toBe('creating');
+    },
+  );
+
+  it('reads a file from before exit statuses were saved as a running session', () => {
+    const { exitStatus: _omitted, ...stored } = base;
+
+    expect(fromPersisted({ ...stored, prs: [] }).status).toBe('creating');
   });
 
   it('reads a file from before v1.5.0 without a context limit', () => {

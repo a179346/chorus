@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { isExitedStatus } from '../src/shared/types';
 import type {
   Session,
   SessionConfig,
@@ -84,6 +85,19 @@ describe('Data Model Validation', () => {
       expect(session.contextUsage).toBeNull();
       expect(session.worktree).toBeNull();
     });
+  });
+
+  describe('isExitedStatus', () => {
+    it.each([['ended' as const], ['error' as const]])('is true for %s', (status) => {
+      expect(isExitedStatus(status)).toBe(true);
+    });
+
+    it.each([['creating' as const], ['idle' as const], ['waiting' as const], ['thinking' as const], ['generating' as const]])(
+      'is false for %s',
+      (status) => {
+        expect(isExitedStatus(status)).toBe(false);
+      },
+    );
   });
 
   describe('SessionConfig', () => {

@@ -72,6 +72,21 @@ describe('filterPaletteItems', () => {
     expect(ids(filterPaletteItems(items, 'login xyz'))).toEqual([]);
   });
 
+  it('splits the query at the same word breaks as the text', () => {
+    const named = [
+      { id: 'spaced', group: 'Sessions', title: 'api refactor' },
+      { id: 'new', group: 'Actions', title: 'New Session…' },
+    ];
+    expect(ids(filterPaletteItems(named, 'api-refactor'))).toEqual(['spaced']);
+    expect(ids(filterPaletteItems(named, 'api_refactor'))).toEqual(['spaced']);
+    expect(ids(filterPaletteItems(named, 'new session...'))).toEqual(['new']);
+    expect(ids(filterPaletteItems(items, 'code/web'))).toEqual(['2']);
+  });
+
+  it('treats a query of only word breaks as no query', () => {
+    expect(ids(filterPaletteItems(items, ' -./ '))).toEqual(['1', '2', '3', '4']);
+  });
+
   it('ranks a several-word match by its weakest word', () => {
     const result = filterPaletteItems(
       [

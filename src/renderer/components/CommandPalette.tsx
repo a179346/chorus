@@ -32,7 +32,7 @@ export function CommandPalette({ items, onClose }: CommandPaletteProps): React.R
   onCloseRef.current = onClose;
   const backdrop = useBackdropDismiss(onClose);
 
-  useFocusReturn(paletteRef);
+  const isReturningFocus = useFocusReturn(paletteRef);
 
   const results = useMemo(() => filterPaletteItems(items, query), [items, query]);
   // No highlight yet, or its item dropped out of the list: the top result has it
@@ -42,13 +42,15 @@ export function CommandPalette({ items, onClose }: CommandPaletteProps): React.R
   useEffect(() => {
     inputRef.current?.focus();
 
-    // Another dialog taking focus (e.g. a menu shortcut fired) closes the palette
+    // Another dialog taking focus (e.g. a menu shortcut fired) closes the palette;
+    // focus going back where it came from as the palette closes doesn't
     const handleFocusIn = (e: FocusEvent): void => {
+      if (isReturningFocus()) return;
       if (e.target instanceof Node && !paletteRef.current?.contains(e.target)) onCloseRef.current();
     };
     document.addEventListener('focusin', handleFocusIn);
     return () => document.removeEventListener('focusin', handleFocusIn);
-  }, []);
+  }, [isReturningFocus]);
 
   useEffect(() => {
     listRef.current
@@ -86,6 +88,9 @@ export function CommandPalette({ items, onClose }: CommandPaletteProps): React.R
     } else if (e.key === 'Escape') {
       e.preventDefault();
       onClose();
+    } else if (e.key === 'Tab') {
+      // The input is the palette's only stop; Tab would carry focus out to the page behind
+      e.preventDefault();
     }
   };
 
@@ -126,7 +131,15 @@ export function CommandPalette({ items, onClose }: CommandPaletteProps): React.R
           />
         </div>
 
-        <div ref={listRef} id="palette-list" className="palette-list" role="listbox" aria-label="Results">
+        <div
+          ref={listRef}
+          id="palette-list"
+          className="palette-list"
+          role="listbox"
+          aria-label="Results"
+          // Chromium makes a scrolling box a Tab stop; the keys belong in the input
+          tabIndex={-1}
+        >
           {results.length === 0 ? (
             <div className="palette-empty">Nothing matches “{query.trim()}”</div>
           ) : (

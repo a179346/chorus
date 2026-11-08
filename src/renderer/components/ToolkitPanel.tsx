@@ -17,13 +17,27 @@ export function ToolkitPanel({ commands, onExecute, onAdd, onUpdate, onDelete }:
   const [editingCommand, setEditingCommand] = useState<ToolkitCommand | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; commandId: string } | null>(null);
+  // The "…" button the open menu hangs from; none for a right-click menu
+  const menuAnchorRef = useRef<HTMLElement | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
   const closeMenu = useCallback(() => setContextMenu(null), []);
 
-  const openMenu = useCallback((commandId: string, x: number, y: number) => {
+  const openMenuAt = useCallback((commandId: string, x: number, y: number) => {
+    menuAnchorRef.current = null;
     setContextMenu({ x, y, commandId });
   }, []);
+
+  const toggleMenuFrom = useCallback((commandId: string, button: HTMLElement) => {
+    if (contextMenu && menuAnchorRef.current === button) {
+      setContextMenu(null);
+      return;
+    }
+    menuAnchorRef.current = button;
+    // Anchored to the button: a keyboard press has no pointer position
+    const rect = button.getBoundingClientRect();
+    setContextMenu({ x: rect.left, y: rect.bottom + 4, commandId });
+  }, [contextMenu]);
 
   const handleMenuAction = useCallback((action: 'edit' | 'delete') => {
     if (!contextMenu) return;
@@ -87,7 +101,8 @@ export function ToolkitPanel({ commands, onExecute, onAdd, onUpdate, onDelete }:
               key={cmd.id}
               command={cmd}
               onExecute={onExecute}
-              onOpenMenu={openMenu}
+              onOpenMenu={openMenuAt}
+              onToggleMenu={toggleMenuFrom}
             />
           ))
         )}
@@ -95,7 +110,7 @@ export function ToolkitPanel({ commands, onExecute, onAdd, onUpdate, onDelete }:
 
       {/* Context menu */}
       {contextMenu && (
-        <Menu x={contextMenu.x} y={contextMenu.y} onClose={closeMenu}>
+        <Menu x={contextMenu.x} y={contextMenu.y} anchorRef={menuAnchorRef} onClose={closeMenu}>
           <MenuItem icon={<Pencil size={13} />} onSelect={() => handleMenuAction('edit')}>
             Edit…
           </MenuItem>
@@ -139,9 +154,10 @@ interface ToolkitButtonProps {
   command: ToolkitCommand;
   onExecute: (commandId: string) => void;
   onOpenMenu: (commandId: string, x: number, y: number) => void;
+  onToggleMenu: (commandId: string, button: HTMLElement) => void;
 }
 
-function ToolkitButton({ command, onExecute, onOpenMenu }: ToolkitButtonProps): React.ReactElement {
+function ToolkitButton({ command, onExecute, onOpenMenu, onToggleMenu }: ToolkitButtonProps): React.ReactElement {
   return (
     <div className="toolkit-item" style={{ position: 'relative' }}>
       <button
@@ -166,11 +182,7 @@ function ToolkitButton({ command, onExecute, onOpenMenu }: ToolkitButtonProps): 
       <button
         type="button"
         className="toolkit-more"
-        onClick={(e) => {
-          // Anchored to the button: a keyboard press has no pointer position
-          const rect = e.currentTarget.getBoundingClientRect();
-          onOpenMenu(command.id, rect.left, rect.bottom + 4);
-        }}
+        onClick={(e) => onToggleMenu(command.id, e.currentTarget)}
         title="Edit or delete"
         aria-label={`Edit or delete ${command.label}`}
       >

@@ -9,7 +9,8 @@ hooks, IPC, or terminals, go through these seams — don't reach around them.
 ### SessionState — the commit seam (`session-state.ts`)
 
 All session mutations flow through `sessionState.commit(sessionId, updates)`.
-Commit updates the store, persists when a persisted field changed, broadcasts
+Commit updates the store, persists when what is saved for the session changed
+(a persisted field, or whether claude has exited), broadcasts
 exactly the changed fields to the renderer, and refreshes the unread badge
 when `unread` changed. Higher-level entry points (`applyHookUpdate`,
 `handleClaudeExit`, `markRead`) encode the unread/notification policy and end
@@ -28,7 +29,8 @@ or the user added (`linkPrs`), unlinks them (`unlinkPr`), and keeps every PR's
 stage current. A PR gh can't find stays linked with stage `not-found` until the
 user removes it; a merged PR is final and no longer looked up. Owns debouncing, per-PR
 in-flight dedup, gh concurrency limiting, and backoff when gh is unavailable. The GitHub lookup is an injectable adapter
-(`GhRunner`; prod default `runGhPrView` spawns `gh pr view`), and the clock is
+(`GhRunner`; prod default `runGhPrView` spawns `gh pr view -R github.com/<owner>/<repo>`,
+pinned to github.com whatever host gh defaults to), and the clock is
 injectable — so the whole engine is unit-testable without gh or real timers.
 Writes go through the SessionState commit seam.
 
@@ -48,40 +50,55 @@ They share only the `HOOK_EVENTS` list.
 
 ### PtyManager (`pty-manager.ts`)
 
-Owns the claude + shell PTY pair per session. Decoupled from Electron and the
-hook server: Claude process exits are reported through
+Owns each session's claude + shell PTYs. A session can hold just its shell:
+`spawnShell` starts one whose claude isn't running (a session restored after
+its claude had exited), and a claude that exits leaves the shell in place;
+`restartClaude` starts claude for either, replacing a running one. A new claude
+starts at the size the session's Claude terminal last asked for
+(`resizeClaude` keeps it even while no claude runs). Decoupled from Electron
+and the hook server: Claude process exits are reported through
 `setExitHandler(handler)`, which the composition root wires to
 `sessionState.handleClaudeExit`. Only a session's *current* PTYs reach its
 terminals and report claude's exit — ones that were killed, swapped out by
-`restartClaude`, or replaced by a new `spawn` for the same id (which kills the
-old pair) stay silent — and PTYs whose process already exited are never
-signalled, since their PID may have been reused. Claude args are passed through
-unchanged; they are validated when a session is created (see claude CLI
-arguments below).
+`restartClaude`, or replaced by a new `spawn`/`spawnShell` for the same id
+(which kills the old ones) stay silent — and PTYs whose process already exited
+are never signalled or resized, since their PID or descriptor may have been
+reused. Claude args are passed through unchanged; they are validated when a
+session is created (see claude CLI arguments below).
 
 ### Shell environment (`shell-env.ts`)
 
 A packaged app opened from the Dock or at login gets launchd's minimal
 environment. `readLoginShellEnv` starts `$SHELL -ilc` asynchronously and
-captures its environment from `command env -0` between start/end markers:
+captures its environment from `command env -0` between start/end markers (the
+end marker only follows a successful env, so a failed env rejects instead of
+reading as empty):
 rc-file output is ignored, an alias or function named `env` can't stand in,
 and it resolves as soon as the end marker arrives (a background job started by
 an rc file may keep the shell's output open). `resolveShellEnv` retries
 through an injected prompt (`confirmRetry`) until it works or the user
 continues without it. `userShell()` is the one default-shell rule (`$SHELL`,
 else `/bin/zsh`), for this probe and the shell panel. The composition root
-merges the result into `process.env`, then restores saved sessions. Until the
-restore has run, the `SessionRestore` gate holds back everything that lists or
-spawns sessions; it opens even if the restore fails (a dialog says so), and
-`before-quit` saves only if the restore succeeded, since otherwise the store
-doesn't hold the saved sessions.
+merges the result into `process.env`, then restores saved sessions: each one
+the user has prompted comes back as it was saved — claude resuming its
+conversation, or, if claude had exited, only its shell, showing the exited
+banner until the user restarts it — and one that can't be restored (its
+directory is gone, or its PTYs didn't spawn) goes to Recently Closed instead.
+Until the restore has run, the `SessionRestore` gate holds back everything
+that lists or spawns sessions; it opens even if the restore fails (a dialog
+says so). The store never drops a saved session it hasn't restored or removed:
+those stay in the index and keep their files through every write and the
+orphan cleanup, so `before-quit` can always save.
 
 ### index.ts — the composition root
 
 Constructs and wires the modules above, and registers IPC handlers. It also
 owns system notifications: one per session, dismissed when the session is
-looked at (switched to, or active when the window gains focus) or ended. The
-handler table is a mapped type over `IpcInvokeMap`, so the compiler enforces
+looked at (switched to, or active when the window gains focus) or closed. A
+relaunch (Restart, restore, reopen) runs claude in the session's worktree;
+when claude has removed it (it does on exit when the worktree is clean),
+claude runs from the session's cwd with `--worktree <name>` and recreates it.
+The handler table is a mapped type over `IpcInvokeMap`, so the compiler enforces
 that every declared channel has exactly one handler with the declared
 payload/response types. Business logic belongs in the modules, not here.
 
@@ -103,22 +120,30 @@ do), call `invoke`/`on`. No preload or `.d.ts` edits.
 ## claude CLI arguments (`src/shared/claude-cli.ts`)
 
 The one place that knows claude's argument syntax. `checkSessionFlags` reads a
-session's flags the way claude's option parser does, using a table of the
-value-taking flags in `claude --help` (required / optional / variadic — it must
-follow claude's flags): a value always goes with its flag and is never checked
-as a flag; any other word (claude would take it as a prompt or subcommand) is
-an error suggesting `--flag=value`; a trailing flag missing its required value
-is an error. It also rejects flags Chorus manages
-(`--session-id`/`--resume`/`--name`/`--worktree`…), flags that end the
-interactive session in this terminal (`-p`, `--bg`, `--cloud`, `--environment`,
-`--tmux`, `--rewind-files`…), and flags that turn off the hooks (`--bare`,
-`--safe-mode`, `--restricted`, `--setting-sources` without `local`). The dialog
-runs it live; main runs it again on create. `newSessionArgs` / `relaunchArgs`
-build claude's launch arguments: Chorus's own flags first, then the session's
-flags, and — first launch only — the prompt after `--` (a one-word prompt is
-padded so claude can't take it for a subcommand); a relaunch uses `--resume`
-once the session has user input, else `--session-id`/`--name`. Additional
-Flags text is split with shell-style quoting only (no `~`, `$VAR` or `#`). The
+session's flags the way claude's option parser does, using two tables that
+must follow claude's flags: the value-taking flags (required / optional /
+variadic) in `claude --help` plus hidden ones a user is likely to type
+(`--system-prompt-file`, `--thinking`, `--channels`…), and the flags in
+`--help` that take no value (plus `--enable-auto-mode`). A value always goes
+with its flag and is never checked as a flag; a value attached to a flag that
+takes none (`--verbose=true`, which claude refuses) is an error; any other word
+(claude would take it as a prompt or subcommand) is an error — after a flag
+that takes no value it says so, after a flag in neither table it suggests
+`--flag=value`; a trailing flag missing its required value is an error. It
+also rejects flags Chorus manages (`--session-id`/`--resume`/`--name`/
+`--worktree`…), flags that end the interactive session in this terminal (`-p`,
+`--bg`, `--cloud`, `--environment`, `--tmux`, `--rewind-files`…), and flags
+that turn off the hooks (`--bare`, `--safe-mode`, `--restricted`,
+`--project-config-root`, and a `--setting-sources` without `local` or naming
+anything but `user`/`project`/`local`); what a `--settings` file or JSON holds
+isn't inspected. The dialog runs it live; main runs it again on create,
+checkbox flags included. `newSessionArgs` / `relaunchArgs` build claude's
+launch arguments: Chorus's own flags first, then the session's flags, and —
+first launch only — the prompt after `--` (a one-word prompt is padded so
+claude can't take it for a subcommand); a relaunch uses `--resume` once the
+session has user input, else `--session-id`/`--name`, plus `--worktree <name>`
+when asked to recreate a worktree whose directory is gone. Additional Flags
+text is split with shell-style quoting only (no `~`, `$VAR` or `#`). The
 checkbox flags, and the hint that points a typed checkbox flag to its
 checkbox, live in `src/renderer/session-flags.ts`.
 
@@ -130,14 +155,20 @@ Owns every xterm instance: the cache that keeps terminals (and their PTY data
 listeners) alive across React unmounts, plus focus, search, fonts, and
 theming. Callers address terminals by `(kind, sessionId)` through the
 `terminals` object and never hold xterm objects. `TerminalView` is a thin
-adapter that mounts a container and calls `terminals.attach`.
+adapter that mounts a container and calls `terminals.attach`. Attaching never
+moves focus: App's `focusActiveClaude` is the one place that puts the keyboard
+in the active session's Claude terminal (on switching sessions, after a
+restart, a toolkit run or a rename, and as the focus fallback), and it never
+takes focus from an open dialog or the palette.
 
 ### useSessions — session state hook (`use-sessions.ts`)
 
 Owns the renderer's session list and active-session state: subscribes to
 `SESSION_STATE` pushes (only `SESSION_SYNC_FIELDS`), and exposes the session
 verbs (create, end, restart, switch, next needing attention, rename, reorder,
-toggle notify, link/unlink PR). `App.tsx` keeps only UI state.
+toggle notify, link/unlink PR). Only a listed session is active: the last
+active id App restores at startup takes effect once main lists it, and if it
+doesn't come back the first session is active. `App.tsx` keeps only UI state.
 
 ### session-presentation (`session-presentation.ts`)
 
@@ -156,16 +187,19 @@ styles can't express pseudo-classes; layout stays inline. Modals go through
 `Dialog` / `ConfirmDialog` (a backdrop that closes only on a press and release
 on it, Escape, focus trap) and floating menus through `Menu` (viewport clamping
 and scrolling; arrow keys, Home and End while focus is in it; closes on Escape,
-Tab, an outside press, or focus leaving it), instead of each component
+Tab, a press outside it and its `anchorRef` (the trigger, whose own click
+toggles it), or focus leaving it), instead of each component
 re-rolling them. Menus, dialogs and the command palette hand focus back to what
-had it when they opened (`use-focus-return.ts`); when that element is gone,
+had it when they opened (`use-focus-return.ts`); when that element is gone
+(or the same update removes it right after focus went back),
 `FocusFallbackContext` takes over, and App points it at the active Claude
 terminal.
 
 ### Command palette (`components/CommandPalette.tsx`, `palette-items.tsx`, `palette-match.ts`)
 
 `palette-match` is the pure ranking (prefix > word start > substring >
-scattered letters). Every query word must match, in any order, and an item
+scattered letters). The query splits into words at the same breaks as item
+text (spaces, `-`, `_`, `.`, `/`); every word must match, in any order, and an item
 ranks by its weakest word; a group's items stay together, and the group
 holding the best match leads. Without a query everything keeps its order.
 `palette-items` builds the

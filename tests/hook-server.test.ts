@@ -7,8 +7,11 @@ function postHookEvent(
   port: number,
   event: Partial<HookEvent>,
 ): Promise<number> {
+  return postBody(port, JSON.stringify(event));
+}
+
+function postBody(port: number, data: string): Promise<number> {
   return new Promise((resolve, reject) => {
-    const data = JSON.stringify(event);
     const req = http.request(
       {
         hostname: "127.0.0.1",
@@ -208,24 +211,25 @@ describe("HookServer", () => {
     });
 
     it("should ignore malformed JSON", async () => {
-      const status = await new Promise<number>((resolve, reject) => {
-        const req = http.request(
-          {
-            hostname: "127.0.0.1",
-            port: server.getPort(),
-            path: "/hook",
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-          },
-          (res) => resolve(res.statusCode ?? 0),
-        );
-        req.on("error", reject);
-        req.write("not json");
-        req.end();
-      });
+      const status = await postBody(server.getPort(), "not json");
       expect(status).toBe(200); // Still returns 200
       expect(updates).toHaveLength(0);
     });
+
+    it.each(["null", "42", '"Stop"', "[]", '{"hook_event_name":"Stop","cwd":"/tmp"}'])(
+      "ignores a body that isn't a hook event: %s",
+      async (body) => {
+        expect(await postBody(server.getPort(), body)).toBe(200);
+        // A follow-up event proves the body was dropped and the server still runs
+        await postHookEvent(server.getPort(), {
+          session_id: "s1",
+          hook_event_name: "PreToolUse",
+          cwd: "/tmp",
+        });
+        await vi.waitFor(() => expect(updates).toHaveLength(1));
+        expect(updates[0]).toEqual({ sessionId: "s1", update: { status: "generating" } });
+      },
+    );
   });
 
   // ─── Multiple sessions ────────────────────────────────
@@ -302,6 +306,11 @@ describe("prsCreatedBy", () => {
     expect(prsCreatedBy(bashFailed("gh pr create", "Exit code 1\nno commits between main and feat"))).toEqual([]);
   });
 
+  it("finds nothing in an error that isn't text", () => {
+    const event = { ...bashFailed("gh pr create", ""), error: { message: "https://github.com/o/r/pull/4" } };
+    expect(prsCreatedBy(event)).toEqual([]);
+  });
+
   it.each(["gh pr list", "gh pr view 555", "gh pr ready 42", "git log --grep='gh pr create'"])(
     "ignores PR URLs printed by `%s`",
     (command) => {
@@ -328,7 +337,11 @@ describe("prsCreatedBy", () => {
     ).toEqual([]);
   });
 
-  it.each(["mcp__github__create_pull_request", "mcp__plugin_github_github__create_pull_request"])(
+  it.each([
+    "mcp__github__create_pull_request",
+    "mcp__plugin_github_github__create_pull_request",
+    "mcp__claude_ai_GitHub__create_pull_request",
+  ])(
     "reads the PR from the %s MCP tool's result",
     (toolName) => {
       const event: HookEvent = {

@@ -62,8 +62,9 @@ export function usePrRemovalFocus(prs: readonly PrRef[], inputRef: React.RefObje
     pending.current = null;
     // Only focus that went down with the row; never pull it from where the user moved it
     if (document.activeElement !== document.body) return;
-    const target = removal.neighbour === null ? inputRef.current : removeButtons.current.get(removal.neighbour);
-    target?.focus();
+    // The neighbour may have gone in the same update
+    const neighbourButton = removal.neighbour === null ? undefined : removeButtons.current.get(removal.neighbour);
+    (neighbourButton ?? inputRef.current)?.focus();
   }, [prs, inputRef]);
 
   return {

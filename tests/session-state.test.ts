@@ -95,6 +95,26 @@ describe('SessionState', () => {
       expect(store.persistCount).toBe(2);
     });
 
+    it('persists when claude exits, and when it runs again', () => {
+      state.commit('s1', { status: 'ended' });
+      expect(store.persistCount).toBe(1);
+
+      state.commit('s1', { status: 'creating' });
+      expect(store.persistCount).toBe(2);
+    });
+
+    it('persists when how claude exited changes', () => {
+      sessions.get('s1')!.status = 'ended';
+      state.commit('s1', { status: 'error' });
+      expect(store.persistCount).toBe(1);
+    });
+
+    it('does not persist an exited status committed again', () => {
+      sessions.get('s1')!.status = 'error';
+      state.commit('s1', { status: 'error' });
+      expect(store.persistCount).toBe(0);
+    });
+
     it('refreshes the unread badge when unread changes', () => {
       state.commit('s1', { unread: true });
       expect(env.setUnreadCount).toHaveBeenCalledWith(1);
@@ -218,6 +238,11 @@ describe('SessionState', () => {
     it('commits error on non-zero exit', () => {
       state.handleClaudeExit('s1', 1);
       expect(sessions.get('s1')!.status).toBe('error');
+    });
+
+    it('saves the exit, so a relaunch restores the session exited', () => {
+      state.handleClaudeExit('s1', 0);
+      expect(store.persistCount).toBe(1);
     });
   });
 

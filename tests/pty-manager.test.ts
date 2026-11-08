@@ -33,6 +33,12 @@ function exitClaudeAt(spawnIndex: number, exitCode = 0): void {
   nodePty.spawn.mock.results[spawnIndex].value.onExit.mock.calls[0][0]({ exitCode, signal: 0 });
 }
 
+/** The claude and shell PTYs the last spawn() created, in that order. */
+function lastSpawnedPtys() {
+  const results = nodePty.spawn.mock.results;
+  return { claude: results.at(-2)!.value, shell: results.at(-1)!.value };
+}
+
 function makeMockWindow(destroyed = false) {
   return {
     isDestroyed: vi.fn(() => destroyed),
@@ -139,21 +145,25 @@ describe('PtyManager', () => {
     });
 
     it('should set up onData listeners for both PTYs', () => {
-      const pair = manager.spawn('session-1', '/tmp/test', []);
+      manager.spawn('session-1', '/tmp/test', []);
+      const pair = lastSpawnedPtys();
       expect(pair.claude.onData).toHaveBeenCalled();
       expect(pair.shell.onData).toHaveBeenCalled();
     });
 
     it('should set up onExit listener for claude PTY', () => {
-      const pair = manager.spawn('session-1', '/tmp/test', []);
+      manager.spawn('session-1', '/tmp/test', []);
+      const pair = lastSpawnedPtys();
       expect(pair.claude.onExit).toHaveBeenCalled();
     });
 
     it('kills the PTYs a session already has, so the two pairs never share its terminals', () => {
       const exitHandler = vi.fn();
       manager.setExitHandler(exitHandler);
-      const first = manager.spawn('session-1', '/tmp/test', []);
-      const second = manager.spawn('session-1', '/tmp/test', []);
+      manager.spawn('session-1', '/tmp/test', []);
+      const first = lastSpawnedPtys();
+      manager.spawn('session-1', '/tmp/test', []);
+      const second = lastSpawnedPtys();
 
       expect(first.claude.kill).toHaveBeenCalledWith('SIGTERM');
       expect(first.shell.kill).toHaveBeenCalledWith('SIGTERM');
@@ -171,15 +181,55 @@ describe('PtyManager', () => {
     });
   });
 
+  describe('spawnShell', () => {
+    it('spawns only the shell, in the given cwd', () => {
+      manager.spawnShell('session-1', '/tmp/repo');
+
+      expect(nodePty.spawn).toHaveBeenCalledTimes(1);
+      expect(nodePty.spawn.mock.calls[0][0]).not.toBe('claude');
+      expect(nodePty.spawn.mock.calls[0][2]).toMatchObject({ cwd: '/tmp/repo' });
+      expect(manager.has('session-1')).toBe(true);
+    });
+
+    it('forwards the shell and takes its input', () => {
+      const win = makeMockWindow();
+      manager.setMainWindow(win);
+      manager.spawnShell('session-1', '/tmp/repo');
+      const shell = nodePty.spawn.mock.results[0].value;
+
+      dataCallbackAt(0)('$ ');
+      manager.writeToShell('session-1', 'ls\n');
+      expect(win.webContents.send).toHaveBeenCalledWith('shell:data', { sessionId: 'session-1', data: '$ ' });
+      expect(shell.write).toHaveBeenCalledWith('ls\n');
+    });
+
+    it('drops claude input and resizes, having no claude', () => {
+      manager.spawnShell('session-1', '/tmp/repo');
+      expect(() => manager.writeToClaude('session-1', 'hi')).not.toThrow();
+      expect(() => manager.resizeClaude('session-1', 80, 24)).not.toThrow();
+    });
+
+    it('kills the PTYs the session already has', () => {
+      manager.spawn('session-1', '/tmp/test', []);
+      const previous = lastSpawnedPtys();
+      manager.spawnShell('session-1', '/tmp/test');
+
+      expect(previous.claude.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(previous.shell.kill).toHaveBeenCalledWith('SIGTERM');
+    });
+  });
+
   describe('write', () => {
     it('should write to claude PTY', () => {
-      const pair = manager.spawn('session-1', '/tmp/test', []);
+      manager.spawn('session-1', '/tmp/test', []);
+      const pair = lastSpawnedPtys();
       manager.writeToClaude('session-1', 'hello\n');
       expect(pair.claude.write).toHaveBeenCalledWith('hello\n');
     });
 
     it('should write to shell PTY', () => {
-      const pair = manager.spawn('session-1', '/tmp/test', []);
+      manager.spawn('session-1', '/tmp/test', []);
+      const pair = lastSpawnedPtys();
       manager.writeToShell('session-1', 'ls\n');
       expect(pair.shell.write).toHaveBeenCalledWith('ls\n');
     });
@@ -190,8 +240,10 @@ describe('PtyManager', () => {
     });
 
     it('should write to the correct session when multiple exist', () => {
-      const pair1 = manager.spawn('session-1', '/tmp/a', []);
-      const pair2 = manager.spawn('session-2', '/tmp/b', []);
+      manager.spawn('session-1', '/tmp/a', []);
+      const pair1 = lastSpawnedPtys();
+      manager.spawn('session-2', '/tmp/b', []);
+      const pair2 = lastSpawnedPtys();
       manager.writeToClaude('session-2', 'data');
       expect(pair1.claude.write).not.toHaveBeenCalled();
       expect(pair2.claude.write).toHaveBeenCalledWith('data');
@@ -200,13 +252,15 @@ describe('PtyManager', () => {
 
   describe('resize', () => {
     it('should resize claude PTY', () => {
-      const pair = manager.spawn('session-1', '/tmp/test', []);
+      manager.spawn('session-1', '/tmp/test', []);
+      const pair = lastSpawnedPtys();
       manager.resizeClaude('session-1', 80, 24);
       expect(pair.claude.resize).toHaveBeenCalledWith(80, 24);
     });
 
     it('should resize shell PTY', () => {
-      const pair = manager.spawn('session-1', '/tmp/test', []);
+      manager.spawn('session-1', '/tmp/test', []);
+      const pair = lastSpawnedPtys();
       manager.resizeShell('session-1', 80, 24);
       expect(pair.shell.resize).toHaveBeenCalledWith(80, 24);
     });
@@ -215,11 +269,30 @@ describe('PtyManager', () => {
       expect(() => manager.resizeClaude('nonexistent', 80, 24)).not.toThrow();
       expect(() => manager.resizeShell('nonexistent', 80, 24)).not.toThrow();
     });
+
+    it('never resizes a claude that exited (its descriptor may belong to another PTY by now)', () => {
+      manager.spawn('session-1', '/tmp/test', []);
+      const pair = lastSpawnedPtys();
+      exitClaudeAt(0);
+
+      manager.resizeClaude('session-1', 80, 24);
+      expect(pair.claude.resize).not.toHaveBeenCalled();
+    });
+
+    it('never resizes a shell that exited', () => {
+      manager.spawn('session-1', '/tmp/test', []);
+      const pair = lastSpawnedPtys();
+      pair.shell.onExit.mock.calls[0][0]({ exitCode: 0, signal: 0 });
+
+      manager.resizeShell('session-1', 80, 24);
+      expect(pair.shell.resize).not.toHaveBeenCalled();
+    });
   });
 
   describe('kill', () => {
     it('should kill both PTYs for a session', () => {
-      const pair = manager.spawn('session-1', '/tmp/test', []);
+      manager.spawn('session-1', '/tmp/test', []);
+      const pair = lastSpawnedPtys();
       manager.kill('session-1');
       expect(pair.claude.kill).toHaveBeenCalled();
       expect(pair.shell.kill).toHaveBeenCalled();
@@ -236,7 +309,8 @@ describe('PtyManager', () => {
     });
 
     it('should handle kill when PTY.kill throws (already dead)', () => {
-      const pair = manager.spawn('session-1', '/tmp/test', []);
+      manager.spawn('session-1', '/tmp/test', []);
+      const pair = lastSpawnedPtys();
       (pair.claude.kill as any).mockImplementation(() => {
         throw new Error('Process already dead');
       });
@@ -245,7 +319,8 @@ describe('PtyManager', () => {
     });
 
     it('should not signal a claude that already exited', () => {
-      const pair = manager.spawn('session-1', '/tmp/test', []);
+      manager.spawn('session-1', '/tmp/test', []);
+      const pair = lastSpawnedPtys();
       const claudeOnExit = nodePty.spawn.mock.results[0].value.onExit;
       claudeOnExit.mock.calls[0][0]({ exitCode: 0, signal: 0 });
 
@@ -406,7 +481,8 @@ describe('PtyManager', () => {
 
   describe('restartClaude', () => {
     it('spawns a new claude with the given cwd and flags, keeping the shell', () => {
-      const pair = manager.spawn('session-1', '/tmp/test', []);
+      manager.spawn('session-1', '/tmp/test', []);
+      const pair = lastSpawnedPtys();
       manager.restartClaude('session-1', '/tmp/worktree', ['--resume', 'abc']);
 
       expect(nodePty.spawn).toHaveBeenCalledTimes(3);
@@ -417,12 +493,50 @@ describe('PtyManager', () => {
       expect(pair.shell.kill).not.toHaveBeenCalled();
     });
 
-    it('inherits the previous terminal size', () => {
-      const pair = manager.spawn('session-1', '/tmp/test', []);
-      Object.assign(pair.claude, { cols: 200, rows: 50 });
+    it('starts at the size the terminal last asked for', () => {
+      manager.spawn('session-1', '/tmp/test', []);
+      manager.resizeClaude('session-1', 200, 50);
       manager.restartClaude('session-1', '/tmp/test', []);
 
       expect(nodePty.spawn.mock.calls[2][2]).toMatchObject({ cols: 200, rows: 50 });
+    });
+
+    it('starts at the size asked for after claude exited', () => {
+      manager.spawn('session-1', '/tmp/test', []);
+      exitClaudeAt(0);
+      manager.resizeClaude('session-1', 90, 40);
+      manager.restartClaude('session-1', '/tmp/test', []);
+
+      expect(nodePty.spawn.mock.calls[2][2]).toMatchObject({ cols: 90, rows: 40 });
+    });
+
+    it("starts claude for a session spawned with only its shell, at its terminal's size", () => {
+      const exitHandler = vi.fn();
+      manager.setExitHandler(exitHandler);
+      manager.spawnShell('session-1', '/tmp/repo');
+      manager.resizeClaude('session-1', 100, 35);
+      manager.restartClaude('session-1', '/tmp/worktree', ['--resume', 'abc']);
+
+      expect(nodePty.spawn).toHaveBeenCalledTimes(2);
+      const restartCall = nodePty.spawn.mock.calls[1];
+      expect(restartCall[0]).toBe('claude');
+      expect(restartCall[1]).toEqual(['--resume', 'abc']);
+      expect(restartCall[2]).toMatchObject({ cwd: '/tmp/worktree', cols: 100, rows: 35 });
+
+      manager.writeToClaude('session-1', 'hi');
+      expect(nodePty.spawn.mock.results[1].value.write).toHaveBeenCalledWith('hi');
+      exitClaudeAt(1, 1);
+      expect(exitHandler).toHaveBeenCalledWith('session-1', 1);
+    });
+
+    it('forgets the size once the session is killed', () => {
+      manager.spawn('session-1', '/tmp/test', []);
+      manager.resizeClaude('session-1', 200, 50);
+      manager.kill('session-1');
+      manager.resizeClaude('session-1', 210, 60);
+      manager.spawn('session-1', '/tmp/test', []);
+
+      expect(nodePty.spawn.mock.calls[2][2]).toMatchObject({ cols: 120, rows: 30 });
     });
 
     it('routes input to the new claude', () => {
@@ -437,7 +551,8 @@ describe('PtyManager', () => {
     it('kills a still-running claude without reporting its exit', () => {
       const exitHandler = vi.fn();
       manager.setExitHandler(exitHandler);
-      const pair = manager.spawn('session-1', '/tmp/test', []);
+      manager.spawn('session-1', '/tmp/test', []);
+      const pair = lastSpawnedPtys();
       manager.restartClaude('session-1', '/tmp/test', []);
 
       expect(pair.claude.kill).toHaveBeenCalledWith('SIGTERM');
@@ -455,8 +570,18 @@ describe('PtyManager', () => {
       expect(exitHandler).toHaveBeenCalledWith('session-1', 1);
     });
 
+    it('sends no input to a claude that exited', () => {
+      manager.spawn('session-1', '/tmp/test', []);
+      const pair = lastSpawnedPtys();
+      exitClaudeAt(0);
+
+      manager.writeToClaude('session-1', 'hi');
+      expect(pair.claude.write).not.toHaveBeenCalled();
+    });
+
     it('does not signal a claude that already exited (its PID may be reused)', () => {
-      const pair = manager.spawn('session-1', '/tmp/test', []);
+      manager.spawn('session-1', '/tmp/test', []);
+      const pair = lastSpawnedPtys();
       exitClaudeAt(0);
       manager.restartClaude('session-1', '/tmp/test', []);
 

@@ -73,6 +73,11 @@ describe('readLoginShellEnv', () => {
     );
   });
 
+  it('rejects when env fails, rather than reading an empty environment', async () => {
+    const shell = fakeShell('no-env.sh', 'PATH=/nonexistent\nexec /bin/sh -c "$2"');
+    await expect(readLoginShellEnv(shell)).rejects.toThrow(`${shell} exited with code 127.`);
+  });
+
   it('rejects output without the environment', async () => {
     const shell = fakeShell('silent.sh', 'echo "hello"');
     await expect(readLoginShellEnv(shell)).rejects.toThrow(`${shell} printed no environment.`);

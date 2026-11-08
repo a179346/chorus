@@ -1,5 +1,5 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useFocusReturn } from '../use-focus-return';
+import React, { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { focusIsLost, useFocusReturn } from '../use-focus-return';
 
 const VIEWPORT_MARGIN = 8;
 
@@ -8,6 +8,8 @@ interface MenuProps {
   y: number;
   label?: string;
   width?: number;
+  /** The button that opened the menu: pressing it again is its own toggle, not an outside press. */
+  anchorRef?: RefObject<HTMLElement | null>;
   onClose: () => void;
   children: React.ReactNode;
 }
@@ -15,17 +17,14 @@ interface MenuProps {
 /**
  * A floating menu at (x, y), measured and nudged to stay on screen, scrolling
  * when taller than the window. While focus is in it, arrow keys, Home and End
- * move between items. It closes on Escape, Tab, an outside press, or focus
- * leaving it, and hands focus back to whatever had it before.
+ * move between items. It closes on Escape, Tab, a press outside it and its
+ * anchor, or focus leaving it, and hands focus back to whatever had it before.
  */
-export function Menu({ x, y, label, width, onClose, children }: MenuProps): React.ReactElement {
+export function Menu({ x, y, label, width, anchorRef, onClose, children }: MenuProps): React.ReactElement {
   const menuRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ left: x, top: y });
-  // Read through a ref so a new callback identity doesn't re-run the setup and steal focus
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
 
-  useFocusReturn(menuRef);
+  const isReturningFocus = useFocusReturn(menuRef);
 
   // Before paint, so the menu never flashes at its unclamped spot, and again
   // whenever its items change size while it's open
@@ -47,11 +46,29 @@ export function Menu({ x, y, label, width, onClose, children }: MenuProps): Reac
 
   useEffect(() => {
     const handlePointerDown = (e: MouseEvent): void => {
-      if (e.target instanceof Node && !menuRef.current?.contains(e.target)) onCloseRef.current();
+      if (!(e.target instanceof Node) || menuRef.current?.contains(e.target)) return;
+      if (anchorRef?.current?.contains(e.target)) {
+        // The anchor's click toggles the menu; until then focus stays in it
+        e.preventDefault();
+        return;
+      }
+      onClose();
     };
     window.addEventListener('mousedown', handlePointerDown);
-    if (menuRef.current) menuItems(menuRef.current)[0]?.focus();
     return () => window.removeEventListener('mousedown', handlePointerDown);
+  }, [anchorRef, onClose]);
+
+  useEffect(() => {
+    const menu = menuRef.current;
+    if (!menu) return;
+    const focusFirstItem = (): void => menuItems(menu)[0]?.focus();
+    focusFirstItem();
+    // A re-render can remove the focused item (its action stopped applying); keep the keyboard in the menu
+    const observer = new MutationObserver(() => {
+      if (focusIsLost()) focusFirstItem();
+    });
+    observer.observe(menu, { childList: true, subtree: true });
+    return () => observer.disconnect();
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
@@ -77,12 +94,18 @@ export function Menu({ x, y, label, width, onClose, children }: MenuProps): Reac
       className="menu"
       style={{ ...position, width, maxHeight: `calc(100vh - ${2 * VIEWPORT_MARGIN}px)` }}
       onKeyDown={handleKeyDown}
-      // Focus leaving for anywhere else (another window, a dialog or palette opened over it) closes it
+      // Focus leaving for anywhere else (another window, a dialog or palette opened over it) closes it;
+      // focus going back where it came from as the menu closes doesn't
       onBlur={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget)) onClose();
+        if (!isReturningFocus() && !e.currentTarget.contains(e.relatedTarget)) onClose();
       }}
       // Hover already moves focus; a press on a divider or the padding mustn't drop it
       onMouseDown={(e) => e.preventDefault()}
+      // A right-click inside is the menu's own: no native menu, and none from the panel behind
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
     >
       {children}
     </div>

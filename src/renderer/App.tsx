@@ -17,7 +17,7 @@ import { CommandPalette } from './components/CommandPalette';
 import { buildPaletteItems } from './palette-items';
 import { applyThemeCss, getTheme, DEFAULT_THEME_ID } from './themes';
 import { terminals, type TerminalAddress } from './terminal-host';
-import { FocusFallbackContext } from './use-focus-return';
+import { FocusFallbackContext, focusIsLost } from './use-focus-return';
 import { useSessions, type NewSessionInput } from './use-sessions';
 import { hasExited } from './session-presentation';
 import { invoke, ipcErrorMessage, on, IpcChannels } from './ipc';
@@ -26,6 +26,16 @@ const DEFAULT_SIDEBAR_WIDTH = 320;
 const DEFAULT_SHELL_HEIGHT = 200;
 const DEFAULT_TOOLKIT_HEIGHT = 200;
 const DEFAULT_FONT_SIZE = 13;
+
+/** A dialog or the command palette is up; it owns the keyboard until it closes. */
+function modalIsOpen(): boolean {
+  return document.querySelector('[aria-modal="true"]') !== null;
+}
+
+/** A state updater that drops `id` and keeps anything else. */
+function forget(id: string) {
+  return (current: string | null): string | null => (current === id ? null : current);
+}
 
 export function App(): React.ReactElement {
   // ─── Session state (owned by the useSessions hook) ──
@@ -180,7 +190,7 @@ export function App(): React.ReactElement {
         setPaletteOpen((open) => {
           if (open) return false;
           // Over another dialog, Escape would close both; let that one finish first
-          return !document.querySelector('[aria-modal="true"]');
+          return !modalIsOpen();
         });
       }),
     ];
@@ -216,6 +226,8 @@ export function App(): React.ReactElement {
 
   const setRestartError = useCallback((sessionId: string, message: string | null) => {
     setRestartErrors((prev) => {
+      const unchanged = message === null ? !prev.has(sessionId) : prev.get(sessionId) === message;
+      if (unchanged) return prev;
       const next = new Map(prev);
       if (message === null) next.delete(sessionId);
       else next.set(sessionId, message);
@@ -223,12 +235,37 @@ export function App(): React.ReactElement {
     });
   }, []);
 
+  // ─── Focus ─────────────────────────────────────────
+  /**
+   * The one way the keyboard goes to the active session's Claude terminal.
+   * Callers pick the moment; an open dialog or palette always keeps focus.
+   */
+  const focusActiveClaude = useCallback(() => {
+    const sid = activeSessionIdRef.current;
+    if (sid && !modalIsOpen()) terminals.focus('pty', sid);
+  }, [activeSessionIdRef]);
+
+  // For callers that run while a closing menu, dialog or palette still holds
+  // focus (focus fallback, palette actions): wait until it has left the page
+  const focusActiveClaudeAfterClose = useCallback(() => {
+    requestAnimationFrame(focusActiveClaude);
+  }, [focusActiveClaude]);
+
+  // Showing a session hands it the keyboard. TerminalView, a child, has
+  // attached its terminal by the time this runs.
+  useEffect(() => {
+    focusActiveClaude();
+  }, [activeSessionId, focusActiveClaude]);
+
   const handleEndSession = useCallback(
     async (id: string) => {
       await endSession(id);
       terminals.dispose(id);
-      // A reopened session keeps its id; it must not inherit an old failure
+      // A reopened session keeps its id; nothing left over may come back with it
       setRestartError(id, null);
+      setPrDialogSessionId(forget(id));
+      setEndSessionConfirm(forget(id));
+      setRenamingSessionId(forget(id));
     },
     [endSession, setRestartError]
   );
@@ -244,14 +281,14 @@ export function App(): React.ReactElement {
         // The resumed claude replays its history; start from a clean screen.
         // Safe after the await: main replies before the new PTY emits output.
         terminals.reset('pty', id);
-        requestAnimationFrame(() => terminals.focus('pty', id));
+        if (activeSessionIdRef.current === id) focusActiveClaude();
       } catch (err) {
         setRestartError(id, ipcErrorMessage(err));
       } finally {
         restartingRef.current.delete(id);
       }
     },
-    [restartSession, setRestartError]
+    [restartSession, setRestartError, activeSessionIdRef, focusActiveClaude]
   );
 
   const requestEndSession = useCallback(
@@ -263,16 +300,11 @@ export function App(): React.ReactElement {
 
   /** After renaming, put the keyboard back in Claude — unless focus already went somewhere else. */
   const refocusTerminalIfIdle = useCallback(() => {
+    // A rename ending on blur runs before focus lands on whatever took it
     requestAnimationFrame(() => {
-      const sid = activeSessionIdRef.current;
-      if (sid && document.activeElement === document.body) terminals.focus('pty', sid);
+      if (focusIsLost()) focusActiveClaude();
     });
-  }, [activeSessionIdRef]);
-
-  const focusActiveTerminal = useCallback(() => {
-    const sid = activeSessionIdRef.current;
-    if (sid) terminals.focus('pty', sid);
-  }, [activeSessionIdRef]);
+  }, [focusActiveClaude]);
 
   const handleRenameSession = useCallback(
     (id: string, name: string) => {
@@ -305,10 +337,10 @@ export function App(): React.ReactElement {
       const sid = activeSessionIdRef.current;
       if (sid) {
         void invoke(IpcChannels.TOOLKIT_EXECUTE, { sessionId: sid, commandId });
-        requestAnimationFrame(() => terminals.focus('pty', sid));
+        focusActiveClaudeAfterClose();
       }
     },
-    [activeSessionIdRef]
+    [activeSessionIdRef, focusActiveClaudeAfterClose]
   );
 
   const handleToolkitAdd = useCallback(
@@ -398,13 +430,9 @@ export function App(): React.ReactElement {
     [savePanelSizes]
   );
 
-  // A session's terminals attach only once main has listed it: before that it
-  // has no PTY, so the size they fit to would never reach one.
-  const terminalSessionId = activeSession?.id ?? null;
-
   // ─── Render ─────────────────────────────────────────
   return (
-    <FocusFallbackContext.Provider value={focusActiveTerminal}>
+    <FocusFallbackContext.Provider value={focusActiveClaudeAfterClose}>
       <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {/* Main layout: left/right split */}
         <SplitPane
@@ -419,7 +447,10 @@ export function App(): React.ReactElement {
           <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', position: 'relative' }}>
             <StatusBar session={activeSession} />
 
-            {sessionsLoaded && sessions.length === 0 ? (
+            {!sessionsLoaded ? (
+              // Blank until saved sessions are back; the sidebar says it's loading
+              <div style={loadingPaneStyle} />
+            ) : sessions.length === 0 ? (
               <WelcomeScreen onNewSession={() => setShowNewSession(true)} />
             ) : (
               <SplitPane
@@ -443,7 +474,7 @@ export function App(): React.ReactElement {
                       onClose={() => setPtySearch(null)}
                     />
                   )}
-                  <TerminalView sessionId={terminalSessionId} type="pty" fontFamily={terminalFontFamily} fontSize={claudeFontSize} />
+                  <TerminalView sessionId={activeSessionId} type="pty" fontFamily={terminalFontFamily} fontSize={claudeFontSize} />
                   {activeSession && hasExited(activeSession) && (
                     <ExitedSessionBanner
                       session={activeSession}
@@ -464,7 +495,7 @@ export function App(): React.ReactElement {
                         onClose={() => setShellSearch(null)}
                       />
                     )}
-                    <TerminalView sessionId={terminalSessionId} type="shell" visible={!shellCollapsed} fontFamily={terminalFontFamily} fontSize={shellFontSize} />
+                    <TerminalView sessionId={activeSessionId} type="shell" visible={!shellCollapsed} fontFamily={terminalFontFamily} fontSize={shellFontSize} />
                   </div>
                 </ShellPanel>
               </SplitPane>
@@ -587,3 +618,8 @@ export function App(): React.ReactElement {
     </FocusFallbackContext.Provider>
   );
 }
+
+const loadingPaneStyle: React.CSSProperties = {
+  flex: 1,
+  background: 'var(--bg-terminal)',
+};

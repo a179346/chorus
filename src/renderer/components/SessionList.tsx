@@ -70,6 +70,8 @@ export function SessionList({
   onJumpToAttention,
 }: SessionListProps): React.ReactElement {
   const [menu, setMenu] = useState<MenuState | null>(null);
+  // The PR chip that opened the PR menu; pressing it again closes the menu
+  const prMenuAnchorRef = useRef<HTMLElement | null>(null);
   const commandHeld = useCommandHeld();
   const attentionCount = countNeedingAttention(sessions, activeSessionId);
 
@@ -99,7 +101,7 @@ export function SessionList({
     setMenu({ kind: 'session', x: e.clientX, y: e.clientY, sessionId });
   }, []);
 
-  // One PR opens directly; several open a menu to pick from
+  // One PR opens directly; several toggle a menu to pick from
   const handlePrSummaryClick = useCallback(
     (e: React.MouseEvent<HTMLElement>, session: Session) => {
       e.stopPropagation();
@@ -107,8 +109,14 @@ export function SessionList({
         openPrInBrowser(session.prs[0]);
         return;
       }
-      const rect = e.currentTarget.getBoundingClientRect();
-      setMenu({ kind: 'prs', x: rect.left, y: rect.bottom + 4, sessionId: session.id });
+      const chip = e.currentTarget;
+      const rect = chip.getBoundingClientRect();
+      prMenuAnchorRef.current = chip;
+      setMenu((open) =>
+        open?.kind === 'prs' && open.sessionId === session.id
+          ? null
+          : { kind: 'prs', x: rect.left, y: rect.bottom + 4, sessionId: session.id },
+      );
     },
     []
   );
@@ -162,7 +170,7 @@ export function SessionList({
       {/* Session cards */}
       <div style={listStyle}>
         {loading ? (
-          <div style={restoringStyle}>Restoring sessions…</div>
+          <div style={loadingStyle}>Loading…</div>
         ) : sessions.length === 0 ? (
           <div style={emptyStyle}>
             <span>No sessions yet</span>
@@ -219,7 +227,7 @@ export function SessionList({
       )}
 
       {menu?.kind === 'prs' && menuSession && (
-        <Menu x={menu.x} y={menu.y} width={260} label="Pull requests" onClose={closeMenu}>
+        <Menu x={menu.x} y={menu.y} width={260} label="Pull requests" anchorRef={prMenuAnchorRef} onClose={closeMenu}>
           {menuSession.prs.map((pr) => (
             <MenuItem key={prLabel(pr)} title={prTooltip(pr)} onSelect={() => runFromMenu(() => openPrInBrowser(pr))}>
               <PrIdentity pr={pr} stage={pr.stage} />
@@ -279,7 +287,16 @@ function SessionMenuItems({
         Pull Requests…
       </MenuItem>
       {hasExited(session) && (
-        <MenuItem icon={<RotateCcw size={13} />} onSelect={() => run(() => onRestart(id))}>
+        <MenuItem
+          icon={<RotateCcw size={13} />}
+          // Switch first: the session's banner is where a failed restart shows
+          onSelect={() =>
+            run(() => {
+              if (!isActive) onSelect(id);
+              onRestart(id);
+            })
+          }
+        >
           Restart Claude Code
         </MenuItem>
       )}
@@ -561,8 +578,8 @@ const emptyStyle: React.CSSProperties = {
   fontSize: 11,
 };
 
-// Fades in late so a quick restore never flashes it
-const restoringStyle: React.CSSProperties = {
+// Fades in late so a quick load never flashes it
+const loadingStyle: React.CSSProperties = {
   ...emptyStyle,
   animation: 'fadeIn 200ms ease 400ms both',
 };

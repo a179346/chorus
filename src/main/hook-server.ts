@@ -14,8 +14,8 @@ export interface HookEvent {
   tool_input?: unknown;
   /** PostToolUse: what the tool returned; Bash's has `stdout`. */
   tool_response?: unknown;
-  /** PostToolUseFailure: why the tool failed. */
-  error?: string;
+  /** PostToolUseFailure: why the tool failed, as a string. */
+  error?: unknown;
   message?: string;
   notification_type?: string;
   source?: string;
@@ -64,8 +64,8 @@ export interface HookUpdate {
 
 const GH_PR_CREATE_RE = /(?:^|[\s;|&(])gh\s+pr\s+create\b/;
 // The GitHub MCP server's tool under whatever name the server was added as
-// (mcp__github__…, mcp__plugin_github_github__…)
-const MCP_CREATE_PR_TOOL_RE = /^mcp__[\w-]*github[\w-]*__create_pull_request$/;
+// (mcp__github__…, mcp__plugin_github_github__…, mcp__claude_ai_GitHub__…)
+const MCP_CREATE_PR_TOOL_RE = /^mcp__[\w-]*github[\w-]*__create_pull_request$/i;
 
 function runsGhPrCreate(event: HookEvent): boolean {
   if (event.tool_name !== 'Bash') return false;
@@ -91,7 +91,7 @@ function createPrOutput(event: HookEvent): string | undefined {
       return undefined;
     case 'PostToolUseFailure':
       // gh fails when the branch already has a PR, and names that PR's URL
-      return runsGhPrCreate(event) ? event.error : undefined;
+      return runsGhPrCreate(event) && typeof event.error === 'string' ? event.error : undefined;
     default:
       return undefined;
   }
@@ -110,6 +110,20 @@ export function prsCreatedBy(event: HookEvent): PrRef[] {
 }
 
 // ─── Server ──────────────────────────────────────────────
+
+/** Whether a POSTed body has the fields every hook event carries. */
+function isHookEvent(body: unknown): body is HookEvent {
+  return (
+    typeof body === 'object' &&
+    body !== null &&
+    'session_id' in body &&
+    typeof body.session_id === 'string' &&
+    'hook_event_name' in body &&
+    typeof body.hook_event_name === 'string' &&
+    'cwd' in body &&
+    typeof body.cwd === 'string'
+  );
+}
 
 export type HookStatusCallback = (sessionId: string, update: HookUpdate) => void;
 export type PrsDetectedCallback = (sessionId: string, prs: PrRef[]) => void;
@@ -182,12 +196,13 @@ export class HookServer {
   }
 
   private handleHookEvent(body: string): void {
-    let event: HookEvent;
+    let event: unknown;
     try {
       event = JSON.parse(body);
     } catch {
       return; // Malformed JSON — ignore
     }
+    if (!isHookEvent(event)) return;
 
     const status = HOOK_STATUS_MAP[event.hook_event_name];
     if (!status) return;

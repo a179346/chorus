@@ -19,11 +19,16 @@ export function TerminalView({
   fontSize,
 }: TerminalViewProps): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null);
+  // Fonts only seed a terminal this attach creates; a live one gets changes
+  // through terminals.applySettings. Re-attaching for them would detach the
+  // terminal and drop its focus.
+  const fontRef = useRef({ fontFamily, fontSize });
+  fontRef.current = { fontFamily, fontSize };
 
   useEffect(() => {
     if (!sessionId || !containerRef.current || !visible) return;
-    return terminals.attach(type, sessionId, containerRef.current, { fontFamily, fontSize });
-  }, [sessionId, type, visible, fontFamily, fontSize]);
+    return terminals.attach(type, sessionId, containerRef.current, fontRef.current);
+  }, [sessionId, type, visible]);
 
   // The breathing room lives on a wrapper: the fit addon sizes the terminal
   // from its container's box, so the container itself must stay unpadded.

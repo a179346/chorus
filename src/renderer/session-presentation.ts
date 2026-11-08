@@ -6,7 +6,7 @@ import {
   GitPullRequestClosed,
   TriangleAlert,
 } from 'lucide-react';
-import type { LinkedPr, PrStage, Session, SessionStatus } from '../shared/types';
+import { isExitedStatus, type LinkedPr, type PrStage, type Session, type SessionStatus } from '../shared/types';
 import { prLabel } from '../shared/pr-ref';
 
 // How a session presents itself anywhere in the UI: status colours, stage
@@ -42,7 +42,7 @@ export function statusLabel(status: SessionStatus): string {
 
 /** Claude's process is gone; the session can be relaunched in place. */
 export function hasExited(session: Session): boolean {
-  return session.status === 'ended' || session.status === 'error';
+  return isExitedStatus(session.status);
 }
 
 export const PULSING_STATUSES: ReadonlySet<string> = new Set([
@@ -116,15 +116,23 @@ export function prTooltip(pr: LinkedPr): string {
   return `${prLabel(pr)} · ${STAGE_ICON[pr.stage].label}`;
 }
 
-// Open PRs lead: they still need something from you, and so does a PR gh
-// can't find (fix access or remove it). 'unknown' only shows when no PR has
-// resolved yet.
-const STAGE_PRIORITY: readonly PrStage[] = ['ready', 'draft', 'not-found', 'merged', 'closed', 'unknown'];
+// The lowest number leads. Open PRs lead: they still need something from you,
+// and so does a PR gh can't find (fix access or remove it). 'unknown' only
+// shows when no PR has resolved yet.
+const STAGE_PRIORITY: Record<PrStage, number> = {
+  ready: 0,
+  draft: 1,
+  'not-found': 2,
+  merged: 3,
+  closed: 4,
+  unknown: 5,
+};
 
 /** The single stage that stands for a session's PRs where there is room for one icon. */
 export function summaryStage(prs: readonly LinkedPr[]): PrStage | null {
-  for (const stage of STAGE_PRIORITY) {
-    if (prs.some((pr) => pr.stage === stage)) return stage;
+  let summary: PrStage | null = null;
+  for (const { stage } of prs) {
+    if (summary === null || STAGE_PRIORITY[stage] < STAGE_PRIORITY[summary]) summary = stage;
   }
-  return null;
+  return summary;
 }

@@ -5,6 +5,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { IpcChannels, IpcErrorCodes } from "../shared/ipc";
 import type { IpcInvokeMap } from "../shared/ipc";
+import { isExitedStatus } from "../shared/types";
 import type { PrRef, Session, SessionConfig, StoredSession } from "../shared/types";
 import { parsePrUrl } from "../shared/pr-ref";
 import { checkSessionFlags, newSessionArgs, relaunchArgs } from "../shared/claude-cli";
@@ -133,24 +134,17 @@ ptyManager.setExitHandler((sessionId, exitCode) =>
 
 /**
  * Restoring the saved sessions, which runs once process.env holds the
- * login-shell environment. Until then the store is empty: whatever lists or
- * spawns sessions waits for `done`. Saving the store on quit is only safe once
- * the restore `succeeded`; otherwise it would erase the saved sessions.
+ * login-shell environment. Until then the store lists no sessions: whatever
+ * lists or spawns them waits for `done`.
  */
 class SessionRestore {
-  private outcome: "pending" | "succeeded" | "failed" = "pending";
   private markDone: () => void = () => {};
   /** Resolves once the restore has run, whether or not it succeeded. */
   readonly done = new Promise<void>((resolve) => {
     this.markDone = resolve;
   });
 
-  get succeeded(): boolean {
-    return this.outcome === "succeeded";
-  }
-
-  finish(outcome: "succeeded" | "failed"): void {
-    this.outcome = outcome;
+  finish(): void {
     this.markDone();
   }
 }
@@ -296,30 +290,80 @@ async function createSessionFromConfig(
   return session;
 }
 
-/** Where a session's claude runs: inside its worktree when it has one. */
+/**
+ * Where a session's claude runs: inside its worktree when it has one. claude
+ * makes worktrees under the main checkout's root, so this finds one when the
+ * session's cwd is that root; from any other cwd it isn't found, and claude,
+ * given --worktree, finds or creates the worktree itself.
+ */
 function sessionSpawnCwd(cwd: string, worktree: string | null): string {
   return worktree ? path.join(cwd, ".claude", "worktrees", worktree) : cwd;
 }
 
-/** Spawn a saved session's PTYs, resuming its conversation, and register it. */
-function resumeStoredSession(stored: StoredSession): Session {
-  const session = fromPersisted(stored, validateCwd(stored.cwd));
-  const spawnCwd = validateCwd(sessionSpawnCwd(session.cwd, session.worktree));
-  hookInstaller.ensureInstalled(spawnCwd);
-  ptyManager.spawn(session.id, spawnCwd, relaunchArgs(session), session.cwd);
+interface ClaudeLaunch {
+  cwd: string;
+  args: string[];
+}
+
+/**
+ * Where and with which arguments an existing session's claude launches again.
+ * claude removes a worktree left clean when it exits: a session whose
+ * worktree is gone launches from its cwd, and claude creates the worktree
+ * again before resuming the conversation, which it finds by the session's id.
+ */
+function claudeRelaunch(session: Session): ClaudeLaunch {
+  const cwd = validateCwd(session.cwd);
+  const worktreeCwd = sessionSpawnCwd(cwd, session.worktree);
+  const recreateWorktree = session.worktree !== null && !fs.existsSync(worktreeCwd);
+  return {
+    cwd: recreateWorktree ? cwd : worktreeCwd,
+    args: relaunchArgs(session, { recreateWorktree }),
+  };
+}
+
+/** Spawn a session's shell, and its claude picking up where the session left off. */
+function spawnRelaunchedSession(session: Session): void {
+  const launch = claudeRelaunch(session);
+  hookInstaller.ensureInstalled(launch.cwd);
+  ptyManager.spawn(session.id, launch.cwd, launch.args, session.cwd);
+}
+
+/**
+ * Spawn a saved session's PTYs and list it. One whose claude had exited gets
+ * only its shell: claude starts when the user restarts it.
+ */
+function startSavedSession(session: Session): Session {
+  if (isExitedStatus(session.status)) {
+    ptyManager.spawnShell(session.id, session.cwd);
+  } else {
+    spawnRelaunchedSession(session);
+  }
   sessionStore.addSession(session);
   return session;
 }
 
-function resumeSavedSessions(): void {
-  const stored = sessionStore.loadPersistedSessions().filter((s) => s.hasUserInput);
-  for (const s of stored) {
+/**
+ * Bring back the saved sessions the user has prompted; the others have no
+ * conversation to resume, so they are dropped. One that can't be restored (its
+ * directory is gone, or its PTYs didn't spawn) goes to Recently Closed instead
+ * of vanishing; reopening it from there says what's wrong.
+ */
+function restoreSavedSessions(): void {
+  let anyClosed = false;
+  for (const stored of sessionStore.loadPersistedSessions()) {
+    if (!stored.hasUserInput) {
+      sessionStore.removeSession(stored.id);
+      continue;
+    }
     try {
-      resumeStoredSession(s);
+      startSavedSession(fromPersisted(stored, validateCwd(stored.cwd)));
     } catch {
-      // Skip sessions that fail to restore (directory gone, spawn failure)
+      sessionStore.rememberClosed(fromPersisted(stored));
+      sessionStore.removeSession(stored.id);
+      anyClosed = true;
     }
   }
+  if (anyClosed) createMenu();
   sessionState.refreshUnreadBadge();
 }
 
@@ -330,20 +374,20 @@ function resumeSavedSessions(): void {
 async function restoreSessions(shellEnvAdopted: Promise<void>): Promise<void> {
   try {
     await shellEnvAdopted;
-    resumeSavedSessions();
-    sessionRestore.finish("succeeded");
+    restoreSavedSessions();
   } catch (err) {
-    sessionRestore.finish("failed");
+    const reason = err instanceof Error ? err.message : String(err);
     void dialog.showMessageBox({
       type: "error",
       message: "Couldn't restore your sessions",
-      detail: err instanceof Error ? err.message : String(err),
+      detail: `${reason}\n\nThe sessions that weren't restored stay saved for the next time Chorus starts.`,
     });
   }
+  sessionRestore.finish();
 }
 
 /**
- * Reopen an ended session (the most recently closed one when no id is given)
+ * Reopen a closed session (the most recently closed one when no id is given)
  * and hand it to the renderer. Failures surface as a native dialog because
  * this runs from the menu, outside any renderer request.
  */
@@ -353,17 +397,8 @@ async function reopenClosedSession(id?: string): Promise<void> {
   const stored = id ? recentlyClosed.find((s) => s.id === id) : recentlyClosed[0];
   if (!stored) return;
 
-  // Listed yet still open (its End Session was cut short): reopening would run a second claude on its id
-  if (sessionStore.getSession(stored.id)) {
-    sessionStore.forgetClosed(stored.id);
-    createMenu();
-    revealSession(stored.id);
-    return;
-  }
-
-  let session: Session;
   try {
-    session = resumeStoredSession(stored);
+    reopenSession(stored);
   } catch (err) {
     // A vanished directory never comes back; a spawn failure may be transient
     if (err instanceof IpcHandlerError && err.code === IpcErrorCodes.INVALID_DIRECTORY) {
@@ -378,10 +413,28 @@ async function reopenClosedSession(id?: string): Promise<void> {
     return;
   }
 
-  mainWindow?.webContents.send(IpcChannels.SESSION_OPENED, session);
   sessionStore.forgetClosed(stored.id);
   sessionStore.persistSessions();
   createMenu();
+}
+
+/** List a closed session again, its claude resuming the conversation, and show it. */
+function reopenSession(stored: StoredSession): void {
+  const listed = sessionStore.getSession(stored.id);
+  if (listed) {
+    // Its End was cut short. PTYs still running are kept (a second claude on
+    // its id would clash); ones End already killed start again.
+    if (!ptyManager.has(listed.id)) {
+      spawnRelaunchedSession(listed);
+      sessionState.commit(listed.id, { status: "creating" });
+    }
+    revealSession(listed.id);
+    return;
+  }
+
+  // Reopening resumes claude, even one that had exited before the session was closed
+  const reopened: Session = { ...fromPersisted(stored, validateCwd(stored.cwd)), status: "creating" };
+  mainWindow?.webContents.send(IpcChannels.SESSION_OPENED, startSavedSession(reopened));
 }
 
 // ─── Window ─────────────────────────────────────────────────
@@ -682,13 +735,14 @@ const invokeHandlers: InvokeHandlers = {
 
   [IpcChannels.SESSION_END]: ({ id }) => {
     const session = requireSession(id);
-    ptyManager.kill(id);
-    dismissSessionNotification(id);
-    // Only a prompted session has a transcript Claude can --resume
+    // Only a prompted session has a transcript Claude can --resume. First, so
+    // that a failed write leaves the session as it was, its PTYs running.
     if (session.hasUserInput) {
       sessionStore.rememberClosed({ ...session, unread: false });
       createMenu();
     }
+    ptyManager.kill(id);
+    dismissSessionNotification(id);
     stageMonitor.forget(id);
     sessionStore.removeSession(id);
     sessionStore.persistSessions();
@@ -697,10 +751,10 @@ const invokeHandlers: InvokeHandlers = {
 
   [IpcChannels.SESSION_RESTART]: ({ id }) => {
     const session = requireSession(id);
-    const spawnCwd = validateCwd(sessionSpawnCwd(session.cwd, session.worktree));
+    const launch = claudeRelaunch(session);
     try {
-      hookInstaller.ensureInstalled(spawnCwd);
-      ptyManager.restartClaude(id, spawnCwd, relaunchArgs(session));
+      hookInstaller.ensureInstalled(launch.cwd);
+      ptyManager.restartClaude(id, launch.cwd, launch.args);
     } catch (err) {
       throw ipcError(
         IpcErrorCodes.PTY_SPAWN_FAILED,
@@ -866,10 +920,8 @@ app.whenReady().then(async () => {
 });
 
 app.on("before-quit", () => {
-  if (sessionRestore.succeeded) {
-    sessionStore.persistSessions();
-    sessionStore.cleanupOrphanedSessionFiles();
-  }
+  sessionStore.persistSessions();
+  sessionStore.cleanupOrphanedSessionFiles();
   stageMonitor.stop();
   ptyManager.killAll();
   hookServer.stop();

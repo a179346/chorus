@@ -1,6 +1,7 @@
 // What Chorus knows about the claude CLI's argument syntax: which flags take
-// a value, the flags a session can't take, the shell-like text extra flags are
-// typed in, and the arguments a session's claude is launched with.
+// a value and which take none, the flags a session can't take, the shell-like
+// text extra flags are typed in, and the arguments a session's claude is
+// launched with.
 
 import type { Session } from './types';
 
@@ -8,13 +9,18 @@ import type { Session } from './types';
  * Flags that set a session's identity, resume or worktree (Chorus passes
  * these itself), that keep claude from running as an interactive session in
  * this terminal, or that turn off the hooks Chorus relies on to follow the
- * session. `--` is here because Chorus uses it to pass the prompt.
+ * session. `--` is here because Chorus uses it to pass the prompt. A
+ * `--settings` file or JSON can turn the hooks off too (`disableAllHooks`),
+ * but what it holds isn't inspected.
  */
 const UNSUPPORTED_FLAGS: ReadonlySet<string> = new Set([
   '--',
-  // Chorus passes these itself
+  // The session's identity, resume or worktree, which Chorus sets
   '--session-id',
   '-r', '--resume',
+  '--resume-session-at',
+  '--session-began-as-copy',
+  '--parent-session-id',
   '-c', '--continue',
   '--fork-session',
   '--from-pr',
@@ -23,6 +29,7 @@ const UNSUPPORTED_FLAGS: ReadonlySet<string> = new Set([
   '-w', '--worktree',
   // Not an interactive session in this terminal
   '-p', '--print',
+  '--sdk-url',
   '--bg', '--background',
   '--cloud', '--remote',
   '--environment', '--pool',
@@ -37,14 +44,30 @@ const UNSUPPORTED_FLAGS: ReadonlySet<string> = new Set([
   '--bare',
   '--safe-mode',
   '--restricted',
+  // Reads the project's settings, hooks included, from another directory
+  '--project-config-root',
 ]);
+
+/** What --setting-sources can name. */
+const SETTING_SOURCES: ReadonlySet<string> = new Set(['user', 'project', 'local']);
 
 /** Chorus's hooks live in .claude/settings.local.json, which this source covers. */
 const HOOKS_SETTING_SOURCE = 'local';
 
-/** Whether a --setting-sources value (comma-separated, like `user,project`) loads Chorus's hooks. */
-function loadsHookSettings(sources: string): boolean {
-  return sources.split(',').some((source) => source.trim() === HOOKS_SETTING_SOURCE);
+/**
+ * Why claude can't launch with this --setting-sources value (comma-separated,
+ * like `user,project`) or wouldn't load Chorus's hooks with it; null when it
+ * can. Read as claude reads it: an empty value names no sources.
+ */
+function settingSourcesError(value: string): string | null {
+  const sources = value === '' ? [] : value.split(',').map((source) => source.trim());
+  if (!sources.every((source) => SETTING_SOURCES.has(source))) {
+    return '--setting-sources takes a comma-separated list of user, project and local';
+  }
+  if (!sources.includes(HOOKS_SETTING_SOURCE)) {
+    return `--setting-sources must include ${HOOKS_SETTING_SOURCE}, where Chorus's hooks are`;
+  }
+  return null;
 }
 
 /**
@@ -56,10 +79,10 @@ function loadsHookSettings(sources: string): boolean {
 type ValueKind = 'required' | 'optional' | 'variadic';
 
 /**
- * The flags in `claude --help` (2.1.319) that take a value. This must follow
- * claude's flags: a value flag missing here can only be passed as
- * --flag=value. Unsupported flags are left out, since they are rejected
- * before their value matters.
+ * The flags in `claude --help` (2.1.319) that take a value, then hidden ones
+ * a user is likely to type. This must follow claude's flags: a value flag
+ * missing here can only be passed as --flag=value. Unsupported flags are left
+ * out, since they are rejected before their value matters.
  */
 const VALUE_FLAGS: ReadonlyMap<string, ValueKind> = new Map<string, ValueKind>([
   ['--add-dir', 'variadic'],
@@ -96,6 +119,46 @@ const VALUE_FLAGS: ReadonlyMap<string, ValueKind> = new Map<string, ValueKind>([
   ['--system-prompt', 'required'],
   ['--system-prompt-snapshot', 'required'],
   ['--tools', 'variadic'],
+  // Hidden from --help
+  ['--advisor', 'required'],
+  ['--append-system-prompt-file', 'required'],
+  ['--channels', 'variadic'],
+  ['--dangerously-load-development-channels', 'variadic'],
+  ['--fast-mode', 'required'],
+  ['--max-thinking-tokens', 'required'],
+  ['--max-turns', 'required'],
+  ['--permission-prompt-tool', 'required'],
+  ['--plugin-dir-no-mcp', 'required'],
+  ['--proactivity', 'required'],
+  ['--rc', 'optional'],
+  ['--system-prompt-file', 'required'],
+  ['--teammate-mode', 'required'],
+  ['--thinking', 'required'],
+]);
+
+/**
+ * The flags in `claude --help` (2.1.319) that take no value, plus the hidden
+ * --enable-auto-mode, which the New Session dialog passes. claude rejects a
+ * value attached to one (`--verbose=true`). Unsupported flags are left out.
+ */
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
+  '--allow-dangerously-skip-permissions',
+  '--ax-screen-reader',
+  '--brief',
+  '--chrome',
+  '--dangerously-skip-permissions',
+  '--disable-slash-commands',
+  '--enable-auto-mode',
+  '--exclude-dynamic-system-prompt-sections',
+  '--forward-subagent-text',
+  '--ide',
+  '--include-hook-events',
+  '--include-partial-messages',
+  '--no-chrome',
+  '--no-session-persistence',
+  '--replay-user-messages',
+  '--strict-mcp-config',
+  '--verbose',
 ]);
 
 /**
@@ -152,10 +215,12 @@ export function checkSessionFlags(args: readonly string[]): SessionFlagsCheck {
     if (UNSUPPORTED_FLAGS.has(name)) return { ok: false, error: `${name} isn't supported in Chorus sessions` };
 
     const attached = arg !== name;
+    if (attached && BOOLEAN_FLAGS.has(name)) return { ok: false, error: `${name} takes no value` };
     const values = attached ? [attachedValue(arg, name)] : valuesAfter(VALUE_FLAGS.get(name), args.slice(i + 1));
     if (values === null) return { ok: false, error: `${name} needs a value` };
-    if (name === '--setting-sources' && !loadsHookSettings(values[0])) {
-      return { ok: false, error: `--setting-sources must include ${HOOKS_SETTING_SOURCE}, where Chorus's hooks are` };
+    if (name === '--setting-sources') {
+      const error = settingSourcesError(values[0]);
+      if (error) return { ok: false, error };
     }
 
     flagNames.push(name);
@@ -167,6 +232,10 @@ export function checkSessionFlags(args: readonly string[]): SessionFlagsCheck {
 
 function strayArgumentError(arg: string, valuelessFlag: string | null): string {
   const shown = arg === '' ? "The empty argument ''" : formatFlagText([arg]);
+  if (valuelessFlag !== null && BOOLEAN_FLAGS.has(valuelessFlag)) {
+    return `${shown} isn't a flag — ${valuelessFlag} takes no value`;
+  }
+  // A flag in neither table may take a value, which is unambiguous only when attached
   if (valuelessFlag?.startsWith('--')) {
     const attached = formatFlagText([`${valuelessFlag}=${arg}`]);
     return `${shown} isn't a flag — if it's the value of ${valuelessFlag}, write ${attached}`;
@@ -256,13 +325,19 @@ export function newSessionArgs(launch: NewSessionLaunch): string[] {
  * claude's arguments for launching an existing session again, Chorus's own
  * flags first as for a new session. Once the user has prompted it, claude
  * has a transcript to --resume; before that, reusing the session id keeps the
- * session addressable by the same id.
+ * session addressable by the same id. `recreateWorktree` is for a session
+ * whose worktree directory is gone (claude removes a clean one when it
+ * exits): claude, launched from the session's cwd, creates it again.
  */
-export function relaunchArgs(session: Pick<Session, 'id' | 'name' | 'flags' | 'hasUserInput'>): string[] {
+export function relaunchArgs(
+  session: Pick<Session, 'id' | 'name' | 'worktree' | 'flags' | 'hasUserInput'>,
+  { recreateWorktree }: { recreateWorktree: boolean },
+): string[] {
   const identity = session.hasUserInput
     ? ['--resume', session.id]
     : ['--session-id', session.id, '--name', session.name];
-  return [...identity, ...session.flags];
+  const worktree = recreateWorktree && session.worktree ? ['--worktree', session.worktree] : [];
+  return [...identity, ...worktree, ...session.flags];
 }
 
 /**

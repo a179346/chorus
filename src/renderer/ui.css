@@ -766,3 +766,35 @@ textarea.input {
 .shell-header .panel-title {
   color: inherit;
 }
+
+/* Inset: the panel clips anything drawn outside the header */
+.shell-header:focus-visible {
+  box-shadow: inset var(--focus-ring);
+}
+
+/* ─── Preferences theme swatches ─────────────────────── */
+
+/* The chosen theme is ringed in its own accent (the swatch's colour, set
+   inline). Keyboard focus sits outside that ring with a gap, so the two stay
+   apart even though the chosen theme's accent is also the app's while it
+   is previewed. */
+.theme-swatch {
+  padding: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: none;
+  cursor: pointer;
+  transition: box-shadow var(--transition-fast);
+}
+
+.theme-swatch[aria-pressed="true"],
+.theme-swatch[aria-pressed="true"]:focus-visible {
+  box-shadow: 0 0 0 2px currentColor;
+}
+
+.theme-swatch:focus-visible {
+  outline: 2px solid rgba(var(--accent-rgb), 0.6);
+  outline-offset: 3px;
+  box-shadow: none;
+}
